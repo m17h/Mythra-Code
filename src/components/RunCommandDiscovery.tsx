@@ -79,7 +79,7 @@ export function useDiscoveryPreferences(catalogs: RunDiscoveryCatalogs = {}) {
   return { preferences, setPreferences: writePreferences, catalog, model, efforts, effort, unavailable, summary, blockedReason };
 }
 
-export default function RunCommandDiscovery({ discovery, purpose = "run", catalogs = {}, onAccounts, onFound }: {
+export default function RunCommandDiscovery({ discovery, purpose = "run", catalogs = {}, onAccounts, onFound, savedModelNote }: {
   discovery: CommandDiscoveryState;
   /** Chooses the copy; both purposes share one model setting. */
   purpose?: DiscoveryPurpose;
@@ -87,18 +87,21 @@ export default function RunCommandDiscovery({ discovery, purpose = "run", catalo
   onAccounts?: () => void;
   /** Called only with a non-empty command. Nothing is launched from here. */
   onFound: (command: { command: string; label: string; setupCommand?: string }) => void;
+  /** The search uses a model saved elsewhere, so this replaces the local model choice. */
+  savedModelNote?: string;
 }) {
   const copy = COPY[purpose];
   const { preferences, setPreferences, catalog, efforts, effort, unavailable, summary } = useDiscoveryPreferences(catalogs);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelDraft, setModelDraft] = useState(preferences.model);
   useEffect(() => setModelDraft(preferences.model), [preferences.model, preferences.provider]);
-  const missingModel = !modelDraft.trim();
+  const missingModel = !savedModelNote && !modelDraft.trim();
+  const blocked = !savedModelNote && unavailable;
   const found = discovery.suggestion?.command.trim() ? discovery.suggestion : null;
   const setup = found?.setupCommand?.trim();
   return <section className="run-discovery" aria-label={copy.region}>
     <div className="run-discovery-actions">
-      <button type="button" className="secondary-button" disabled={discovery.pending || unavailable || missingModel} onClick={() => {
+      <button type="button" className="secondary-button" disabled={discovery.pending || blocked || missingModel} onClick={() => {
         setSettingsOpen(false);
         const selected = { ...preferences, model: modelDraft.trim(), effort };
         if (selected.model !== preferences.model || selected.effort !== preferences.effort) setPreferences(selected);
@@ -111,11 +114,11 @@ export default function RunCommandDiscovery({ discovery, purpose = "run", catalo
         {discovery.pending ? copy.finding : copy.find}
       </button>
       {discovery.pending && <button type="button" className="secondary-button" onClick={() => void discovery.cancel()}>Stop discovery</button>}
-      <button type="button" className="icon-button" aria-label="Discovery model settings" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Settings2 size={15} /></button>
+      {!savedModelNote && <button type="button" className="icon-button" aria-label="Discovery model settings" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Settings2 size={15} /></button>}
     </div>
-    <small>{summary}</small>
+    <small>{savedModelNote ?? summary}</small>
     <p title="Keeps working if you switch projects. No chat is saved. Uses the same model as the other finder.">{copy.intro}</p>
-    {settingsOpen && <fieldset className="run-discovery-settings" disabled={discovery.pending}>
+    {settingsOpen && !savedModelNote && <fieldset className="run-discovery-settings" disabled={discovery.pending}>
       <legend>Discovery model · saved for all projects</legend>
       <div className="run-discovery-field"><span>Provider</span><AppSelectMenu portal menuPlacement="top" value={preferences.provider} ariaLabel="Discovery provider" options={DISCOVERY_PROVIDERS} onChange={(provider) => {
         const next = provider as RunDiscoveryProvider;
@@ -129,7 +132,7 @@ export default function RunCommandDiscovery({ discovery, purpose = "run", catalo
       {onAccounts && <button type="button" className="secondary-button" onClick={onAccounts}>Models and accounts</button>}
     </fieldset>}
     {missingModel && <p role="status">Choose a model in Discovery model settings to get started.</p>}
-    {unavailable && <p role="status">Your saved model is unavailable. Choose another in Discovery model settings.</p>}
+    {blocked && <p role="status">Your saved model is unavailable. Choose another in Discovery model settings.</p>}
     {discovery.error && <p role="alert">{discovery.error}</p>}
     {found && <div className="run-discovery-result" role="status">
       <strong>{copy.saved}</strong>

@@ -153,6 +153,50 @@ Connecting **Settings → GitHub** adds cloning, publishing, and pull requests t
 
 PR availability and merge methods depend on repository permissions and branch rules. The integration supports github.com. See the [Git and pull-request guide](docs/thread-pull-requests.md) for details and safeguards.
 
+## Work on another computer
+
+> **Use your other computers.** Turn on *Let my other computers use this one* on the computer you want to use. On the computer in front of you, open the machine picker at the top of the sidebar, choose the other computer, and choose *Request access*. Allow it on the other computer and you are connected, both ways if you left the box ticked. Both need Mythra Code open and the same network.
+
+Mythra Code can use another computer on the same network as if you were sitting at it: the same sidebar, conversation, composer, and Workspace, filled with that computer's projects, threads, models, and files. Prompts, model calls, and file changes all happen on the computer you select, with its accounts and its copy of the code. The computer in front of you only shows the work. Switching between them never interrupts what's running on either one.
+
+This is off by default. Until you turn it on, Mythra Code doesn't listen for connections or look for nearby devices. There's no cloud relay and no account: the two computers talk directly over your network, encrypted, and only after you pair them. Both need Mythra Code open and the same network. The computer being used can be minimized, but work can't reach it once Mythra Code quits.
+
+### Pair two computers
+
+1. On the computer you want to use, open **Settings → Connections → Devices**, turn on **Allow access from nearby devices**, and choose **Pair a device**. On a Mac, choose **Allow** if macOS asks to use the local network.
+2. On the computer in front of you, open the same page, choose **Find nearby devices**, and pick the other computer.
+3. Check that both computers show the same six-digit code. Approve it on the computer being used, and choose whether to also allow **Work**.
+
+After that, switch computers from the menu next to **Mythra Code** at the top of the sidebar. If the computers can't find each other, **Pair a device** also makes a one-time invitation to copy to the other computer. If only one direction connects, the other computer can use **Offer access**. Pairing works one way: approving a Mac on a PC lets that Mac use the PC, and nothing more.
+
+### What a paired device can do
+
+Each paired device has its own access, which you can change or remove at any time on the computer being used. Changes apply immediately. **Turn on all** sets every switch at once, for computers that are yours.
+
+| Switch | What it allows |
+| --- | --- |
+| **View** | See conversations and project files, including anything a model or tool printed. A transcript can contain private information, so only pair devices you trust. |
+| **Work** | Send prompts, stop work, change queued messages, and approve commands or answer questions one at a time. |
+| **Full access** | Let tasks it starts run without approval prompts. With this off, its tasks run at **Ask to act** or lower, even in a thread set to Full access. |
+| **Terminal** | Run any command on that computer. Run, Checks, and worktree actions need this too. |
+| **Git changes** | Commit, push, and manage branches and pull requests. Also needs Terminal, because Git can start other programs. |
+| **Restore checkpoints** | Put files back to an earlier saved state. Also needs Terminal. |
+| **Manage projects** | Add and remove projects and change their settings, prompts, skills, and tools. Needs **All projects**. |
+
+Every switch below View needs Work. Sign-ins, API keys, always-allow approvals, and a device's own access can only be changed at the computer itself, and a few approval requests stay there too.
+
+**Projects are not a sandbox.** Choosing projects sets which conversations and files a device can open through Mythra Code. It doesn't limit what a task can do once it's running: a model with enough permission can read files and run commands outside those projects. Only give Work to devices you'd trust at the keyboard.
+
+Removing access disconnects the device right away. Work it already started keeps running, and anything it queued that hasn't been delivered is refused.
+
+### Network visibility
+
+While hosting is on, or while you look for devices, Mythra Code uses your network's device discovery (Bonjour on Mac, DNS-SD on Windows). **Show this name to nearby devices** controls only the name Mythra Code announces, and it's off by default. With it off, your computer still appears on the network under its own `.local` hostname, because that's part of how discovery works. The announcement never includes your device's key.
+
+Windows may block incoming connections on a network marked Public. Devices settings tells you what to try. Guest Wi-Fi often keeps devices apart, and an invitation can't get around that.
+
+Conversations from another computer aren't saved on the one you're viewing from, apart from your unsent drafts and messages waiting to be delivered. Each computer keeps its own theme, panel sizes, and model favorites. Settings always apply to the computer in front of you. See the [design contract](docs/features/remote-lan.md) for the full rules.
+
 ## Skills, workflows, and scheduled work
 
 ### Skills: reusable instructions
@@ -193,7 +237,7 @@ Records are limited to 24 threads and the first 32,000 instruction characters pe
 
 Mythra Code has no app telemetry, analytics, or crash reporting. Conversations, settings, and usage records are stored locally, but **local-first does not mean offline**: prompts, supplied context, and tool results are sent to the selected provider. Optional title generation and command discovery use their separately selected provider. LM Studio can keep inference local when configured on your own machine.
 
-Other network activity includes runtime authentication, app/runtime update checks, model and pricing catalogs, GitHub operations, and any network tools or MCP servers you choose to use. Pricing checks do not upload your prompts or usage records. Provider runtimes have their own storage, network behavior, and policies.
+Other network activity includes runtime authentication, app/runtime update checks, model and pricing catalogs, GitHub operations, nearby-device connections if you turn them on, and any network tools or MCP servers you choose to use. Pricing checks do not upload your prompts or usage records. Provider runtimes have their own storage, network behavior, and policies.
 
 API keys saved by Mythra Code use the operating system credential store. GitHub authentication is managed by `gh`; OpenAI uses Mythra Code's isolated Codex home, while Claude and Cursor manage their own subscription sign-ins. Model text is rendered without raw HTML. Agents with command access can still use credential-aware tools available on the computer, so permissions matter.
 
@@ -242,6 +286,7 @@ Publishing requires an explicit release request and chosen version. Maintainers 
 - [Local Git and thread pull requests](docs/thread-pull-requests.md)
 - [Usage, pricing, and historical estimates](docs/usage-dashboard.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Work on another computer: design contract](docs/features/remote-lan.md)
 - [Performance](docs/PERFORMANCE.md)
 - [Windows contributor notes](Windows/README.md)
 

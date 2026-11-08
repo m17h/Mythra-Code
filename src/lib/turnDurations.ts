@@ -1,4 +1,4 @@
-import { loadStored, storeValue } from "./storage";
+import { loadStored, storeValue, subscribeRemoteStateAdoption } from "./storage";
 
 const TURN_DURATIONS_KEY = "kiwi.turnDurations";
 const MAX_THREADS = 200;
@@ -7,6 +7,7 @@ const MAX_TURNS_PER_THREAD = 200;
 type StoredTurnDurations = Record<string, Record<string, number>>;
 
 let durationCache: StoredTurnDurations | null = null;
+subscribeRemoteStateAdoption(TURN_DURATIONS_KEY, (adopted) => { durationCache = adopted as StoredTurnDurations | null; });
 
 function durations(): StoredTurnDurations {
   if (durationCache === null) durationCache = loadStored<StoredTurnDurations>(TURN_DURATIONS_KEY, {});

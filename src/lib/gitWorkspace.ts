@@ -50,8 +50,10 @@ export interface GitWorkflowControls {
     status: string;
     message: string;
     repository?: string;
-    onToggle: (enabled: boolean) => void;
-    onRetry: () => void;
+    /** Absent when this can only be changed on another machine, which `hostOnly` names. */
+    onToggle?: (enabled: boolean) => void;
+    onRetry?: () => void;
+    hostOnly?: string;
   };
   lastFetchedAt?: number;
 }

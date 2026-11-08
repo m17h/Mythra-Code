@@ -8,6 +8,24 @@ import { reportThreadContextUsage } from "./usageLedger";
 import { cursorTurnCanSettle, cursorTurnWasSettled, finishCursorTurnOwner, latestCursorUsageSnapshotTurn, markCursorUsageSnapshotTurn, observeCursorTurnOwner, resetCursorTurnOwnershipForTests } from "./cursorTurnOwnership";
 import { coordinationInput, coordinationResult } from "./coordinationProvenance";
 
+/** Shared protocol adapter for live delivery and newly recovered requests.
+ * It never mutates a listener-owned approval or exposes raw protocol fields. */
+export function normalizeCursorQuestionParams(raw: unknown, turnId?: string, itemId?: string): JsonObject {
+  const params = object(raw);
+  const questions = (Array.isArray(params.questions) ? params.questions : []).map((value) => {
+    const question = object(value);
+    return {
+      id: text(question.id), header: "Question", question: text(question.prompt),
+      ...(question.secret === true || question.isSecret === true ? { isSecret: true } : {}),
+      options: (Array.isArray(question.options) ? question.options : []).map((option) => {
+        const entry = object(option);
+        return { label: text(entry.label), description: text(entry.description) };
+      }),
+    };
+  });
+  return { questions, ...(turnId === undefined ? {} : { turnId }), ...(itemId === undefined ? {} : { itemId }) };
+}
+
 const activeAssistantSegments = new Map<string, string>();
 const assistantSegmentCounts = new Map<string, number>();
 // Turns whose `result` (or terminal error) already arrived. Cursor can deliver
@@ -341,23 +359,10 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   if (message.type === "cursor_request" && message.method === "cursor/ask_question") {
     if (turnAlreadyCompleted || !mayActivateTurn) return;
     activateTurnFromEvent();
-    const params = object(message.params);
-    const questions = (Array.isArray(params.questions) ? params.questions : []).map((value) => {
-      const question = object(value);
-      return {
-        id: text(question.id),
-        header: "Question",
-        question: text(question.prompt),
-        options: (Array.isArray(question.options) ? question.options : []).map((option) => {
-          const entry = object(option);
-          return { label: text(entry.label), description: text(entry.description) };
-        }),
-      };
-    });
     store.enqueueApproval({
       id: (message.requestId as string | number) ?? crypto.randomUUID(),
       method: "cursor/ask_question",
-      params: { questions, turnId },
+      params: normalizeCursorQuestionParams(message.params, turnId),
       threadId,
       receivedAt: Date.now(),
     });

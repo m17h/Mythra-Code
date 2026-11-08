@@ -28,10 +28,12 @@ strip = "symbols"
 [dependencies]
 axum = "0.8"
 base64 = "0.22"
+cookie = "=0.18.1"
 getrandom = "0.3"
 futures-util = "0.3"
 keyring = "4.1.5"
 pulldown-cmark = { version = "0.13", default-features = false }
+ring = "0.17"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
@@ -39,6 +41,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 sha2 = "0.10.9"
+socket2 = "0.6"
 sysinfo = { version = "0.37.2", default-features = false, features = ["system"] }
 tauri = { version = "2.11.1", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-dialog = "2.7.1"
@@ -46,6 +49,7 @@ tauri-plugin-notification = "2.3.3"
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-process = "2.3.1"
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 unicode-segmentation = "1.13.3"
@@ -54,7 +58,7 @@ unicode-segmentation = "1.13.3"
 tauri-plugin-updater = "2.10.1"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61.3", features = ["Win32_Globalization", "Win32_System_Com"] }
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Globalization", "Win32_NetworkManagement_Dns", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_NetworkListManager", "Win32_Networking_WinSock", "Win32_System_Com", "Win32_System_SystemInformation"] }
 webview2-com = "=0.38.2"
 windows-core = "=0.61.2"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }

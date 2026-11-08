@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import {
   checkpointIsRestorable,
   completeCheckpointSnapshot,
+  runCheckpointLabel,
   createCheckpointSnapshot,
   deleteCheckpointSnapshot,
   partitionCheckpointsForRetention,
@@ -12,6 +13,7 @@ import {
   type CheckpointRecord,
   type CheckpointRestoreTarget,
 } from "../lib/checkpoints";
+import { abandonRemoteCheckpoint, completeRemotePreparedCheckpoint } from "../lib/remote/host/promptPreparation";
 import { setWorktreeAppliedBaseline, type ThreadWorktreeRecord } from "../lib/worktrees";
 import { useTaskStore } from "../lib/taskStore";
 import { friendlyError } from "../lib/errors";
@@ -22,6 +24,13 @@ import type { ThreadSidebarIndex } from "../lib/threadList";
 import { usePersistedStateRef, type SetPersisted } from "./usePersistedState";
 import { confirmDialog } from "../lib/confirmDialog";
 import type { Project, Provider, Thread } from "../types";
+
+const REMOTE_CHECKPOINT_LOST = "Mythra Code closed before this run from another device finished, so only its starting point was saved.";
+const REMOTE_CHECKPOINT_UNFINISHED = "This run from another device ended without permission to save its result, so only its starting point was saved.";
+const REMOTE_CHECKPOINT_UNUSED = "This step from another device stopped before it began, so only its starting point was saved.";
+
+const runningRemoteCheckpoint = (records: readonly CheckpointRecord[], threadId: string) =>
+  records.find((entry) => entry.threadId === threadId && entry.remotePrepared === true && entry.status === "running");
 
 export interface CheckpointsContext {
   chatWorkspacePath: string;
@@ -104,7 +113,7 @@ export function useCheckpoints(context: CheckpointsContext) {
       return kept;
     });
     for (const record of prunedRecords) {
-      if (!record.workspacePath || !record.beforeCommit) continue;
+      if (!record.workspacePath || !record.beforeCommit || record.remotePrepared) continue;
       void runCheckpointProjectOperation(
         record.workspacePath,
         () => deleteCheckpointSnapshot(record.id, record.workspacePath!),
@@ -121,6 +130,12 @@ export function useCheckpoints(context: CheckpointsContext) {
       return next;
     });
   }, [setCheckpointHeadsPersisted]);
+
+  /** A remote run ended with no way to save its after-snapshot. Says so, without touching Git. */
+  const settleRemoteCheckpoint = useCallback((id: string, error: string) => {
+    persistCheckpoints((current) => current.map((entry) => entry.id === id && entry.remotePrepared && entry.status === "running"
+      ? { ...entry, status: "interrupted", completedAt: Date.now(), error } : entry));
+  }, [persistCheckpoints]);
 
   const beginRunCheckpoint = useCallback(async (
     threadId: string,
@@ -145,9 +160,7 @@ export function useCheckpoints(context: CheckpointsContext) {
         ?? threadProjectBindingsRef.current?.[candidateId];
       return Boolean(binding && normalizedProjectPath(binding) === pathKey);
     });
-    const label = prompt.trim()
-      ? `Run: ${prompt.trim().replace(/\s+/g, " ").slice(0, 72)}`
-      : "Model run";
+    const label = runCheckpointLabel(prompt);
     const checkpoint: CheckpointRecord = {
       id,
       threadId,
@@ -235,13 +248,22 @@ export function useCheckpoints(context: CheckpointsContext) {
     completionStatus: "ready" | "interrupted" | "recovered" = "ready",
   ) => {
     const id = activeRunCheckpointsRef.current.get(threadId);
-    if (!id) return;
+    if (!id) {
+      // Every turn-end path lands here, so another device's run finishes natively too.
+      const prepared = runningRemoteCheckpoint(checkpointsRef.current, threadId);
+      if (!prepared) return;
+      const saved = await completeRemotePreparedCheckpoint(prepared.id, turnId)?.catch(() => null);
+      // Null is an unconfirmed native step: its recovery owns the row, not this path.
+      if (saved === null || saved) return;
+      settleRemoteCheckpoint(prepared.id, REMOTE_CHECKPOINT_UNFINISHED);
+      return;
+    }
     // A late completion from the predecessor is not this new run's result.
     if (turnId && checkpointPredecessorTurnsRef.current.get(id) === turnId) return;
     activeRunCheckpointsRef.current.delete(threadId);
     checkpointPredecessorTurnsRef.current.delete(id);
     const checkpoint = checkpointsRef.current.find((entry) => entry.id === id);
-    if (!checkpoint?.workspacePath) return;
+    if (!checkpoint?.workspacePath || checkpoint.remotePrepared) return;
     try {
       const result = await runCheckpointProjectOperation(
         checkpoint.workspacePath,
@@ -272,9 +294,14 @@ export function useCheckpoints(context: CheckpointsContext) {
       } : entry));
       recordError(`Could not finish checkpoint “${checkpoint.label}”: ${message}`);
     }
-  }, [checkpointsRef, persistCheckpointHead, persistCheckpoints, runCheckpointProjectOperation]);
+  }, [checkpointsRef, persistCheckpointHead, persistCheckpoints, runCheckpointProjectOperation, settleRemoteCheckpoint]);
 
   const discardRunCheckpoint = useCallback((threadId: string, expectedCheckpointId?: string) => {
+    const prepared = runningRemoteCheckpoint(checkpointsRef.current, threadId);
+    if (prepared && (expectedCheckpointId === undefined || expectedCheckpointId === prepared.id)) {
+      settleRemoteCheckpoint(prepared.id, REMOTE_CHECKPOINT_UNUSED);
+      abandonRemoteCheckpoint(threadId);
+    }
     const preparingId = preparingRunCheckpointsRef.current.get(threadId);
     if (preparingId && (expectedCheckpointId === undefined || expectedCheckpointId === preparingId)) {
       preparingRunCheckpointsRef.current.delete(threadId);
@@ -284,6 +311,7 @@ export function useCheckpoints(context: CheckpointsContext) {
     activeRunCheckpointsRef.current.delete(threadId);
     checkpointPredecessorTurnsRef.current.delete(id);
     const checkpoint = checkpointsRef.current.find((entry) => entry.id === id);
+    if (checkpoint?.remotePrepared) return;
     persistCheckpoints((current) => current.filter((entry) => entry.id !== id));
     if (checkpoint?.workspacePath) {
       void runCheckpointProjectOperation(
@@ -291,10 +319,14 @@ export function useCheckpoints(context: CheckpointsContext) {
         () => deleteCheckpointSnapshot(id, checkpoint.workspacePath!),
       ).catch(() => undefined);
     }
-  }, [checkpointsRef, persistCheckpoints, runCheckpointProjectOperation]);
+  }, [checkpointsRef, persistCheckpoints, runCheckpointProjectOperation, settleRemoteCheckpoint]);
 
   useEffect(() => {
     for (const checkpoint of checkpointsRef.current) {
+      if (checkpoint.status === "running" && checkpoint.remotePrepared) {
+        settleRemoteCheckpoint(checkpoint.id, REMOTE_CHECKPOINT_LOST);
+        continue;
+      }
       if (checkpoint.status === "running" && (!checkpoint.workspacePath || !checkpoint.beforeCommit)) {
         persistCheckpoints((current) => current.map((entry) => entry.id === checkpoint.id ? {
           ...entry,
@@ -325,7 +357,7 @@ export function useCheckpoints(context: CheckpointsContext) {
       activeRunCheckpointsRef.current.set(checkpoint.threadId, checkpoint.id);
       void finalizeRunCheckpoint(checkpoint.threadId, checkpoint.turnId, "recovered");
     }
-  }, [checkpointsRef, finalizeRunCheckpoint, persistCheckpoints, runCheckpointProjectOperation]);
+  }, [checkpointsRef, finalizeRunCheckpoint, persistCheckpoints, runCheckpointProjectOperation, settleRemoteCheckpoint]);
 
   const projectHasActiveTask = useCallback((workspacePath: string): boolean => {
     const { threadProjectBindingsRef } = contextRef.current;
@@ -626,7 +658,7 @@ export function useCheckpoints(context: CheckpointsContext) {
     }
     const deletedCheckpoints = checkpointsRef.current.filter((checkpoint) => checkpoint.threadId === threadId);
     for (const checkpoint of deletedCheckpoints) {
-      if (checkpoint.workspacePath) {
+      if (checkpoint.workspacePath && !checkpoint.remotePrepared) {
         void runCheckpointProjectOperation(
           checkpoint.workspacePath,
           () => deleteCheckpointSnapshot(checkpoint.id, checkpoint.workspacePath!),
@@ -653,6 +685,7 @@ export function useCheckpoints(context: CheckpointsContext) {
     retryUnsupportedCheckpointPath,
     finalizeRunCheckpoint,
     discardRunCheckpoint,
+    settleRemoteCheckpoint,
     projectHasActiveTask,
     captureCurrentStateCheckpoint,
     createCheckpoint,

@@ -82,6 +82,8 @@ export interface WorkflowRunStepRecord {
 }
 
 export interface WorkflowRunRecord {
+  /** Identity-only remote origin; never a restored engine permission/token. */
+  remote?: import("./remote/host/provenance").RemoteExecutionProvenance;
   id: string;
   workflowId: string;
   workflowName: string;

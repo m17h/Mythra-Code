@@ -17,6 +17,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.knownThreads",
   "kiwi.threadModels",
   "kiwi.threadReasoning",
+  "kiwi.threadExecutionPreferences",
   "kiwi.turnDurations",
   "kiwi.checkpoints",
   "kiwi.checkpointHeads",
@@ -34,6 +35,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.workspaceDraftKeys",
   "kiwi.savedWorkspaceDraftKeys",
   "kiwi.reviewFeedback",
+  "kiwi.remoteReviewFeedback",
   "kiwi.agentQuestions",
   "kiwi.scheduleRuns",
   "kiwi.workflows",
@@ -72,7 +74,85 @@ export const DURABLE_STORAGE_KEYS = [
  */
 export const STORAGE_SCHEMA_VERSION = 31;
 const nativeWriteQueues = new Map<string, Promise<void>>();
-type NativeStateRevision = { operation: () => Promise<unknown> };
+type NativeStateRevision = { operation: () => Promise<unknown>; barrier?: Promise<void> };
+const remoteStateFences = new Map<string, Promise<void>>();
+const uncertainRemoteStateKeys = new Set<string>();
+const fenceReleases = new Map<string, () => void>();
+const remoteAdoptionListeners = new Map<string, Set<(value: unknown) => void>>();
+const deferredStateMutations = new Map<string, Array<() => void>>();
+let remoteStateTail: Promise<unknown> = Promise.resolve();
+export const isRemoteStateFenced = (key: string): boolean => remoteStateFences.has(key);
+export function deferUntilRemoteStateAdopted(key: string, mutation: () => void): boolean {
+  if (!remoteStateFences.has(key)) return false;
+  const waiting = deferredStateMutations.get(key) ?? [];
+  waiting.push(mutation); deferredStateMutations.set(key, waiting); return true;
+}
+export function subscribeRemoteStateAdoption(key: string, listener: (value: unknown) => void): () => void {
+  const listeners = remoteAdoptionListeners.get(key) ?? new Set();
+  listeners.add(listener); remoteAdoptionListeners.set(key, listeners);
+  return () => { listeners.delete(listener); if (!listeners.size) remoteAdoptionListeners.delete(key); };
+}
+/** Remote-only exclusive lane in the SAME queue as ordinary local persistence. */
+export function withRemoteStateCommit<T>(keys: readonly string[], work: (adopt: (key: string, value: unknown) => void) => Promise<T>): Promise<T> {
+  const operation = remoteStateTail.catch(() => undefined).then(async () => {
+    if (keys.some((key) => uncertainRemoteStateKeys.has(key))) throw new Error("A remote state commit needs recovery before this value can be changed.");
+    await flushPendingStateWrites();
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    for (const key of keys) { remoteStateFences.set(key, barrier); fenceReleases.set(key, release); }
+    const oldWrites = keys.flatMap((key) => nativeWriteQueues.get(key) ? [nativeWriteQueues.get(key)!] : []);
+    let uncertain = false;
+    try {
+      await Promise.all(oldWrites);
+      return await work((key, value) => {
+        if (remoteStateFences.get(key) !== barrier) throw new Error("Unowned remote state adoption");
+        // Blocked blind writes describe pre-commit state. They are superseded,
+        // not released later to overwrite the accepted stamped transaction.
+        const old = unacknowledgedNativeState.get(key);
+        if (old?.barrier === barrier) { old.operation = releasedNativeOperation; unacknowledgedNativeState.delete(key); }
+        latestNativeState.set(key, (latestNativeState.get(key) ?? 0) + 1);
+        cacheValue(key, JSON.stringify(value));
+        invalidatePendingMarker(key);
+        for (const listener of remoteAdoptionListeners.get(key) ?? []) listener(value);
+      });
+    } catch (reason) {
+      uncertain = Boolean(reason && typeof reason === "object" && "holdRemoteState" in reason);
+      if (uncertain) for (const key of keys) { uncertainRemoteStateKeys.add(key); invalidatePendingMarker(key); }
+      throw reason;
+    } finally {
+      if (!uncertain) {
+      for (const key of keys) if (remoteStateFences.get(key) === barrier) remoteStateFences.delete(key);
+      for (const key of keys) fenceReleases.delete(key);
+      release();
+      for (const key of keys) {
+        const mutations = deferredStateMutations.get(key); deferredStateMutations.delete(key);
+        for (const mutation of mutations ?? []) mutation();
+      }
+      }
+    }
+  });
+  remoteStateTail = operation;
+  return operation;
+}
+/** Call only after the SAME stamped operation has been reconciled natively. */
+export function recoverRemoteStateRows(rows: readonly { key: string; value: unknown }[]): void {
+  const keys = new Set(rows.map((row) => row.key));
+  for (const { key } of rows) {
+    const release = fenceReleases.get(key);
+    if (release && [...fenceReleases].some(([other, done]) => done === release && !keys.has(other))) throw new Error("Incomplete remote commit recovery");
+  }
+  const release = new Set<() => void>();
+  for (const { key, value } of rows) {
+    if (!uncertainRemoteStateKeys.has(key)) continue;
+    unacknowledgedNativeState.delete(key); cacheValue(key, JSON.stringify(value)); invalidatePendingMarker(key);
+    latestNativeState.set(key, (latestNativeState.get(key) ?? 0) + 1);
+    for (const listener of remoteAdoptionListeners.get(key) ?? []) listener(value);
+    uncertainRemoteStateKeys.delete(key); remoteStateFences.delete(key);
+    const done = fenceReleases.get(key); if (done) release.add(done); fenceReleases.delete(key);
+  }
+  for (const done of release) done();
+  for (const { key } of rows) { const mutations = deferredStateMutations.get(key); deferredStateMutations.delete(key); for (const mutation of mutations ?? []) mutation(); }
+}
 const releasedNativeOperation = async () => undefined;
 // A settled promise is not a persistence receipt. Keep the latest immutable
 // operation until SQLite acknowledges it, even when the cache also failed.
@@ -173,6 +253,7 @@ function clearNativeOperationPending(key: string, token: string): void {
 function runNativeStateRevision(key: string, revision: NativeStateRevision): void {
   const previous = nativeWriteQueues.get(key);
   const write = async () => {
+    if (revision.barrier) await revision.barrier;
     // Every operation writes or deletes the key's whole value. If a newer
     // revision was queued while this one waited, it supersedes this write;
     // SQLite only needs the latest value, and the newer revision owns the
@@ -206,17 +287,18 @@ function queueNativeStateOperation(key: string, operation: () => Promise<unknown
   // need not keep every serialized value alive until its turn to be skipped.
   const superseded = unacknowledgedNativeState.get(key);
   if (superseded) superseded.operation = releasedNativeOperation;
-  const revision = { operation };
+  const revision: NativeStateRevision = { operation, barrier: remoteStateFences.get(key) };
   latestNativeState.set(key, (latestNativeState.get(key) ?? 0) + 1);
   unacknowledgedNativeState.set(key, revision);
   runNativeStateRevision(key, revision);
 }
 
 export function hasPendingStateWrites(): boolean {
-  return unacknowledgedNativeState.size > 0;
+  return unacknowledgedNativeState.size > 0 || remoteStateFences.size > 0;
 }
 
 export function flushPendingStateWrites(): Promise<void> {
+  if (remoteStateFences.size) return Promise.reject(new Error("Remote state is still being committed or recovered. Try again after it settles."));
   if (nativeFlush) return nativeFlush;
   const flush = async (): Promise<void> => {
     const retried = new Set<NativeStateRevision>();

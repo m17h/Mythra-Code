@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { loadStored, storeValue } from "./storage";
+import { loadStored, storeValue, subscribeRemoteStateAdoption } from "./storage";
 
 /**
  * Durable parent ↔ child mailbox for Mythra Code-managed sub-agents.
@@ -312,6 +312,13 @@ function trimStoreHistory(all: MailboxState, limit = MAX_STORE_CHARACTERS): Mail
   }
   return next;
 }
+
+// A paired device's delete commits this key natively. Memory follows, so the next
+// local change can't bring the deleted thread's mail back.
+subscribeRemoteStateAdoption(STORAGE_KEY, (adopted) => {
+  state = sanitizeChildAgentMailboxes(adopted);
+  for (const listener of [...listeners]) listener();
+});
 
 function commit(next: MailboxState): void {
   // Capture storage successfully before publishing an in-memory revision.

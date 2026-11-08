@@ -4,5 +4,11 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Mythra Code uses the microphone only while you record voice input for the message box.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Mythra Code uses the local network to find your other devices and connect to them when you turn on nearby device access.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_mythra-code._tcp</string>
+	</array>
 </dict>
 </plist>

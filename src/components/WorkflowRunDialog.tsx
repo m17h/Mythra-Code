@@ -1,12 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Play, TerminalSquare, X } from "lucide-react";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { interpolateWorkflowText, type WorkflowDefinition } from "../lib/workflows";
 import type { Project } from "../types";
 import { AppSelectMenu } from "./AppSelectMenu";
 
-export function WorkflowRunDialog({ workflow, projects, initialProjectId, userPrompt, onClose, onRun }: {
+export function WorkflowRunDialog({ workflow, projects, initialProjectId, userPrompt, machine, notice, submitting = false, runBlocked = false, onClose, onRun }: {
   workflow: WorkflowDefinition;
+  /** Another device this runs on. Run settings it didn't share are left out, not guessed. */
+  machine?: { name: string; permission?: boolean; effort?: boolean };
+  /** Shown above the actions, e.g. when the recipe changed after it was reviewed. */
+  notice?: ReactNode;
+  /** A run was asked for and hasn't been answered; Run now waits. */
+  submitting?: boolean;
+  /** Run now stays off; `notice` says why. */
+  runBlocked?: boolean;
   projects: Project[];
   initialProjectId?: string;
   userPrompt?: string;
@@ -37,17 +45,18 @@ export function WorkflowRunDialog({ workflow, projects, initialProjectId, userPr
           <button className="icon-button" onClick={onClose} aria-label="Close run workflow dialog"><X size={14} /></button>
         </div>
         <p>{workflow.description || `Run ${workflow.steps.length} ordered step${workflow.steps.length === 1 ? "" : "s"} in a new project thread.`}</p>
-        <div className="workflow-select-field"><span>Run in project</span><AppSelectMenu ariaLabel="Run in project" value={projectId} options={projects.map((item) => ({ value: item.id, label: item.name, detail: item.path }))} portal onChange={setProjectId} /></div>
+        <div className="workflow-select-field"><span>{machine ? `Run in project on ${machine.name}` : "Run in project"}</span><AppSelectMenu ariaLabel="Run in project" value={projectId} options={projects.map((item) => ({ value: item.id, label: item.name, detail: item.path }))} portal onChange={setProjectId} /></div>
         {userPrompt?.trim() && <div className="workflow-user-prompt"><strong>Additional instructions</strong><p>{userPrompt}</p></div>}
         {(workflow.variables ?? []).filter((variable) => variable.promptOnRun).map((variable) => (
           <label className="workflow-run-input" key={variable.id}><span>{variable.name}</span><input value={variables[variable.name] ?? ""} onChange={(event) => setVariables({ ...variables, [variable.name]: event.target.value })} placeholder={variable.value || "Value for this run"} /></label>
         ))}
         {workflow.steps.some((step) => step.type === "command") && (
-          <div className="workflow-command-warning"><TerminalSquare size={14} /><span><strong>Shell commands included</strong><small>Commands run in the selected project with {workflow.run.permission} permissions. Input values are substituted literally; step-result variables resolve while running.</small>{workflow.steps.filter((step) => step.type === "command").map((step) => <code key={step.id}>{interpolateWorkflowText(step.command, previewVariables)}</code>)}</span></div>
+          <div className="workflow-command-warning"><TerminalSquare size={14} /><span><strong>Shell commands included</strong><small>{machine && !machine.permission ? `Commands run in the selected project on ${machine.name}.` : `Commands run in the selected project${machine ? ` on ${machine.name}` : ""} with ${workflow.run.permission} permissions.`} Input values are substituted literally; step-result variables resolve while running.</small>{workflow.steps.filter((step) => step.type === "command").map((step) => <code key={step.id}>{interpolateWorkflowText(step.command, previewVariables)}</code>)}</span></div>
         )}
-        <div className="workflow-run-summary"><span>{workflow.steps.length} steps</span><span>{({ openai: "OpenAI", claude: "Claude", cursor: "Cursor", openrouter: "OpenRouter", lmstudio: "LM Studio" })[workflow.run.provider]} · {workflow.run.model}</span><span>{workflow.run.reasoningEffort}{workflow.run.ultra ? " + Ultra" : ""}</span><span>Access: {workflow.run.permission === "full" ? "Full" : workflow.run.permission === "read-only" ? "Read only" : "Ask"}</span></div>
+        <div className="workflow-run-summary"><span>{workflow.steps.length} steps</span><span>{({ openai: "OpenAI", claude: "Claude", cursor: "Cursor", openrouter: "OpenRouter", lmstudio: "LM Studio" })[workflow.run.provider]} · {workflow.run.model}</span>{(!machine || machine.effort) && <span>{workflow.run.reasoningEffort}{workflow.run.ultra ? " + Ultra" : ""}</span>}{(!machine || machine.permission) && <span>Access: {workflow.run.permission === "full" ? "Full" : workflow.run.permission === "read-only" ? "Read only" : "Ask"}</span>}{machine && <span>On {machine.name}</span>}</div>
         {!projects.length && <p>Add a project before running this recipe.</p>}
-        <div className="workflow-editor-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={!project} onClick={() => onRun(workflow.id, variables, projectId)}><Play size={12} /> Run now</button></div>
+        {notice}
+        <div className="workflow-editor-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={!project || submitting || runBlocked} aria-busy={submitting || undefined} onClick={() => { if (!submitting && !runBlocked) onRun(workflow.id, variables, projectId); }}><Play size={12} /> {submitting ? "Starting…" : "Run now"}</button></div>
       </div>
     </div>
   );

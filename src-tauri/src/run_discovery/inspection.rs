@@ -435,7 +435,7 @@ where
     let seed_root = root.clone();
     let seed_request = request.clone();
     let context =
-        tokio::task::spawn_blocking(move || initial_context(&seed_root, &seed_request.cancelled))
+        tokio::task::spawn_blocking(move || seed_request.inspect_remote(||initial_context(&seed_root, &seed_request.cancelled)))
             .await
             .map_err(|error| error.to_string())??;
     let prompt = match purpose {
@@ -461,11 +461,11 @@ where
         let inspection_root = root.clone();
         let inspection_request = request.clone();
         let evidence = tokio::task::spawn_blocking(move || {
-            inspect(
+            inspection_request.inspect_remote(||inspect(
                 &inspection_root,
                 &result.inspect,
                 &inspection_request.cancelled,
-            )
+            ))
         })
         .await
         .map_err(|error| error.to_string())??;

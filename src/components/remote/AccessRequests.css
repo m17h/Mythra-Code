@@ -1,0 +1,45 @@
+/* Requests read as cards: who, when, then the answers. Same in the picker and in Devices. */
+.access-card { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel-2, transparent); }
+.access-card.incoming { border-color: color-mix(in srgb, var(--accent, #4fd1e8) 45%, var(--line)); }
+.access-card.compact { margin: 4px 6px; padding: 8px 10px; }
+.access-title { display: block; color: var(--text); font-size: 13px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.access-detail { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.access-code { font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.access-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.access-actions .secondary-button, .access-actions .primary-button { display: inline-flex; align-items: center; gap: 6px; }
+.access-error { color: var(--danger, #ff8a80); font-size: 12px; }
+.access-nearby { border-radius: var(--r-sm); }
+.access-nearby .machine-row { width: 100%; }
+.access-nearby-head { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.access-nearby-head:hover { background: var(--lm-hover, rgba(255, 255, 255, 0.04)); }
+.access-nearby-hint { flex: none; color: var(--accent, #4fd1e8); font-size: 12px; }
+.access-nearby .machine-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.access-nearby-body { display: flex; flex-direction: column; gap: 4px; padding: 2px 12px 10px; }
+.access-nearby.compact .access-nearby-body { padding: 2px 10px 8px 12px; }
+.access-check { display: flex; align-items: flex-start; gap: 8px; color: var(--text); font-size: 13px; line-height: 1.4; cursor: pointer; }
+.access-check input { margin-top: 2px; }
+.access-badge { min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px; background: var(--accent, #4fd1e8); color: var(--accent-ink, #062026); font-size: 11px; font-weight: 700; line-height: 16px; text-align: center; }
+.machine-menu .access-switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; color: var(--text); font-size: 13px; }
+.machine-menu .access-switch > span { display: flex; flex-direction: column; gap: 2px; }
+.machine-menu .access-switch small { color: var(--muted); font-size: 11px; }
+.access-undo { display: flex; align-items: center; gap: 10px; margin: 6px 0 8px; padding: 7px 12px; border-radius: var(--r-sm); background: var(--lm-press, rgba(255, 255, 255, 0.06)); color: var(--text); font-size: 12px; }
+.access-undo.compact { margin: 4px 6px; }
+.access-link { padding: 0; border: 0; background: none; color: var(--accent, #4fd1e8); font: inherit; font-weight: 600; cursor: pointer; }
+.access-link:hover { text-decoration: underline; }
+.access-declined .access-actions { margin-top: 0; flex-wrap: nowrap; }
+
+/* Inside the narrow picker everything wraps instead of running off the edge. */
+.access-card, .access-nearby, .access-nearby-body, .access-undo, .machine-menu .access-switch { min-width: 0; }
+.access-title .spin { display: inline-block; margin-right: 6px; vertical-align: -2px; }
+.access-detail { overflow-wrap: anywhere; }
+.machine-menu .access-switch > span { min-width: 0; flex: 1; line-height: 1.35; }
+.machine-menu .access-switch .toggle-switch { flex: none; }
+.access-card.compact .primary-button, .access-card.compact .secondary-button,
+.access-nearby.compact .primary-button { min-height: 26px; padding: 3px 10px; font-size: 12px; }
+.access-nearby.open .access-nearby-hint { visibility: hidden; }
+/* The sidebar header keeps its title on one line; the menu that hangs off it must not. */
+.app-shell[data-theme][data-color-scheme] .machine-menu .access-card,
+.app-shell[data-theme][data-color-scheme] .machine-menu .access-nearby-body,
+.app-shell[data-theme][data-color-scheme] .machine-menu .access-undo,
+.app-shell[data-theme][data-color-scheme] .machine-menu .access-switch,
+.app-shell[data-theme][data-color-scheme] .machine-menu .machine-menu-note { white-space: normal; }

@@ -37,7 +37,7 @@ import type { StudioTab } from "../lib/studioTabs";
 import { commitPlan, fileCount, relativeAge, type CommitPlan } from "../lib/gitChanges";
 import { useProjectGitChanges } from "../hooks/useProjectGitChanges";
 import { useProjectGitHistory } from "../hooks/useProjectGitHistory";
-import { getCommitMessageContext, type CommitMessageSuggestion } from "../lib/commitMessages";
+import { getCommitMessageContext, type CommitMessageContext, type CommitMessageSuggestion } from "../lib/commitMessages";
 
 // Pull requests load their own code the first time the view opens.
 const ProjectPullRequestsView = lazy(() => import("./ProjectPullRequestsView"));
@@ -82,6 +82,8 @@ export interface GitPanelProps {
   githubOperationError?: string;
   gitOperationBusy?: boolean;
   readOnly: boolean;
+  /** Replaces the thread-permission wording where something else makes this read only. */
+  readOnlyReason?: string;
   defaultRepositoryName: string;
   selectedFolder?: string;
   /** The dock can retain per-checkout drafts when this tab closes. */
@@ -90,6 +92,8 @@ export interface GitPanelProps {
   commitSuggestion?: CommitMessageSuggestion;
   onRegenerateCommitMessage?: () => void;
   commitSuggestionBusy?: boolean;
+  /** Where the suggestion's freshness comes from when the folder is on another machine. */
+  readCommitContext?: () => Promise<Pick<CommitMessageContext, "stagedToken" | "changesToken">>;
   /**
    * True when the app supplies a pull request workflow. Only "Draft PR" and
    * "CI checks" retire then; "Review comments" stays, because nothing else in
@@ -124,7 +128,7 @@ export interface GitPanelProps {
   onOpenGitHubSettings: () => void;
 }
 
-const READ_ONLY_REASON = "Switch this thread from Read only to Ask or Full access before changing Git or contacting GitHub.";
+const THREAD_READ_ONLY_REASON = "Switch this thread from Read only to Ask or Full access before changing Git or contacting GitHub.";
 
 const VIEWS: Array<{ id: GitView; label: string; icon: typeof FileDiff }> = [
   { id: "changes", label: "Changes", icon: FileDiff },
@@ -188,6 +192,7 @@ function commitReadiness(input: {
 }
 
 function GitPanelInner(props: GitPanelProps) {
+  const READ_ONLY_REASON = props.readOnlyReason ?? THREAD_READ_ONLY_REASON;
   // These fields are local so typing a commit message does not re-render the
   // conversation, the sidebar, and every other Workspace surface.
   const [localDraft, setLocalDraft] = useState<GitPanelDraft>({ commitMessage: "", remoteInput: "", repositoryName: props.defaultRepositoryName, visibility: "private" });
@@ -414,12 +419,12 @@ function GitPanelInner(props: GitPanelProps) {
     const suggestion = props.commitSuggestion;
     let message = commitMessage;
     if (!draft.commitMessageEdited && draft.commitMessageSuggestionId) {
-      if (!suggestion || !props.selectedFolder) return;
+      if (!suggestion || !props.selectedFolder && !props.readCommitContext) return;
       preparingCommitRef.current = true;
       setPreparingCommit(true);
       setCommitDraftNotice("");
       try {
-        const context = await getCommitMessageContext(props.selectedFolder);
+        const context = await (props.readCommitContext?.() ?? getCommitMessageContext(props.selectedFolder!));
         const latest = commitContextRef.current;
         if (!mountedRef.current || latest.blocked || latest.folder !== captured.folder || latest.branch !== captured.branch
           || latest.head !== captured.head || latest.draft !== captured.draft) return;
@@ -708,7 +713,7 @@ function GitPanelInner(props: GitPanelProps) {
 
   return (
     <div className="git-workspace" ref={rootRef}>
-      {props.readOnly && <div className="history-warning"><ShieldCheck size={13} /> Read only: you can inspect changes, history and pull requests. Switch thread access to Ask or Full access before changing Git or contacting GitHub.</div>}
+      {props.readOnly && <div className="history-warning"><ShieldCheck size={13} /> {props.readOnlyReason ?? "Read only: you can inspect changes, history and pull requests. Switch thread access to Ask or Full access before changing Git or contacting GitHub."}</div>}
       {outsideRepositoryRoot && <div className="git-local-note bad" role="alert"><CircleAlert size={13} aria-hidden="true" /><span>{rootRequiredReason}</span></div>}
       {absent && (
         <div className="git-initialize-card">
@@ -1046,10 +1051,10 @@ function AutoPublishControl({ autoPublish, repository, disabled, disabledReason 
             onChange={(event) => {
               if (event.target.checked && !enabled) { setConfirming(true); return; }
               setConfirming(false);
-              autoPublish.onToggle(event.target.checked);
+              autoPublish.onToggle?.(event.target.checked);
             }}
-            disabled={disabled}
-            title={disabledReason}
+            disabled={disabled || !autoPublish.onToggle}
+            title={autoPublish.hostOnly ?? disabledReason}
           />
           <span>
             <strong>Automatically publish branches and commits</strong>
@@ -1071,7 +1076,7 @@ function AutoPublishControl({ autoPublish, repository, disabled, disabledReason 
       </small>
       {confirming && (
         <div className="git-auto-publish-confirm" role="group" aria-label="Confirm automatic publishing">
-          <button type="button" className="github-create-button" onClick={() => { setConfirming(false); autoPublish.onToggle(true); }} disabled={disabled}>
+          <button type="button" className="github-create-button" onClick={() => { setConfirming(false); autoPublish.onToggle?.(true); }} disabled={disabled}>
             <CloudUpload size={13} aria-hidden="true" /> Turn on and publish
           </button>
           <button type="button" className="github-secondary-button" onClick={() => setConfirming(false)}>Keep it off</button>
@@ -1081,10 +1086,11 @@ function AutoPublishControl({ autoPublish, repository, disabled, disabledReason 
         <div className="git-auto-publish-status" role="status" aria-live="polite">
           <span className={`git-auto-publish-orb ${status}`} aria-hidden="true" />
           <span>{autoPublish.message || "Watching this project for new commits."}</span>
-          {status === "waiting" && (
+          {status === "waiting" && autoPublish.onRetry && (
             <button type="button" className="thread-pr-inline-button" onClick={autoPublish.onRetry}>Retry</button>
           )}
-          {status === "paused" && <small>Resolve the issue above, then turn automatic publishing off and on to review the destination again.</small>}
+          {autoPublish.hostOnly && <small>{autoPublish.hostOnly}</small>}
+          {status === "paused" && !autoPublish.hostOnly && <small>Resolve the issue above, then turn automatic publishing off and on to review the destination again.</small>}
         </div>
       )}
     </section>

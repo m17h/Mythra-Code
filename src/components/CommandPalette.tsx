@@ -72,7 +72,8 @@ export function CommandPalette({ open, projects, threads, workflows, projectActi
     ...workflows.filter((workflow) => workflow.enabled).map((workflow) => ({
       id: `workflow-${workflow.id}`,
       label: `Run workflow: ${workflow.name}`,
-      detail: `${projects.find((project) => project.id === workflow.projectId)?.name ?? (workflow.projectId ? "Choose a project" : "Any project")} · ${workflow.steps.length} step${workflow.steps.length === 1 ? "" : "s"}`,
+      // A workflow on another device names that device; its steps aren't listed here.
+      detail: (workflow as WorkflowDefinition & { paletteDetail?: string }).paletteDetail ?? `${projects.find((project) => project.id === workflow.projectId)?.name ?? (workflow.projectId ? "Choose a project" : "Any project")} · ${workflow.steps.length} step${workflow.steps.length === 1 ? "" : "s"}`,
       group: "Workflows",
       icon: WorkflowIcon,
       run: () => onWorkflow(workflow),

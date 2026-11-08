@@ -1,4 +1,4 @@
-import { AsyncAgentQuestions } from "./AsyncAgentQuestions";
+import { AsyncAgentQuestions, LocalAsyncAgentQuestions } from "./AsyncAgentQuestions";
 import { Children, createContext, Fragment, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, CircleDot, Clipboard, Clock, CornerUpRight, FileCode2, FoldVertical, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
@@ -36,8 +36,10 @@ import { usedSkillsForRun } from "../lib/skillUsage";
 import { createStreamingTextPacer, type StreamingTextPacer } from "../lib/streamingTextPacer";
 import { createLineStreamingTextPacer } from "../lib/lineStreamingTextPacer";
 import { createCompletionReveal, type CompletionReveal } from "../lib/completionReveal";
-import { MessageImagePreview } from "./MessageImagePreview";
+import { MessageImagePreview, LocalMessageImagePreview } from "./MessageImagePreview";
 import { ParentRunTurnLabel } from "./ParentRunLine";
+import { TimelineEnvironmentContext, TimelineSubAgentControls, TimelineSubAgentClock, TimelineParentTurnLabel, useTimelineEnvironment, useTimelineTask, type TimelineEnvironment, type MessageFeedbackOpener } from "./TimelineEnvironment";
+import { getChildMailbox, subscribeChildMailbox } from "../lib/childAgentMailbox";
 import { isMythraNoticeMessage } from "../lib/userMessageEcho";
 import { inlinePathParts, type InlinePathParts } from "../lib/inlinePath";
 import "./InlinePath.css";
@@ -618,6 +620,8 @@ function useCopyFeedback(): [boolean, (text: string) => void] {
  */
 function MarkdownLink({ href, children, node }: { href?: string; children?: ReactNode; node?: Element }) {
   const skillNavigation = useContext(SkillNavigation);
+  const environment = useTimelineEnvironment();
+  const canOpen = environment.canOpenSkills;
   const path = node?.properties["data-skill-path"];
   const name = node?.properties["data-skill-name"];
   const disabled = node?.properties["data-skill-disabled"];
@@ -625,18 +629,23 @@ function MarkdownLink({ href, children, node }: { href?: string; children?: Reac
   if (typeof path === "string" && typeof name === "string") {
     if (missing) return <span className="message-skill-mention unavailable" title={`@${name} is unavailable in the selected skills folder`}>{children}</span>;
     return <a href="#skills" className="message-skill-mention"
-      title={`Open @${name} in Settings · Skills${disabled ? " (disabled)" : ""}`}
-      onClick={(event) => { event.preventDefault(); skillNavigation?.onOpenSkill?.(path); }}
+      title={`${environment.skillLinkTitle?.(name) ?? `Open @${name} in Settings · Skills`}${disabled ? " (disabled)" : ""}`}
+      onClick={(event) => { event.preventDefault(); if (canOpen) skillNavigation?.onOpenSkill?.(path); }}
     ><InsideMarkdownLink.Provider value>{children}</InsideMarkdownLink.Provider></a>;
   }
   const external = Boolean(href && /^https?:\/\//i.test(href));
+  // Content from another device can't open anything here, but it can be read.
+  if (!environment.openExternalUrl || (href && environment.canOpenLink?.(href) === false)) {
+    const label = typeof children === "string" ? children : Array.isArray(children) && children.length === 1 ? children[0] : null;
+    return <span className="message-inert-link">{children}{href && href !== label ? ` (${href})` : null}</span>;
+  }
   return (
     <a
       href={href}
       title={external ? href : undefined}
       onClick={(event) => {
         event.preventDefault();
-        if (external && href) void openUrl(href);
+        if (external && href) void environment.openExternalUrl?.(href);
       }}
     >
       <InsideMarkdownLink.Provider value>{children}</InsideMarkdownLink.Provider>
@@ -861,24 +870,27 @@ export function AssistantMessageMarkdown({ text, streaming, presentation, reveal
  * step; only the message lifecycle confirms that Claude read the steer.
  */
 function QueuedSteerStatus({ message }: { message: ChatMessage }) {
+  const environment = useTimelineEnvironment();
   const matchesMessage = (candidate: ChatMessage) => candidate.role === "user"
     && candidate.turnId === message.turnId && candidate.steerRuntimeId === message.steerRuntimeId
     && (candidate.id === message.id || candidate.clientMessageId === message.id
       || (Boolean(message.clientMessageId) && (candidate.id === message.clientMessageId || candidate.clientMessageId === message.clientMessageId)));
   // A history row must never acquire the selected conversation's current
   // turn merely because navigation or a new turn changed global selection.
-  const threadId = useTaskStore((state) => {
+  const threadId = useTimelineTask((state) => {
     const selected = state.activeThreadId;
     return selected && state.tasks[selected]?.messages.some(matchesMessage) ? selected : undefined;
   });
-  const running = useTaskStore((state) => Boolean(threadId && message.turnId
+  const running = useTimelineTask((state) => Boolean(threadId && message.turnId
     && state.tasks[threadId]?.status === "running" && state.tasks[threadId]?.activeTurnId === message.turnId));
-  const agentsWorking = useTaskStore((state) => Boolean(threadId && state.tasks[threadId]?.agents?.some((agent) =>
+  const agentsWorking = useTimelineTask((state) => Boolean(threadId && state.tasks[threadId]?.agents?.some((agent) =>
     agent.runtime === "claude" && agent.rootTurnId === message.turnId && isActiveAgentRecord(agent.status))));
   const deliveringRef = useRef(false);
   const [delivering, setDelivering] = useState(false);
   const [requested, setRequested] = useState(false);
   const [failure, setFailure] = useState("");
+  if (environment.QueuedSteer) return <environment.QueuedSteer message={message} />;
+  if (environment.queuedSteerLabel) return <div className="message-steer-status queued" role="status"><Clock size={11} aria-hidden="true" />{environment.queuedSteerLabel}</div>;
   if (!running) {
     return (
       <div className="message-steer-status unconfirmed" role="status" title="Claude has not confirmed reading this message in its original turn. Inspect the conversation before sending it again.">
@@ -888,8 +900,9 @@ function QueuedSteerStatus({ message }: { message: ChatMessage }) {
     );
   }
   const deliverNow = async () => {
-    if (!threadId || !message.turnId || !message.steerRuntimeId || deliveringRef.current || requested) return;
-    const state = useTaskStore.getState();
+    if (!environment.deliverSteerNow || !threadId || !message.turnId || !message.steerRuntimeId || deliveringRef.current || requested) return;
+    const state = environment.tasks?.getState();
+    if (!state) return;
     const task = state.tasks[threadId];
     if (state.activeThreadId !== threadId || task?.status !== "running" || task.activeTurnId !== message.turnId
       || !task.messages.some((candidate) => matchesMessage(candidate) && candidate.steerStatus === "queued")) return;
@@ -897,7 +910,7 @@ function QueuedSteerStatus({ message }: { message: ChatMessage }) {
     setDelivering(true);
     setFailure("");
     try {
-      await deliverClaudeSteerNow(threadId, message.turnId, message.steerRuntimeId);
+      await environment.deliverSteerNow?.(threadId, message.turnId, message.steerRuntimeId);
       setRequested(true);
     } catch (reason) {
       setFailure(reason instanceof Error ? reason.message : String(reason));
@@ -913,7 +926,7 @@ function QueuedSteerStatus({ message }: { message: ChatMessage }) {
       <Clock size={11} aria-hidden="true" />
       {delivering ? "Requesting delivery…" : requested ? "Delivery requested; waiting for Claude to read"
         : agentsWorking ? "Queued while Claude's sub-agents work" : "Waiting for Claude's next step"}
-      {message.steerRuntimeId && !requested && (
+      {environment.deliverSteerNow && message.steerRuntimeId && !requested && (
         <button type="button" className="message-steer-now" disabled={delivering} aria-busy={delivering}
           title="Interrupt Claude's current step so it can read this message. Sub-agents may continue in the background."
           onClick={() => void deliverNow()}>
@@ -925,15 +938,22 @@ function QueuedSteerStatus({ message }: { message: ChatMessage }) {
   );
 }
 
-export const MessageRow = memo(function MessageRow({ message, provider, onEdit, revealOnMount = false, searching = false }: {
+interface MessageRowProps {
   message: ChatMessage; provider: Provider; onEdit?: (text: string) => void; revealOnMount?: boolean; searching?: boolean;
-}) {
+}
+export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
+  const Feedback = useTimelineEnvironment().Feedback;
+  return Feedback ? <Feedback message={props.message}>{(openFeedback) => <MessageRowContent {...props} openFeedback={openFeedback} />}</Feedback>
+    : <MessageRowContent {...props} openFeedback={null} />;
+});
+const MessageRowContent = memo(function MessageRowContent({ message, provider, onEdit, revealOnMount = false, searching = false, openFeedback }: MessageRowProps & { openFeedback: MessageFeedbackOpener }) {
+  const environment = useTimelineEnvironment();
   const skillNavigation = useContext(SkillNavigation);
-  const dependencies = message.role === "user" && <SkillDependencyDetails report={message.skillDependencies} skills={skillNavigation?.skills} onOpenSkill={skillNavigation?.onOpenSkill} mode="history" />;
+  const dependencies = message.role === "user" && <SkillDependencyDetails report={message.skillDependencies} skills={skillNavigation?.skills} onOpenSkill={environment.canOpenSkills ? skillNavigation?.onOpenSkill : undefined} mode="history" />;
   const [copied, copy] = useCopyFeedback();
   // Copying the whole reply also ends its completion reveal.
   const [copiedOnce, setCopiedOnce] = useState(false);
-  const openFeedback = useFeedbackMessageSource(message);
+  const MessageExtras = environment.MessageExtras;
   const attachments = message.role === "user" ? message.attachments ?? [] : [];
   const actions = !message.streaming && (
     <div className="message-actions">
@@ -947,7 +967,7 @@ export const MessageRow = memo(function MessageRow({ message, provider, onEdit, 
         {copied ? <Check size={11} /> : <Clipboard size={11} />}
         {copied ? "Copied" : "Copy"}
       </button>
-      {message.role === "user" && onEdit && (
+      {message.role === "user" && environment.canEdit && onEdit && (
         <button onClick={() => onEdit(message.text)} title="Put this message back in the composer to edit and resend">
           <Pencil size={11} />
           Edit
@@ -1032,6 +1052,7 @@ export const MessageRow = memo(function MessageRow({ message, provider, onEdit, 
         {message.role === "assistant" && message.questions?.length ? <AsyncAgentQuestions message={message} /> : null}
         {steerStatus}
         {dependencies}
+        {MessageExtras && <MessageExtras message={message} />}
         {message.streaming && <span className="stream-caret" />}
       </div>
     </article>
@@ -1119,8 +1140,8 @@ export const ActivityRow = memo(function ActivityRow({ activity: source }: { act
 
 export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dealIndex }: { activity: Activity; dealIndex?: number }) {
   const metadata = activity.agent;
-  const controls = useContext(SubAgentControls);
-  const now = useContext(SubAgentClock);
+  const controls = useContext(TimelineSubAgentControls);
+  const now = useContext(TimelineSubAgentClock);
   const readouts = controls?.historyWorkers ?? controls?.workers ?? [];
   const represented = resolveSubAgentActivityWorkers(activity, readouts);
   const count = represented.reduce((total, entry) => total + entry.count, 0);
@@ -1129,7 +1150,7 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dea
   const worker = single?.worker;
   const historical = single?.historical ?? false;
   const unconfirmedAssignment = single?.unconfirmedAssignment ?? false;
-  const failure = useTaskStore((state) => childId ? state.tasks[childId]?.error : undefined);
+  const failure = useTimelineTask((state) => childId ? state.tasks[childId]?.error : undefined);
   const [action, setAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const active = !historical && !unconfirmedAssignment && worker ? isSubAgentWorkerActive(worker.status) : false;
@@ -1198,7 +1219,7 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dea
 });
 
 export const SubAgentRelayManifest = memo(function SubAgentRelayManifest({ activities }: { activities: Activity[] }) {
-  const controls = useContext(SubAgentControls);
+  const controls = useContext(TimelineSubAgentControls);
   const counts = summarizeSubAgentActivities(activities, controls?.historyWorkers ?? controls?.workers ?? []);
   return (
     <section className={`subagent-relay-manifest ${counts.starting + counts.working > 0 ? "live" : ""}`} aria-label={`Sub-agent wave: ${describeSubAgentActivity(counts)}`}>
@@ -1424,7 +1445,7 @@ const WorkStatusRow = memo(function WorkStatusRow({ entry, open, searchMatches, 
   searchMatches: number;
   onOpenActivity: (entry: WorkTimelineEntry, opener: HTMLElement | null) => void;
 }) {
-  const parentTurn = useContext(ParentRunTurnLabel);
+  const parentTurn = useContext(TimelineParentTurnLabel);
   const recorded = entry.state ?? "completed";
   const live = recorded === "running";
   // Presentation only: the turn's history and grouping keep its real outcome.
@@ -1511,6 +1532,7 @@ function TimelineEntryContent({
   provider: Provider;
   searchQuery?: string;
 }) {
+  const environment = useTimelineEnvironment();
   const hitClass = index === activeEntryIndex ? " search-hit" : "";
   const row = (className: string, content: ReactNode) => <div className={className}>{content}</div>;
   if (entry.kind === "message") {
@@ -1541,7 +1563,7 @@ function TimelineEntryContent({
   if (entry.kind === "approval") {
     return row(
       "timeline-entry timeline-entry-approval",
-      <InlineApprovalCard approval={entry.value} onRespond={(result) => onApprovalRespond?.(entry.value, result)} />,
+      environment.canApprove && onApprovalRespond ? <InlineApprovalCard approval={entry.value} onRespond={(result) => onApprovalRespond(entry.value, result)} /> : <div role="status">Continue on the host device to answer this request.</div>,
     );
   }
   return row("timeline-entry timeline-entry-disclosure", <ReasoningDisclosure detail="" inProgress label={entry.label} />);
@@ -2117,24 +2139,7 @@ function FlowTimeline({
   );
 }
 
-export function ChatTimeline({
-  messages,
-  activities,
-  running,
-  activeTurnId,
-  approval,
-  provider = "openai",
-  searchQuery,
-  searchActiveMatch,
-  onSearchMatches,
-  history,
-  onLoadEarlier,
-  onEditMessage,
-  onApprovalRespond,
-  skills = NO_SKILLS,
-  onOpenSkill,
-  submittedPromptId,
-}: {
+export interface ChatTimelineProps {
   messages: ChatMessage[];
   activities: Activity[];
   running: boolean;
@@ -2142,6 +2147,8 @@ export function ChatTimeline({
   activeTurnId?: string;
   /** Retained for callers; the live status line now names concrete activity. */
   thinkingLabel: string;
+  /** Read-only environments can report awaiting state without raw approval params. */
+  awaitingState?: "approval" | "input" | null;
   approval?: PendingApproval | null;
   provider?: Provider;
   searchQuery?: string;
@@ -2155,13 +2162,59 @@ export function ChatTimeline({
   onOpenSkill?: (path: string) => void;
   /** A foreground send, never a restored history row or queued delivery. */
   submittedPromptId?: string;
-}) {
+}
+
+function LocalMessageFeedback({ message, children }: { message: ChatMessage; children: (open: MessageFeedbackOpener) => ReactNode }) {
+  return <>{children(useFeedbackMessageSource(message))}</>;
+}
+const LOCAL_TIMELINE_ENVIRONMENT: TimelineEnvironment = {
+  tasks: useTaskStore,
+  openExternalUrl: openUrl,
+  mailbox: { get: getChildMailbox, subscribe: subscribeChildMailbox },
+  deliverSteerNow: deliverClaudeSteerNow,
+  Questions: LocalAsyncAgentQuestions,
+  Feedback: LocalMessageFeedback,
+  Image: LocalMessageImagePreview,
+  canEdit: true, canApprove: true, canOpenSkills: true,
+};
+
+/** Explicit local boundary, also available to standalone history/detail callers. */
+export function LocalTimelineEnvironment({ children }: { children: ReactNode }) {
+  const controls = useContext(SubAgentControls);
+  const clock = useContext(SubAgentClock);
+  const parentTurn = useContext(ParentRunTurnLabel);
+  return <TimelineEnvironmentContext.Provider value={LOCAL_TIMELINE_ENVIRONMENT}>
+    <TimelineSubAgentControls.Provider value={controls}><TimelineSubAgentClock.Provider value={clock}>
+      <TimelineParentTurnLabel.Provider value={parentTurn}>{children}</TimelineParentTurnLabel.Provider>
+    </TimelineSubAgentClock.Provider></TimelineSubAgentControls.Provider>
+  </TimelineEnvironmentContext.Provider>;
+}
+
+export function ChatTimeline(props: ChatTimelineProps) {
+  return <LocalTimelineEnvironment><TimelineContent {...props} /></LocalTimelineEnvironment>;
+}
+
+/** Remote callers must supply their environment; inherited local scopes are shadowed. */
+export function TimelinePresentation({ environment, ...props }: ChatTimelineProps & { environment: TimelineEnvironment }) {
+  return <TimelineEnvironmentContext.Provider value={environment}>
+    <TimelineSubAgentControls.Provider value={null}><TimelineSubAgentClock.Provider value={0}>
+      <TimelineParentTurnLabel.Provider value={null}><TimelineContent {...props} /></TimelineParentTurnLabel.Provider>
+    </TimelineSubAgentClock.Provider></TimelineSubAgentControls.Provider>
+  </TimelineEnvironmentContext.Provider>;
+}
+
+const TimelineContent = memo(function TimelineContent({
+  messages, activities, running, activeTurnId, approval, provider = "openai", searchQuery,
+  searchActiveMatch, onSearchMatches, history, onLoadEarlier, onEditMessage, onApprovalRespond,
+  skills = NO_SKILLS, onOpenSkill, submittedPromptId, awaitingState,
+}: ChatTimelineProps) {
+  const environment = useTimelineEnvironment();
   const skillNavigation = useMemo(() => ({ skills, onOpenSkill }), [skills, onOpenSkill]);
-  const storeAwaiting = useTaskStore((state) => {
+  const storeAwaiting = useTimelineTask((state) => {
     const threadId = state.activeThreadId;
     return threadId ? awaitingUser(state.tasks[threadId]?.approvals) : null;
   });
-  const awaiting = storeAwaiting ?? (approval ? "approval" : null);
+  const awaiting = storeAwaiting ?? awaitingState ?? (approval ? "approval" : null);
   // Outcome, final-answer, live-status and summary inference always read the
   // source transcript. Friendly row projection happens only when rendering
   // individual operations in the details/inline surfaces.
@@ -2198,7 +2251,7 @@ export function ChatTimeline({
   const activeEntryIndex = matchIndices.length
     ? matchIndices[((searchActiveMatch ?? 0) % matchIndices.length + matchIndices.length) % matchIndices.length]
     : -1;
-  const subAgentControls = useContext(SubAgentControls);
+  const subAgentControls = useContext(TimelineSubAgentControls);
   const liveSubAgentSummary = useMemo(() => {
     const spawns = activities.filter((activity) => activity.kind === "agent" && activity.agent?.action === "spawn");
     return spawns.length ? `Sub-agents: ${describeSubAgentActivity(summarizeSubAgentActivities(spawns, subAgentControls?.historyWorkers ?? subAgentControls?.workers ?? []))}` : "";
@@ -2395,7 +2448,7 @@ export function ChatTimeline({
     {selection && details && <>
       <span ref={anchorRef} hidden />
       <SkillNavigation.Provider value={modalSkillNavigation}>
-        <SubAgentControls.Provider value={modalSubAgentControls}>
+        <TimelineSubAgentControls.Provider value={modalSubAgentControls}>
           <WorkHistoryStreaming.Provider value={searchQuery?.trim() ? WORK_HISTORY_SEARCHING : WORK_HISTORY_STREAMING}>
             <ActivityDetailsModal
               run={details.run}
@@ -2405,13 +2458,13 @@ export function ChatTimeline({
               sourceRef={anchorRef}
               renderMessage={renderActivityMessage}
               renderSubAgents={renderActivitySubAgents}
-              onAnswerQuestion={answerQuestion}
+              onAnswerQuestion={environment.Questions && environment.canApprove ? answerQuestion : undefined}
               onClose={closeActivity}
             />
           </WorkHistoryStreaming.Provider>
-        </SubAgentControls.Provider>
+        </TimelineSubAgentControls.Provider>
       </SkillNavigation.Provider>
     </>}
     </SkillNavigation.Provider>
   );
-}
+});

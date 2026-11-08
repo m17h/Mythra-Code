@@ -84,14 +84,24 @@ function WorkingDuration({ startedAt, active }: { startedAt: number; active: boo
   return <span ref={hostRef} className="thread-card-duration">{label}</span>;
 }
 
-function ThreadInboxStatus({ threadId, id, active }: { threadId: string; id: string; active: boolean }) {
-  const status = useTaskStore((state) => state.statuses[threadId] ?? "idle");
-  const startedAt = useTaskStore((state) => state.tasks[threadId]?.workingStartedAt);
-  const approvalCount = useTaskStore((state) => state.tasks[threadId]?.approvals.length ?? 0);
-  const unread = useTaskStore((state) => Boolean(state.tasks[threadId]?.unread));
-  const parentPhase = useTaskStore((state) => state.parentRuns[threadId]?.phase);
-  const uncertainStart = useTaskStore((state) => state.statuses[threadId] === "starting"
+/** What another machine reports for one thread. A card given this never reads
+ * this machine's task store, where the same id could mean something else. */
+export interface ThreadCardPresence { status: string; startedAt?: number; approvals: number; unread: boolean }
+
+function ThreadInboxStatus({ threadId, id, active, presence }: { threadId: string; id: string; active: boolean; presence?: ThreadCardPresence }) {
+  const storedStatus = useTaskStore((state) => state.statuses[threadId] ?? "idle");
+  const storedStartedAt = useTaskStore((state) => state.tasks[threadId]?.workingStartedAt);
+  const storedApprovalCount = useTaskStore((state) => state.tasks[threadId]?.approvals.length ?? 0);
+  const storedUnread = useTaskStore((state) => Boolean(state.tasks[threadId]?.unread));
+  const storedParentPhase = useTaskStore((state) => state.parentRuns[threadId]?.phase);
+  const storedUncertainStart = useTaskStore((state) => state.statuses[threadId] === "starting"
     && state.parentRuns[threadId]?.phase === "paused" && state.parentRuns[threadId]?.pause?.reason === "start_uncertain");
+  const status = presence ? presence.status : storedStatus;
+  const startedAt = presence ? presence.startedAt : storedStartedAt;
+  const approvalCount = presence ? presence.approvals : storedApprovalCount;
+  const unread = presence ? presence.unread : storedUnread;
+  const parentPhase = presence ? undefined : storedParentPhase;
+  const uncertainStart = presence ? false : storedUncertainStart;
 
   if (approvalCount > 0) {
     return (
@@ -191,6 +201,8 @@ interface ThreadInboxCardProps {
   /** Whether the inbox surface is open and uncovered. Geometry/document
    * visibility additionally suspend the working-duration clock. */
   active?: boolean;
+  /** Set for a thread on another machine. */
+  presence?: ThreadCardPresence;
   onOpen: () => void;
 }
 
@@ -227,6 +239,7 @@ export const ThreadInboxCard = memo(function ThreadInboxCard({
   subAgentIds,
   nativeAgents,
   active = true,
+  presence,
   onOpen,
 }: ThreadInboxCardProps) {
   const statusId = useId();
@@ -253,7 +266,7 @@ export const ThreadInboxCard = memo(function ThreadInboxCard({
     state.statuses[threadId] === "starting" && state.parentRuns[threadId]?.phase === "paused"
       && state.parentRuns[threadId]?.pause?.reason === "start_uncertain",
   ));
-  const lifecycle = pendingStatus ? "live" : storedLifecycle;
+  const lifecycle = pendingStatus ? "live" : presence ? threadCardLifecycle(presence.status, presence.unread, presence.approvals) : storedLifecycle;
   // A labelled button hides its own contents from a screen reader, so the pill
   // below would otherwise be seen by sighted people only. It is named here too.
   const accessibleTitle = titlePending ? "Generating title" : title;
@@ -277,7 +290,7 @@ export const ThreadInboxCard = memo(function ThreadInboxCard({
         {pendingStatus ? <span id={statusId} className="thread-card-status working" role="status">
           <PixelWorkingMark className="thread-card-working-mark" live={pendingStatus === "starting"} />
           <span>{pendingStatus === "stopping" ? "Stopping" : "Starting"}</span>
-        </span> : <ThreadInboxStatus threadId={threadId} id={statusId} active={active} />}
+        </span> : <ThreadInboxStatus threadId={threadId} id={statusId} active={active} presence={presence} />}
       </span>
       <ThreadTitle className="thread-card-title" title={title} pending={titlePending} />
       {parentVia && (

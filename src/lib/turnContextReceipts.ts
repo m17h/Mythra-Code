@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { Provider } from "../types";
-import { loadStored, storeValue } from "./storage";
+import { loadStored, storeValue, subscribeRemoteStateAdoption } from "./storage";
 
 /**
  * Instruction context for the latest provider-confirmed turn: exact assembled
@@ -72,6 +72,10 @@ export function turnContextRecordingEnabled(): boolean {
 function currentReceipts(): Record<string, TurnContextReceipt> {
   return receipts ??= sanitize(loadStored<unknown>(KEY, {}));
 }
+subscribeRemoteStateAdoption(KEY, (adopted) => {
+  receipts = sanitize(adopted);
+  for (const listener of listeners) listener();
+});
 
 /** Capture before preparing a send, including before its thread ID exists. */
 export function turnContextRecordingGeneration(): number | null {

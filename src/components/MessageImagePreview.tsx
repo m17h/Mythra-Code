@@ -4,6 +4,7 @@ import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { ImageIcon, X } from "lucide-react";
 import { adoptPortalTheme, effectiveZoom } from "../lib/floatingLayer";
 import { useModalFocus } from "../hooks/useModalFocus";
+import { useTimelineEnvironment } from "./TimelineEnvironment";
 import "./MessageImagePreview.css";
 
 function imagePreviewUrl(path: string): string {
@@ -123,7 +124,13 @@ function ImagePreviewFallback({ name, sourceRef, onClose, children }: {
   </div>, document.body);
 }
 
-export function MessageImagePreview({ path, name }: { path: string; name: string }) {
+export function MessageImagePreview(props: { path: string; name: string }) {
+  const Image = useTimelineEnvironment().Image;
+  return Image ? <Image {...props} /> : <span className="message-image-preview unavailable">{props.name}</span>;
+}
+
+/** Native file access is available only through the explicit local adapter. */
+export function LocalMessageImagePreview({ path, name }: { path: string; name: string }) {
   const [failed, setFailed] = useState(false);
   const [source, setSource] = useState(() => needsNativePermission(path) ? "" : imagePreviewUrl(path));
   const [expanded, setExpanded] = useState(false);

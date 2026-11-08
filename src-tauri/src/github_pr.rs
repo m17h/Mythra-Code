@@ -439,7 +439,8 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
 {
-    tauri::async_runtime::spawn_blocking(operation)
+    let context=crate::remote::github::context();
+    tauri::async_runtime::spawn_blocking(move||{if let Some(context)=context{crate::remote::github::blocking(context,operation)}else{operation()}})
         .await
         .map_err(|error| format!("Local Git task failed: {error}"))?
 }
@@ -463,6 +464,9 @@ async fn command_output(
     limit: Duration,
     action: &str,
 ) -> Result<Vec<u8>, String> {
+    if crate::remote::github::context().is_some(){
+        let action=action.to_owned();return blocking_local(move||{let mut command=command.into_std();crate::remote::domain::output(&mut command).ok_or_else(||"Missing native GitHub authority.".to_owned())?.and_then(|output|if output.status.success(){Ok(output.stdout)}else{Err(format!("{action} failed. Refresh and try again."))})}).await;
+    }
     command.stdin(Stdio::null()).kill_on_drop(true);
     let output = tokio::time::timeout(limit, command.output())
         .await
@@ -610,7 +614,7 @@ async fn mutation_command_output(
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let deadline = Instant::now() + limit;
+        let deadline = Instant::now() + crate::remote::domain::limit_timeout(limit);
         let (mut child, scope) = spawn_scoped_git(&mut command)
             .map_err(|error| format!("Could not run {action}: {error}"))?;
         let stdout = drain_command_pipe(Box::new(child.stdout.take().unwrap()));
@@ -1746,4 +1750,27 @@ pub(super) async fn github_pr_ready(
     )
     .await?;
     view_with(&gh, &repository, number).await
+}
+
+/// Remote-only typed comments page. Fixed endpoint + bounded single page;
+/// review comments are a separate type, not an arbitrary GitHub API proxy.
+pub(crate) async fn remote_comments(app:AppHandle,repository:String,number:u64)->Result<Value,String>{
+    validate_repository(&repository)?;if number==0{return Err("Pull request number must be positive.".into());}
+    let gh=resolve_github_binary(&app).await?;let endpoint=format!("repos/{repository}/issues/{number}/comments?per_page=100");
+    let rows=gh_json(&gh,&["api","--method","GET","--",&endpoint]).await?;
+    let mut result=Vec::new();for row in rows.as_array().ok_or("GitHub returned invalid comments.")?{result.push(serde_json::json!({"id":row["id"],"body":row["body"],"url":row["html_url"],"createdAt":row["created_at"],"updatedAt":row["updated_at"],"author":row["user"]["login"]}));}Ok(serde_json::json!({"comments":result,"hasMore":rows.as_array().is_some_and(|a|a.len()==100)}))
+}
+pub(crate) async fn remote_comment(app:AppHandle,cwd:String,repository:String,number:u64,expected_head_oid:String,body:String)->Result<Value,String>{
+    validate_repository(&repository)?;validate_oid(&expected_head_oid)?;
+    if number==0||body.trim().is_empty()||body.len()>65536{return Err("Write a comment before sending it.".into());}
+    let expected=repository.clone();let selected=blocking_local(move||project_for_pr_list(&cwd,&expected)).await?;
+    let lease=mutation_lease(Some(&selected),&repository).await?;let gh=resolve_github_binary(&app).await?;
+    let current=view_with(&gh,&repository,number).await?;if current.head_oid!=expected_head_oid{return Err("The pull request changed. Refresh it before sending your comment.".into());}
+    let endpoint=format!("repos/{repository}/issues/{number}/comments");let mut command=github_command(&gh);command.args(["api","--method","POST","--input","-","--",&endpoint]);let bytes=serde_json::to_vec(&serde_json::json!({"body":body})).map_err(|_|"Could not prepare the comment.")?;
+    blocking_mutation(lease,move||{
+        let mut command=command.into_std();let output=crate::remote::domain::output_with_input(&mut command,Some(&bytes)).ok_or("Missing native remote authority.")??;
+        if !output.status.success(){return Err("GitHub could not confirm your comment. Refresh the comments before trying again.".into());}
+        let row:Value=serde_json::from_slice(&output.stdout).map_err(|_|"GitHub could not confirm your comment.")?;
+        Ok(serde_json::json!({"id":row["id"],"url":row["html_url"],"createdAt":row["created_at"]}))
+    }).await
 }

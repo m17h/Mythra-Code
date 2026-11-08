@@ -1,0 +1,81 @@
+.app-shell[data-theme][data-color-scheme] .devices-settings .set-copy > strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.app-shell[data-theme][data-color-scheme] .devices-name {
+  min-width: 0;
+  flex: 1 1 0;
+  overflow-wrap: anywhere;
+}
+.app-shell[data-theme][data-color-scheme] .devices-row .set-copy > small { overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .devices-row-actions > button { flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .devices-grant-row > button { flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .devices-grant-row > span { min-width: 0; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .devices-settings .key-input-row input { height: 28px; }
+.app-shell[data-theme][data-color-scheme] .devices-settings .set-control.key-input-row { flex: 0 1 220px; }
+.app-shell[data-theme][data-color-scheme] .devices-settings .set-control.key-input-row input { width: 100%; }
+.app-shell[data-theme][data-color-scheme] .devices-error { color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .devices-error > svg { color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .devices-row + .devices-row { border-top: 1px solid var(--line); }
+.app-shell[data-theme][data-color-scheme] .devices-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .devices-fingerprint { color: var(--muted-2); font-family: var(--font-mono); font-size: 11px; }
+.app-shell[data-theme][data-color-scheme] .devices-danger { color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .devices-help { margin: 0 14px 12px; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .devices-note { margin: 4px 0 0; color: var(--muted-2); font-size: 12px; line-height: 1.45; }
+.app-shell[data-theme][data-color-scheme] .devices-grant {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line);
+}
+.app-shell[data-theme][data-color-scheme] .devices-grant-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.app-shell[data-theme][data-color-scheme] .devices-invitation,
+.app-shell[data-theme][data-color-scheme] .devices-offer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.app-shell[data-theme][data-color-scheme] .devices-invitation input { min-width: 0; flex: 1; font-family: var(--font-mono); }
+.app-shell[data-theme][data-color-scheme] .devices-offer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text);
+  font-size: var(--fs-ui);
+}
+.app-shell[data-theme][data-color-scheme] .devices-offer-row > span { min-width: 0; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .devices-offer-row > button { flex: 0 0 auto; }
+
+.settings-machine-label { display: block; color: var(--muted); font-size: var(--fs-meta); }
+.app-shell[data-theme][data-color-scheme] .devices-grant-projects { display: flex; flex-direction: column; gap: 4px; max-height: 180px; margin: 0 0 8px; padding: 6px 8px; overflow-y: auto; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .devices-grant-projects label { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .devices-steps { margin: 0 0 8px; padding-left: 20px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+
+/* Local Network denial: the note and its two actions stay together, and wrap if they must. */
+.local-network-note { flex-wrap: wrap; align-items: center; }
+.local-network-note > span:first-of-type { flex: 1 1 60%; min-width: 0; }
+.local-network-note .secondary-button { display: inline-flex; align-items: center; gap: 6px; }
+.local-network-failed { flex-basis: 100%; color: var(--muted); }
+
+
+/* Less-used settings stay folded away under More. */
+.devices-more > summary { padding: 9px 14px; color: var(--muted); font-size: 12px; cursor: pointer; list-style: none; }
+.devices-more > summary::before { content: "›"; display: inline-block; margin-right: 6px; transition: transform var(--lm-d-1, 120ms); }
+.devices-more[open] > summary::before { transform: rotate(90deg); }
+.devices-more > summary:hover { color: var(--text); }
+.access-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.devices-settings .access-nearby + .access-nearby, .devices-settings .access-nearby + .set-row { border-top: 1px solid var(--line); }

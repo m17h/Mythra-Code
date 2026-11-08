@@ -37,7 +37,8 @@ export async function configureTrayStatus(value: boolean): Promise<void> {
   await invoke("tray_configure", { enabled: value });
 }
 
-export async function updateTrayStatus(working: number, approvals: number): Promise<void> {
+/** `machine` names the other device on screen, if there is one. */
+export async function updateTrayStatus(working: number, approvals: number, machine: string | null = null): Promise<void> {
   if (!isTauri()) return;
-  await invoke("tray_status", { working, approvals });
+  await invoke("tray_status", { working, approvals, machine });
 }

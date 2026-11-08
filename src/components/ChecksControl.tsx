@@ -64,7 +64,7 @@ type DiscoveryCard =
  */
 export function ChecksControl({
   command, running, runningCommand, startedAt, result, stagedResultId, disabledReason,
-  discovery, discoveryCatalogs, onDiscoveryAccounts,
+  discovery, discoveryCatalogs, onDiscoveryAccounts, discoveryModelNote,
   onRun, onStop, onSave, onDiscovered, onAddFeedback,
 }: {
   command?: string;
@@ -82,6 +82,8 @@ export function ChecksControl({
   discovery?: CommandDiscoveryState;
   discoveryCatalogs?: RunDiscoveryCatalogs;
   onDiscoveryAccounts?: () => void;
+  /** The search uses a model saved elsewhere, so this replaces the local model choice. */
+  discoveryModelNote?: string;
   onRun: () => void;
   onStop: () => void;
   /** Saves the project's check command; an empty string clears it. */
@@ -174,7 +176,7 @@ export function ChecksControl({
   const findChecks = () => {
     if (!discovery || discovery.pending) return;
     // A missing or unavailable model is explained next to its settings.
-    if (prefs.blockedReason) { openEditor(triggerRef.current); return; }
+    if (prefs.blockedReason && !discoveryModelNote) { openEditor(triggerRef.current); return; }
     setDismissedError("");
     const saveFound = onDiscovered ?? onSave;
     void discovery.discover({ ...prefs.preferences, effort: prefs.effort }, (found) => {
@@ -186,14 +188,15 @@ export function ChecksControl({
   // Saving a command never needs a thread; only running it can be blocked.
   const blocked = Boolean(disabledReason) && !running && Boolean(saved);
   const finding = Boolean(discovery?.pending);
+  const modelSummary = discoveryModelNote ?? prefs.summary;
   const state = running ? "running" : saved ? "ready" : finding ? "finding" : discovery ? "discover" : "unset";
   const label = running ? "Stop checks" : saved ? "Run checks" : finding ? "Finding checks…" : discovery ? "Find checks" : "Set up checks";
   const activeCommand = runningCommand || saved;
   const title = running
     ? `Stop ${activeCommand}`
     : saved ? disabledReason || `Run ${saved}`
-      : finding ? `Finding this project’s check command with ${prefs.summary}`
-        : discovery ? `Find and save this project’s check command with ${prefs.summary}. Nothing runs until you press Run checks.`
+      : finding ? `Finding this project’s check command with ${modelSummary}`
+        : discovery ? `Find and save this project’s check command with ${modelSummary}. Nothing runs until you press Run checks.`
           : "Save a check command for this project, like npm test";
 
   const heading = shown ? resultHeading(shown) : null;
@@ -207,7 +210,7 @@ export function ChecksControl({
   if (discovery?.pending && dismissedError) setDismissedError("");
   const visibleError = discovery?.error && discovery.error !== dismissedError ? discovery.error : "";
   const currentCard: DiscoveryCard | null = !discovery ? null
-    : discovery.pending ? { kind: "finding", summary: prefs.summary }
+    : discovery.pending ? { kind: "finding", summary: modelSummary }
       : visibleError ? { kind: "error", error: visibleError }
         : suggestion && !suggestion.command.trim() ? { kind: "none", explanation: suggestion.explanation }
           : suggestion && !running && !result ? { kind: "found", command: suggestion.command.trim(), explanation: suggestion.explanation, warning: suggestion.warning }
@@ -260,6 +263,7 @@ export function ChecksControl({
             catalogs={discoveryCatalogs}
             onAccounts={onDiscoveryAccounts}
             onFound={({ command: found }) => (onDiscovered ?? onSave)(found.trim())}
+            savedModelNote={discoveryModelNote}
           />
         )}
         <div className="project-prompt-actions">

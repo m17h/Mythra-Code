@@ -54,6 +54,9 @@ export function draftFor(key: string): string {
   return drafts()[key] ?? "";
 }
 
+/** Puts text in a draft that isn't on screen yet, as a handoff does. */
+export function seedComposerDraft(key: string, text: string): void { persistDraft(key, text); }
+
 function persistDraft(key: string, text: string, keepEmpty = false): void {
   const all = drafts();
   if (text || keepEmpty) all[key] = text;
@@ -147,13 +150,21 @@ export function resizeComposerTextarea(
   syncComposerHighlight(textarea, highlight);
 }
 
-function QueuedTurnEditor({ entry, index, onFinish, label = "queued message" }: {
+/** Ids from another machine can match local ones, so its edits carry a scope. */
+const queuedEditDraftKey = (id: string, scope?: string) => `${QUEUED_EDIT_PREFIX}${scope ? `${scope}:` : ""}${id}`;
+export function discardQueuedEditDraft(id: string, scope: string): void {
+  discardDraft(queuedEditDraftKey(id, scope));
+  flushDrafts();
+}
+
+function QueuedTurnEditor({ entry, index, onFinish, label = "queued message", draftScope }: {
   entry: QueuedTurn;
   index: number;
   onFinish: (id: string, text?: string) => boolean;
   label?: string;
+  draftScope?: string;
 }) {
-  const draftKey = `${QUEUED_EDIT_PREFIX}${entry.id}`;
+  const draftKey = queuedEditDraftKey(entry.id, draftScope);
   const [text, setText] = useState(() => drafts()[draftKey] ?? entry.text);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { inputRef.current?.focus(); }, []);
@@ -210,6 +221,17 @@ function QueuedTurnEditor({ entry, index, onFinish, label = "queued message" }: 
   );
 }
 
+/**
+ * How a send ended. A plain boolean is enough on this machine. On another one a
+ * lost acknowledgement is neither success nor failure, so `awaiting confirmation`
+ * must not hand the text back as a draft that could be sent a second time.
+ */
+export type ComposerDelivery = boolean
+  | { status: "accepted" }
+  | { status: "rejected"; message: string }
+  | { status: "awaiting confirmation" };
+const draftStaysSent = (delivery: ComposerDelivery) => typeof delivery === "boolean" ? delivery : delivery.status !== "rejected";
+
 export const Composer = forwardRef<ComposerHandle, {
   threadKey: string;
   /** Effective live-previewed font; changes must remeasure wrapped drafts. */
@@ -249,8 +271,8 @@ export const Composer = forwardRef<ComposerHandle, {
   onWorkflow?: (id: string, prompt: string) => Promise<boolean>;
   onRemoveAttachment: (path: string) => void;
   onPasteImages: (items: DataTransferItemList) => void;
-  onSend: (text: string) => Promise<boolean>;
-  onSteer: (text: string) => Promise<boolean>;
+  onSend: (text: string) => Promise<ComposerDelivery>;
+  onSteer: (text: string) => Promise<ComposerDelivery>;
   onSteerQueued?: (queuedTurnId: string) => void;
   onRetryQueued?: (queuedTurnId: string) => void;
   onRemoveQueued?: (queuedTurnId: string) => void;
@@ -262,6 +284,8 @@ export const Composer = forwardRef<ComposerHandle, {
   scheduleContextLabel?: string;
   /** Actions for timed prompts in this thread's own queue (`queuedTurns`). */
   timedActions?: TimedPromptActions;
+  /** Keeps edit drafts of another machine's queue apart from this device's. */
+  editDraftScope?: string;
   /**
    * Scheduled first prompts of new conversations in this workspace. Shown in
    * every composer of the workspace — including while an existing thread is
@@ -645,7 +669,7 @@ export const Composer = forwardRef<ComposerHandle, {
     closeMentions();
     closeWorkflows();
     setDraft("");
-    let delivered = false;
+    let delivered: ComposerDelivery = false;
     try {
       delivered = await (mode === "steer" ? props.onSteer(text) : props.onSend(text));
     } catch {
@@ -654,7 +678,7 @@ export const Composer = forwardRef<ComposerHandle, {
     } finally {
       submittingRef.current.delete(sentFromKey);
       setSubmittingKeys(new Set(submittingRef.current));
-      if (!delivered && text) {
+      if (!draftStaysSent(delivered) && text) {
         // Persist synchronously, just like typing and transcript admission.
         // A deferred React updater can otherwise overwrite a transcript that
         // arrived after this callback but before React processes the queue.
@@ -714,7 +738,7 @@ export const Composer = forwardRef<ComposerHandle, {
               if (queuedTurn.editing && props.onFinishEditQueued) return (
                 <div className="queued-turn editing" key={queuedTurn.id} role="listitem">
                   <span className="queued-turn-index">{index + 1}</span>
-                  <QueuedTurnEditor entry={queuedTurn} index={index} onFinish={props.onFinishEditQueued} />
+                  <QueuedTurnEditor entry={queuedTurn} index={index} onFinish={props.onFinishEditQueued} draftScope={props.editDraftScope} />
                 </div>
               );
               // Nothing is running once a turn is stopped or fails, so a still
@@ -767,7 +791,7 @@ export const Composer = forwardRef<ComposerHandle, {
           entries={scheduledTurns}
           scope="thread"
           actions={props.timedActions}
-          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} />}
+          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} draftScope={props.editDraftScope} />}
         />
       )}
       {props.newThreadActions && (
@@ -776,7 +800,7 @@ export const Composer = forwardRef<ComposerHandle, {
           scope="new-thread"
           actions={props.newThreadActions}
           entryDetail={props.newThreadPromptDetail}
-          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} />}
+          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} draftScope={props.editDraftScope} />}
         />
       )}
       {props.continuationNotice}
@@ -786,7 +810,7 @@ export const Composer = forwardRef<ComposerHandle, {
           {props.attachments.map((item) => (
             <span key={item.path} className={item.kind}>
               <Paperclip size={10} />
-              <em title={item.path}>{item.name}</em>
+              <em title={item.displayPath ?? item.path}>{item.name}</em>
               <button onClick={() => props.onRemoveAttachment(item.path)} title={`Remove ${item.name}`} aria-label={`Remove attachment ${item.name}`}><X size={11} /></button>
             </span>
           ))}

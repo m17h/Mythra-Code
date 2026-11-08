@@ -15,6 +15,12 @@ export type ReviewDiffSource = "runtime" | "repository";
 export interface ReviewDiff {
   /** Unified diff text; empty when nothing has been loaded yet. */
   text: string;
+  /**
+   * Only what this refresh actually produced as a diff, never diagnostics. `text`
+   * can hold Git's error output for the local view; another device reads this
+   * field instead. Absent after a failed refresh, never left over from an old one.
+   */
+  successfulText?: string;
   /** Which producer this text came from, so the UI can describe it. */
   source: ReviewDiffSource;
   /** What the diff is taken against, e.g. `HEAD` or the tracked remote. */

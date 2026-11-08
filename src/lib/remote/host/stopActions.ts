@@ -1,0 +1,44 @@
+import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
+import { captureRootCutoff, stopWithChildren, waitForRootCutoff } from "../../stopWithChildren";
+import { useTaskStore } from "../../taskStore";
+import { HostReadError } from "./scope";
+import { markRemoteEngineRetiring, remoteEngineStopped } from "./engineOwners";
+import { sameStop, sameStopLifetime } from "./targetHandles";
+import type { RemoteStopSnapshot, RemoteTurnRunner } from "./workTypes";
+
+/** Closures supplied by App must address the supplied root, never selection. */
+export interface StopActionSources {
+  bumpRootCutoffIntent(threadId: string): void;
+  captureChildStopFrontier(threadId: string): unknown;
+  cancelChildAgentsFor(threadId: string, frontier: unknown): Promise<void>;
+  /** Retire only this workflow run, and use stopRoot for its provider cutoff. */
+  stopWorkflow(workflowId: string, runId: string, stopRoot: () => Promise<void>): Promise<boolean | void>;
+}
+export async function stopThreadAndChildren(context: TurnRunnerContext, expected: RemoteStopSnapshot,
+  runner: RemoteTurnRunner, sources: StopActionSources, assertCurrent: () => void): Promise<void> {
+  // Native handle is already claimed; recheck renderer ownership synchronously
+  // before ANY parent retirement, workflow cutoff or child-frontier capture.
+  assertCurrent();
+  if (context.activeThread?.id !== expected.threadId || !(expected.ownerHandle ? sameStopLifetime(expected, runner.getThreadStopTarget(expected.threadId)) : sameStop(expected, runner.getThreadStopTarget(expected.threadId)))) {
+    throw new HostReadError("stale_target", "The observed run has changed.");
+  }
+  const id = expected.threadId;
+  const store = useTaskStore.getState();
+  if (expected.ownerHandle) markRemoteEngineRetiring(expected.ownerHandle);
+  store.stopParentRun(id, "stop");
+  sources.bumpRootCutoffIntent(id);
+  const frontier = sources.captureChildStopFrontier(id);
+  const cutoff = captureRootCutoff(id);
+  const failures = await stopWithChildren(
+    async () => {
+      if (expected.workflowId && expected.workflowRunId) {
+        const stopped = await sources.stopWorkflow(expected.workflowId, expected.workflowRunId, () => runner.stopThreadTurn({ ...context, running: true }, expected));
+        if (stopped === false) throw new HostReadError("uncertain", "Mythra Code couldn't confirm this workflow stopped. Check the conversation.");
+      } else await runner.stopThreadTurn({ ...context, running: true }, expected);
+    },
+    () => sources.cancelChildAgentsFor(id, frontier),
+    () => waitForRootCutoff(id, undefined, cutoff),
+  );
+  if (!failures.length && expected.ownerHandle) remoteEngineStopped(expected.ownerHandle);
+  if (failures.length) throw new HostReadError("uncertain", "Stop was requested, but the other device couldn't confirm everything stopped. Check the conversation.");
+}

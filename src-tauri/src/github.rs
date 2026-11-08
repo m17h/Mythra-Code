@@ -673,6 +673,14 @@ fn validate_clone_destination(destination_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The normalized address and the folder a clone of it would create.
+pub(crate) fn clone_target(input: &str) -> Option<(String, String)> {
+    let url = normalize_github_remote_url(input)?;
+    let repository = parse_github_repository(&url)?;
+    let name = repository.rsplit('/').next()?.to_owned();
+    Some((url, name))
+}
+
 #[tauri::command]
 pub(super) async fn github_clone_repository(
     app: AppHandle,

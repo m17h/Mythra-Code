@@ -1,0 +1,184 @@
+/* While a remote machine is on screen the local tree stays mounted and laid
+   out, so its scrollers, listeners and measurements carry on undisturbed. */
+.local-machine-surface { display: contents; }
+.local-machine-surface[data-covered] { visibility: hidden; }
+/* The lists stay direct children of the split as far as layout is concerned. */
+.sidebar-machine-lists { display: contents; }
+.sidebar-machine-lists[hidden] { display: none; }
+
+.app-shell[data-machine-phase] .studio-dock { transition: none; }
+
+/* Switching machines: old content leaves upward, new content arrives downward.
+   Opacity and transform only, and nothing here waits on the network. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes machine-leave { to { opacity: 0; transform: translateY(-8px); } }
+  @keyframes machine-enter { from { opacity: 0; transform: translateY(-8px); } }
+  .app-shell[data-machine-phase="leaving"] :is(.sidebar-sections, .local-machine-surface:not([data-covered]) > :not(.topbar), .remote-stage > :not(.topbar), .studio-dock.open) {
+    animation: machine-leave var(--lm-d-2) var(--lm-ease-in) both;
+  }
+  .app-shell[data-machine-phase="entering"] :is(.sidebar-sections, .local-machine-surface:not([data-covered]) > :not(.topbar), .remote-stage > :not(.topbar), .studio-dock.open) {
+    animation: machine-enter var(--lm-d-3) var(--lm-ease-out) both;
+  }
+}
+
+/* One row with the title: the menu hangs off the header, so it fits the sidebar
+   at any width and nothing below it moves. */
+.app-shell[data-theme][data-color-scheme] .sidebar-brand { position: relative; z-index: 3; }
+.app-shell[data-theme][data-color-scheme] .machine-switcher {
+  min-width: 0;
+  flex: 0 1 auto;
+  display: flex;
+  margin: 0 -4px 0 -3px;
+}
+.app-shell[data-theme][data-color-scheme] .machine-switcher-trigger {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 2px 0 4px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .machine-switcher-trigger.quiet { padding: 0 3px; opacity: 0; }
+.app-shell[data-theme][data-color-scheme] .sidebar-brand:hover .machine-switcher-trigger.quiet,
+.app-shell[data-theme][data-color-scheme] .machine-switcher-trigger.quiet:focus-visible,
+.app-shell[data-theme][data-color-scheme] .machine-switcher-trigger.quiet[aria-expanded="true"] { opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .machine-switcher-trigger:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .machine-switcher-trigger[aria-expanded="true"] { color: var(--text); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .machine-switcher-trigger > span:not(.machine-dot) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-shell[data-theme][data-color-scheme] .machine-switcher-trigger > svg { flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .machine-switcher-trigger > .machine-dot { width: 7px; height: 7px; margin-right: 2px; }
+
+.app-shell[data-theme][data-color-scheme] .machine-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--muted-2);
+}
+.app-shell[data-theme][data-color-scheme] .machine-dot.connected { background: var(--green); }
+.app-shell[data-theme][data-color-scheme] .machine-dot.connecting { background: var(--info); }
+.app-shell[data-theme][data-color-scheme] .machine-dot.stale,
+.app-shell[data-theme][data-color-scheme] .machine-dot.unreachable,
+.app-shell[data-theme][data-color-scheme] .machine-dot.incompatible,
+.app-shell[data-theme][data-color-scheme] .machine-dot.accessRemoved { background: var(--orange); }
+
+.app-shell[data-theme][data-color-scheme] .machine-menu {
+  position: absolute;
+  top: calc(100% - 6px);
+  right: 8px;
+  left: 8px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: min(60vh, 420px);
+  padding: 5px;
+  overflow-y: auto;
+  border-radius: var(--r-xl);
+  background: var(--menu-surface);
+  box-shadow: var(--lm-pop-shadow);
+}
+.app-shell[data-theme][data-color-scheme] .machine-menu-label {
+  margin: 8px 8px 3px;
+  color: var(--muted-2);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .machine-menu-note {
+  margin: 6px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.app-shell[data-theme][data-color-scheme] .machine-menu-note.error { color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .machine-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: transparent;
+  font-size: var(--fs-ui);
+  text-align: left;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .machine-row:hover:not(:disabled) { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .machine-row:disabled { opacity: .6; cursor: default; }
+.app-shell[data-theme][data-color-scheme] .machine-row.subtle { margin-top: 4px; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .machine-row > svg { flex: 0 0 auto; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .machine-row > svg.machine-row-check { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .machine-row-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-shell[data-theme][data-color-scheme] .machine-row > small {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+  font-size: var(--fs-meta);
+}
+
+
+.app-shell[data-theme][data-color-scheme] .pairing-sheet {
+  max-height: calc(100vh / var(--ui-scale, 1) - 60px);
+  max-height: calc(100dvh / var(--ui-scale, 1) - 60px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.app-shell[data-theme][data-color-scheme] .pairing-sheet .confirm-dialog-actions { flex-wrap: wrap; }
+.app-shell[data-theme][data-color-scheme] .pairing-sheet .pairing-code {
+  margin: 10px 0;
+  color: var(--text);
+  font-size: var(--fs-display);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  letter-spacing: var(--track-display);
+  text-align: center;
+}
+.app-shell[data-theme][data-color-scheme] .pairing-grant {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .pairing-grant > input { flex: 0 0 auto; margin: 2px 0 0; accent-color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .pairing-sheet .pairing-note { margin: 8px 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.app-shell[data-theme][data-color-scheme] .pairing-note > strong,
+.app-shell[data-theme][data-color-scheme] .pairing-grant strong { color: var(--text); font-weight: 600; }
+
+/* Above every modal backdrop, so a local dialog over a remote view says whose it is. */
+.machine-dialog-label { position: fixed; z-index: 110; top: 18px; left: 50%; transform: translateX(-50%); margin: 0; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text); background: var(--panel-2); font-size: var(--fs-meta); box-shadow: var(--shadow); }
+
+.remote-notices { position: fixed; top: 60px; right: 16px; z-index: 1000; display: grid; gap: 8px; width: min(340px, calc(100vw - 32px)); }
+.remote-notice { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--border, rgba(127, 127, 127, 0.25)); border-radius: 10px; background: var(--surface, var(--bg, #1c1d21)); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28); }
+.remote-notice > div { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.remote-notice strong { font-size: 13px; font-weight: 600; }
+.remote-notice small { overflow: hidden; color: var(--muted, inherit); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.remote-notice-open { flex: none; padding: 4px 10px; border: 1px solid var(--border, rgba(127, 127, 127, 0.25)); border-radius: 7px; background: transparent; color: inherit; font-size: 12px; cursor: pointer; }
+
+.remote-previews { position: relative; }
+.remote-previews-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; display: grid; gap: 6px; width: 240px; padding: 10px; border: 1px solid var(--border, rgba(127, 127, 127, 0.25)); border-radius: 10px; background: var(--surface, var(--bg, #1c1d21)); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28); }
+.remote-preview-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+.remote-preview-row button { padding: 3px 9px; border: 1px solid var(--border, rgba(127, 127, 127, 0.25)); border-radius: 7px; background: transparent; color: inherit; font-size: 12px; cursor: pointer; }
+.remote-previews-menu small { color: var(--muted, inherit); font-size: 12px; }

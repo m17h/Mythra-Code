@@ -20,14 +20,14 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, RuntimeRestartBusyError, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeDefaultModel, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging, providerAuthGeneration } from "./lib/providerAuth";
 import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
-import { loadStored, readStoredRaw, storeValue } from "./lib/storage";
+import { loadStored, readStoredRaw, storeValue, subscribeRemoteStateAdoption } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { modelCatalogRecentlyRefreshed, shareModelRefresh, type ModelRefreshState } from "./lib/modelCatalogRefresh";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
@@ -41,6 +41,14 @@ import { AnimatedMythraLogo } from "./components/AnimatedMythraLogo";
 import { MythraMark } from "./components/MythraMark";
 import { confirmDialog, useConfirmStore } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
+import { MachineSwitcher } from "./components/remote/MachineSwitcher";
+import { useAccessNotifications } from "./components/remote/AccessRequests";
+import { startProjectPointerDrag } from "./lib/projectPointerDrag";
+import { ConversationSearchBar } from "./components/ConversationSearchBar";
+import { ChatsRow, ThreadRenameInput, ThreadSearch, ThreadsSection, WorkspaceRow, WorkspacesSection } from "./components/SidebarLists";
+import { localMachineLabel, useRemoteDevices } from "./lib/remote/devices";
+import { PermissionPicker, permissionLabel } from "./components/PermissionPicker";
+import { isRemoteMachineActive, LOCAL_MACHINE, machineActions, machineSwitchGeneration, useActiveMachine } from "./lib/remote/activeMachine";
 import { SpellingMenu } from "./components/SpellingMenu";
 import { useSpellingMenu } from "./lib/spelling";
 import { MaxReasoningWarningContext } from "./hooks/useMaxReasoningWarning";
@@ -66,7 +74,6 @@ import { isVoiceInputLocked, useVoiceInputLock, voiceInputLockGeneration } from 
 import { FeedbackProvider } from "./components/FeedbackProvider";
 import { FeedbackTray } from "./components/FeedbackTray";
 import { SubAgentControlsProvider } from "./components/SubAgentControls";
-import { TransitionInput } from "./components/TransitionInput";
 import { usePerformanceOverlayEnabled } from "./lib/performanceOverlay";
 import { configureTrayStatus, updateTrayStatus, useTrayStatusEnabled } from "./lib/trayStatus";
 import { chatFontCss, useCustomFontFaces, useCustomFonts } from "./lib/customFonts";
@@ -76,6 +83,14 @@ import type { ChildAgentModelCatalogs } from "./components/subAgentModelOptions"
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
+import type { HostContextSources, HostParityActions, HostRowActions, StopActionSources, ThreadLifecycleSources } from "./lib/remote/host";
+import { EXECUTION_PREFERENCES_KEY, getHostThreadPreferences, sharedThreadPreferences, withoutHostPreference } from "./lib/remote/host/executionPreferences";
+import { appendHostCommandOutput, hostCommandBusy } from "./lib/remote/host/commandActions";
+import { HostReadError } from "./lib/remote/host/scope";
+import type { RemoteWorkflowEngine } from "./lib/remote/host/workflowExecution";
+import type { WireExecutionSettings } from "./lib/remote/wire";
+import { hostProviderCatalog, hostWorkspaceGit, refreshHostWorkspaceGit, selectedHostWorkspaceGit, synthesizedArchivedThread } from "./lib/remote/hostSources";
+import { createHostParity } from "./lib/remote/hostParity";
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
 import type { GitRoute, ProjectGitInspection, ProjectPullRequestAccess } from "./lib/projectGit";
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
@@ -94,7 +109,7 @@ import {
   markPullRequestReady,
   mergePullRequest,
 } from "./lib/pullRequests";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, SettingsSection, SubagentEngine, Thread, ThreadHandoff, ThreadReasoning, ThreadSubagentSettings, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, ChildAgentTarget, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, SettingsSection, SubagentEngine, Thread, ThreadHandoff, ThreadReasoning, ThreadSubagentSettings, ThemeName, WorkspaceMode } from "./types";
 import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
@@ -143,7 +158,7 @@ import {
 import { useAppUpdater } from "./lib/appUpdater";
 import { UpdateNotice, useUpdateNoticePreview } from "./components/UpdateNotice";
 import { usePersistedState, usePersistedStateRef } from "./hooks/usePersistedState";
-import { forgetQueuedDeliveries, useTurnRunner } from "./hooks/useTurnRunner";
+import { forgetQueuedDeliveries, useTurnRunner, type TurnRunnerContext } from "./hooks/useTurnRunner";
 import { clearCommitMessageSuggestion } from "./lib/commitMessages";
 import { useCheckpoints } from "./hooks/useCheckpoints";
 import { useAppShortcuts, workspaceShortcutLabel } from "./hooks/useAppShortcuts";
@@ -161,6 +176,7 @@ import { useProjectChecks } from "./hooks/useProjectChecks";
 import { useCheckCommandDiscovery } from "./hooks/useCheckCommandDiscovery";
 import { sanitizeProjectCheckCommand, sanitizeProjectCheckOverrides, type ProjectCheckResult, type ProjectCheckCommand } from "./lib/projectChecks";
 import { useReviewFeedback } from "./hooks/useReviewFeedback";
+import { addRemoteFeedback, useRemoteFeedback } from "./lib/remote/remoteFeedback";
 import { feedbackSkillInvocationText, formatFeedbackPrompt, isFeedbackAnchorStale, feedbackScopeKey } from "./lib/reviewFeedback";
 import { useTerminal } from "./hooks/useTerminal";
 import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
@@ -254,6 +270,7 @@ import {
 } from "./lib/worktrees";
 
 const WorkflowRunDialog = lazy(() => import("./components/WorkflowRunDialog").then((module) => ({ default: module.WorkflowRunDialog })));
+const loadRemoteShell = () => import("./components/remote/RemoteShell");
 const CommandPalette = lazy(() => import("./components/CommandPalette").then((module) => ({ default: module.CommandPalette })));
 let loadedChatTimeline: typeof import("./components/ChatTimeline").ChatTimeline | null = null;
 // Set during the first commit of a resolved timeline. After that the mounted
@@ -593,12 +610,6 @@ function hydrateLocalProviderTask(
   store.hydrateTask(threadId, transcript?.messages ?? [], transcript?.activities ?? [], executionPath, mergedHistory, undefined, { source: "local" });
 }
 
-function permissionLabel(mode: PermissionMode): string {
-  if (mode === "read-only") return "Read only";
-  if (mode === "full") return "Full access";
-  return "Ask to act";
-}
-
 class RuntimeCapabilityBusyError extends Error {}
 
 function providerLabel(provider: AppSettings["provider"]): string {
@@ -607,12 +618,6 @@ function providerLabel(provider: AppSettings["provider"]): string {
   if (provider === "claude") return "Claude";
   if (provider === "cursor") return "Cursor";
   return "OpenAI";
-}
-
-function PermissionIcon({ mode, size = 15 }: { mode: PermissionMode; size?: number }) {
-  if (mode === "read-only") return <Shield size={size} />;
-  if (mode === "full") return <ShieldAlert size={size} />;
-  return <ShieldCheck size={size} />;
 }
 
 /**
@@ -670,24 +675,6 @@ function RendererLaunchCommitMarker() {
 /** The rename draft lives here, not in the app shell, so typing a name does
  * not re-render the whole window. Enter and blur share one save; Escape
  * cancels without saving even if the field then loses focus. */
-function ThreadRenameInput({ initial, onCommit, onCancel }: { initial: string; onCommit: (name: string) => void; onCancel: () => void }) {
-  const [draft, setDraft] = useState(initial);
-  const cancelled = useRef(false);
-  return <input
-    autoFocus
-    value={draft}
-    onChange={(event) => setDraft(event.target.value)}
-    onBlur={() => { if (!cancelled.current) onCommit(draft); }}
-    onKeyDown={(event) => {
-      if (event.key === "Enter") onCommit(draft);
-      if (event.key === "Escape") {
-        cancelled.current = true;
-        onCancel();
-      }
-    }}
-    aria-label="Thread name"
-  />;
-}
 
 // Memoized: the app shell re-renders for many unrelated reasons (usage,
 // Git status, sidebar input); the transcript re-renders only for its own
@@ -706,12 +693,45 @@ const ConversationTimeline = memo(function ConversationTimeline({ Timeline, thre
   return <Timeline key={threadId} messages={messages} activities={activities} submittedPromptId={pendingMessage?.id} running={running} activeTurnId={preview && !preview.turnId ? undefined : activeTurnId} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} skills={skills} onOpenSkill={onOpenSkill} />;
 });
 
+/** Every local navigation and gesture checks this. Voice owns input, or another
+ * machine is on screen and hidden local UI must not act or move. */
+const EMPTY_PROJECTS: Project[] = [];
+const EMPTY_THREADS: Thread[] = [];
+const EMPTY_WORKFLOWS: WorkflowDefinition[] = [];
+const localInputBlocked = () => isVoiceInputLocked() || isRemoteMachineActive();
+/** Work that started before a voice session or a machine switch cannot take
+ * local navigation back when it finishes. */
+const localInputGeneration = () => voiceInputLockGeneration() + machineSwitchGeneration();
+/** The thread on screen. A hidden local thread is not being watched. */
+const watchedThreadId = () => isRemoteMachineActive() ? null : useTaskStore.getState().activeThreadId;
+/** Says which machine a notification is about once there can be doubt. */
+const onThisDevice = (body: string) => isRemoteMachineActive()
+  ? `${body} This is on ${localMachineLabel(useRemoteDevices.getState().snapshot)}.` : body;
+
 export default function App() {
   // Observe in the layout phase, before passive turn/child subscriptions:
   // queued delivery can synchronously write again during completion notices.
   useLayoutEffect(() => useTaskStore.subscribe(recordParentRunTransitions), []);
   useInputModality();
   const voiceSession = useVoiceInputLock((state) => state.session);
+  const activeMachine = useActiveMachine((state) => state.machine);
+  const remoteActive = activeMachine !== LOCAL_MACHINE;
+  const remoteFeedbackScope = useRemoteFeedback((state) => state.scope);
+  const shownMachine = useActiveMachine((state) => state.shown);
+  const shownRemote = shownMachine !== LOCAL_MACHINE;
+  const machinePhase = useActiveMachine((state) => state.phase);
+  const remoteRunning = useActiveMachine((state) => state.remoteRunning);
+  const remoteThreadOpen = useActiveMachine((state) => state.remoteThreadOpen);
+  const remoteApprovals = useActiveMachine((state) => state.remoteApprovals);
+  const remoteElsewhere = useActiveMachine((state) => state.remoteElsewhere);
+  const shownMachineName = useActiveMachine((state) => state.shown === LOCAL_MACHINE ? null : state.name);
+  const [remoteStudioOpen, setRemoteStudioOpen] = useState(false);
+  // Loaded ahead of the first switch and held here, so a switch never paints a
+  // blank frame waiting for a lazy boundary.
+  const [remoteUi, setRemoteUi] = useState<Awaited<ReturnType<typeof loadRemoteShell>> | null>(null);
+  const machineOnline = useRemoteDevices((state) => state.snapshot?.devices.filter((device) => device.canView).map((device) => `${device.fingerprint}:${device.state === "connected" ? 1 : 0}`).join(",") ?? "");
+  const remoteMachineName = useActiveMachine((state) => state.name) ?? "another device";
+  const localMachine = useRemoteDevices((state) => localMachineLabel(state.snapshot));
   // Capture covers all React surfaces, including existing dialogs and portals.
   // The inline recorder alone owns controls until it releases the synchronous lock.
   const guardVoiceInteraction = (event: { target: EventTarget | null; preventDefault: () => void; stopPropagation: () => void }) => {
@@ -815,8 +835,9 @@ export default function App() {
   useEffect(() => {
     if (!trayReady || !trayCounts) return;
     const [working, approvals] = trayCounts.split(":").map(Number);
-    void updateTrayStatus(working ?? 0, approvals ?? 0).catch(() => undefined);
-  }, [trayCounts, trayReady]);
+    // This device, plus the machine on screen.
+    void updateTrayStatus((working ?? 0) + (remoteRunning ? 1 : 0) + remoteElsewhere.working, (approvals ?? 0) + remoteApprovals + remoteElsewhere.approvals, shownMachineName).catch(() => undefined);
+  }, [remoteApprovals, remoteElsewhere, remoteRunning, shownMachineName, trayCounts, trayReady]);
   const [projects, setProjects, projectsRef] = usePersistedStateRef<Project[]>("kiwi.projects", [], { init: () => initialProjects });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(initialProjects[0]?.id ?? null);
   const [workspaceMode, setWorkspaceMode] = usePersistedState<WorkspaceMode>("kiwi.workspaceMode", "chat", { init: () => initialWorkspaceMode });
@@ -847,6 +868,8 @@ export default function App() {
     setActiveFirstPrompt(null);
   }, []);
   const [settings, persistSettings, settingsRef] = usePersistedStateRef<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
+  // Someone asking to use this computer gets a desktop notification, even with the menu closed.
+  useAccessNotifications(settings.notificationsEnabled);
   // Parents read model notes from the saved settings at their next real turn.
   // Publishing during render keeps queued starts from racing a later effect.
   setSavedSubagentModelGuidance(settings.subagentModelGuidance);
@@ -856,6 +879,8 @@ export default function App() {
     init: (load) => sanitizeHeaderUsageWindows(load()),
   });
   const [threadModels, setThreadModels, threadModelsRef] = usePersistedStateRef<Record<string, string>>("kiwi.threadModels", {});
+  // Saved by a paired device for one thread. Its rows arrive through remote state adoption.
+  const [threadExecutionPreferences, setThreadExecutionPreferences] = usePersistedState<Record<string, WireExecutionSettings>>(EXECUTION_PREFERENCES_KEY, {});
   const [threadReasoning, setThreadReasoning, threadReasoningRef] = usePersistedStateRef<Record<string, ThreadReasoning>>("kiwi.threadReasoning", {}, {
     init: (load) => sanitizeThreadReasoningRecords(load()),
   });
@@ -990,6 +1015,8 @@ export default function App() {
   const [archivedThreads, persistArchivedThreads, archivedThreadsRef] = usePersistedStateRef<ArchivedThread[]>("kiwi.archivedThreads", []);
   const archivingThreadIdsRef = useRef(new Set<string>());
   const deletedThreadIdsRef = useRef(new Set<string>());
+  /** Threads a paired device is changing, which local archive and delete wait out. */
+  const hostRowReservationsRef = useRef(new Map<string, symbol>());
   const [threadAvailabilityRevision, setThreadAvailabilityRevision] = useState(0);
   const autoArchiveCompletionRef = useRef<(completedThreadId: string) => void>(() => undefined);
   const [threadHandoffs, persistThreadHandoffs] = usePersistedState<Record<string, ThreadHandoff>>("kiwi.threadHandoffs", {});
@@ -1198,6 +1225,10 @@ export default function App() {
     threadProjectBindingsRef.current = loadStored("kiwi.threadProjects", {});
   }
   if (knownThreadsRef.current === null) knownThreadsRef.current = initialKnownThreads;
+  // Native preparation binds a new thread's folder directly, without a host row lifecycle.
+  useEffect(() => subscribeRemoteStateAdoption("kiwi.threadProjects", (adopted) => {
+    if (adopted && typeof adopted === "object") threadProjectBindingsRef.current = adopted as Record<string, string>;
+  }), []);
 
   const selectedProject = useMemo(() => projects.find((project) => project.id === activeProjectId) ?? null, [activeProjectId, projects]);
   const activeProjectIdRef = useRef(activeProjectId);
@@ -1335,8 +1366,11 @@ export default function App() {
     const providerPrompt = activeProvider === "openai" || activeProvider === "claude"
       ? subscriptionSystemPrompts[activeProvider]
       : resolveSystemPrompt(projectSettings.systemPrompt, activeProject?.overrides?.systemPrompt, activeProject?.overrides?.systemPromptMode);
+    const hostPreferences = activeThreadId && threadExecutionPreferences[activeThreadId] ? getHostThreadPreferences(activeThreadId) : undefined;
     const resolved = {
       ...settingsForThreadSubagents(projectSettings, activeThreadId, threadSubagentSettings, draftSubagentSettings),
+      // Only what the pickers show for this thread. The crew stays in its captured policy.
+      ...(hostPreferences ? sharedThreadPreferences(projectSettings, hostPreferences) : {}),
       provider: activeProvider,
       model: followsLatestSol ? latestOpenAiSol : modelForProvider(activeProvider, threadModel ?? projectSettings.model),
       systemPrompt: providerPrompt,
@@ -1347,7 +1381,7 @@ export default function App() {
     return activeThread && isSubAgentThread(activeThread, childThreadLinks, childThreadRootIds)
       ? settingsWithoutChildDelegation(resolved)
       : resolved;
-  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, childThreadRootIds, draftThreadModel, draftSubagentSettings, latestOpenAiSol, projectSettings, selectedFirstPrompt?.model, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings]);
+  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, childThreadRootIds, draftThreadModel, draftSubagentSettings, latestOpenAiSol, projectSettings, selectedFirstPrompt?.model, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings, threadExecutionPreferences]);
   // Destructive Git confirmations recheck the permission visible when they finish.
   const gitPermissionRef = useRef(effectiveSettings.permission);
   gitPermissionRef.current = effectiveSettings.permission;
@@ -2032,7 +2066,7 @@ export default function App() {
     threadProjectBindingsRef.current?.[thread.id] || thread.cwd || activeWorkspace?.path || "",
   );
   const openWorkspaceFolder = async (path: string) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     try {
       await invoke("open_workspace_folder", { path });
     } catch (reason) {
@@ -2084,6 +2118,19 @@ export default function App() {
     }, 4_500);
   }, []);
   const showSuccessToast = useCallback((message: string) => showToast(message, "success"), [showToast]);
+  useEffect(() => {
+    // This device is the host here: someone's terminal may have outlived their access.
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    listen<{ message?: unknown }>("remote-runtime-warning", ({ payload }) => {
+      if (typeof payload?.message !== "string" || !payload.message) return;
+      const message = payload.message.slice(0, 300);
+      // The banner stays until dismissed; the toast shows over any machine.
+      setError(message);
+      showToast(message, "info");
+    }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }, () => undefined);
+    return () => { disposed = true; stop?.(); };
+  }, [showToast]);
 
   useGitHubLogin({
     pending: githubLoginPending,
@@ -2216,8 +2263,23 @@ export default function App() {
   const persistComposerPermission = useCallback(
     (permission: PermissionMode) => {
       persistSettings({ ...settings, permission });
+      // Choosing here replaces what a paired device saved for this thread, or the picker couldn't go back up.
+      if (activeThreadId && threadExecutionPreferences[activeThreadId]?.permission !== undefined) {
+        setThreadExecutionPreferences((current) => withoutHostPreference(current, activeThreadId, "permission"));
+      }
     },
-    [persistSettings, settings],
+    [activeThreadId, persistSettings, setThreadExecutionPreferences, settings, threadExecutionPreferences],
+  );
+
+  const persistComposerFast = useCallback(
+    (fast: boolean) => {
+      persistSettings({ ...settings, serviceTier: fast ? "priority" : null });
+      // Same as permission: a saved choice from a paired device would otherwise keep winning here.
+      if (activeThreadId && threadExecutionPreferences[activeThreadId]?.serviceTier !== undefined) {
+        setThreadExecutionPreferences((current) => withoutHostPreference(current, activeThreadId, "serviceTier"));
+      }
+    },
+    [activeThreadId, persistSettings, setThreadExecutionPreferences, settings, threadExecutionPreferences],
   );
 
   /**
@@ -2396,6 +2458,23 @@ export default function App() {
    * The thread's switch stays local, while the captured roster is promoted
    * atomically by the next prompt.
    */
+  /** A started thread keeps the crew it captured until its next message picks this up. */
+  const stageDelegationCrew = (existing: ChildAgentPolicy, maxConcurrent: number, targets: ChildAgentTarget[]) => {
+    const pendingRecapture = {
+      maxConcurrent: crewSafeConcurrency(maxConcurrent, { enabled: true, targets }),
+      targets,
+      approvedAt: Date.now(),
+    };
+    const staged = { ...existing, pendingRecapture };
+    // The immediate cache closes the tiny click-then-send race before React's
+    // persisted state has rendered the staged policy back into this callback.
+    cacheChildAgentPolicy(staged);
+    persistChildAgentPolicies((current) => ({
+      ...current,
+      [existing.sessionId]: { ...(current[existing.sessionId] ?? existing), pendingRecapture },
+    }));
+    invalidateChildAgentLaunch(existing.sessionId);
+  };
   const persistActiveThreadSubagentPolicy = useCallback((next: ProjectSubagentSettings) => {
     if (effectiveSettings.subagentEngine === "native") {
       persistComposerSubagentPolicy(next);
@@ -2428,20 +2507,7 @@ export default function App() {
       setTransientStatus("Keep one ready sub-agent, or switch Sub-agents off");
       return;
     }
-    const pendingRecapture = {
-      maxConcurrent: crewSafeConcurrency(next.maxConcurrent, { enabled: true, targets }),
-      targets,
-      approvedAt: Date.now(),
-    };
-    const staged = { ...existing, pendingRecapture };
-    // The immediate cache closes the tiny click-then-send race before React's
-    // persisted state has rendered the staged policy back into this callback.
-    cacheChildAgentPolicy(staged);
-    persistChildAgentPolicies((current) => ({
-      ...current,
-      [existing.sessionId]: { ...(current[existing.sessionId] ?? existing), pendingRecapture },
-    }));
-    invalidateChildAgentLaunch(existing.sessionId);
+    stageDelegationCrew(existing, next.maxConcurrent, targets);
     setTransientStatus("Sub-agent setup updated for this thread · applies next message");
   }, [
     activeDelegationPolicy,
@@ -2468,7 +2534,7 @@ export default function App() {
   }, []);
 
   const openSkillInSettings = useCallback((path: string) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     setOpenSkillRequest({ path, nonce: ++openSkillNonceRef.current });
     openSettings("skills");
   }, [openSettings]);
@@ -2487,7 +2553,7 @@ export default function App() {
     });
   }, [activeProject, activeProvider, activeWorkspace?.path, settings]);
   const openPromptRepair = useCallback((target: SkillPromptRepairTarget) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     const nonce = ++promptFocusNonceRef.current;
     if (target.layer === "project") {
       setProjectPromptOpenRequest({ name: target.name, nonce });
@@ -2533,7 +2599,7 @@ export default function App() {
   }, []);
 
   const openOnboarding = useCallback(() => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     setOnboardingSession((session) => session + 1);
     resumeOnboardingAfterSettings.current = false;
     if (onboardingExitTimerRef.current !== null) {
@@ -2562,7 +2628,7 @@ export default function App() {
   );
 
   const startNormalChat = useCallback(() => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     setWorkspaceMode("chat");
   }, [setWorkspaceMode]);
 
@@ -3915,6 +3981,7 @@ export default function App() {
         const result = await rpc<{ diff: string }>("gitDiffToRemote", { cwd: projectPath });
         useTaskStore.getState().setDiff(threadId, {
           text: result.diff ?? "",
+          successfulText: result.diff ?? "",
           source: "runtime",
           baseline: "the tracked remote branch",
           untrackedPaths: [],
@@ -3951,6 +4018,7 @@ export default function App() {
           : [];
         useTaskStore.getState().setDiff(threadId, {
           text: `${tracked.stdout}${tracked.stderr}`,
+          ...(tracked.exitCode === 0 ? { successfulText: tracked.stdout } : {}),
           source: "repository",
           baseline,
           untrackedPaths: untrackedPaths.slice(0, MAX_LISTED_UNTRACKED_PATHS),
@@ -3994,6 +4062,7 @@ export default function App() {
     retryUnsupportedCheckpointPath,
     finalizeRunCheckpoint,
     discardRunCheckpoint,
+    settleRemoteCheckpoint,
     projectHasActiveTask,
     captureCurrentStateCheckpoint,
     createCheckpoint,
@@ -4262,7 +4331,7 @@ export default function App() {
         setOpenAiUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
       }
     },
-    onTerminalOutput: terminal.appendProcess,
+    onTerminalOutput: (text, processId) => { if (!appendHostCommandOutput(text, processId)) terminal.appendProcess(text, processId); },
     // Sign-in sends two notices and runtime start sends one; each needs a
     // read that starts after it, but not one per notice or a renewal.
     onAccountUpdated: () => {
@@ -4284,13 +4353,13 @@ export default function App() {
     },
     onNativeAgentDiscovered,
     onApprovalRequested: (threadId) => {
-      if (!settings.notificationsEnabled || useTaskStore.getState().activeThreadId === threadId) return;
+      if (!settings.notificationsEnabled || watchedThreadId() === threadId) return;
       const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
       const label = thread?.name || thread?.preview || "A background task";
       void (async () => {
         let granted = await isPermissionGranted();
         if (!granted) granted = (await requestPermission()) === "granted";
-        if (granted) sendNotification({ title: "Mythra Code needs your approval", body: `“${label}” is waiting for permission to continue.` });
+        if (granted) sendNotification({ title: "Mythra Code needs your approval", body: onThisDevice(`“${label}” is waiting for permission to continue.`) });
       })().catch(() => {});
     },
     onTurnCompleted: (threadId, turn) => {
@@ -4314,7 +4383,7 @@ export default function App() {
       }
       // A parent waiting for its sub-agents has not finished: that notice comes
       // from the turn that actually completes the run.
-      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId && !useTaskStore.getState().parentRuns[threadId]) {
+      if (settings.notificationsEnabled && watchedThreadId() !== threadId && !useTaskStore.getState().parentRuns[threadId]) {
         const thread = threads.find((entry) => entry.id === threadId);
         const label = thread?.name || thread?.preview || "A background task";
         const projectPath = threadProjectBindingsRef.current?.[threadId];
@@ -4322,7 +4391,7 @@ export default function App() {
         void (async () => {
           let granted = await isPermissionGranted();
           if (!granted) granted = (await requestPermission()) === "granted";
-          if (granted) sendNotification({ title: "Mythra Code task complete", body: projectName ? `“${label}” finished in ${projectName}.` : `“${label}” finished.` });
+          if (granted) sendNotification({ title: "Mythra Code task complete", body: onThisDevice(projectName ? `“${label}” finished in ${projectName}.` : `“${label}” finished.`) });
         })().catch(() => {});
       }
       const projectPath = threadProjectBindingsRef.current?.[threadId];
@@ -4421,12 +4490,12 @@ export default function App() {
       void auditEvent("claude.unsupportedControlRequest", { subtype }, threadId).catch(() => undefined);
     },
     onApprovalRequested: (threadId) => {
-      if (!settings.notificationsEnabled || useTaskStore.getState().activeThreadId === threadId) return;
+      if (!settings.notificationsEnabled || watchedThreadId() === threadId) return;
       const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
       void (async () => {
         let granted = await isPermissionGranted();
         if (!granted) granted = (await requestPermission()) === "granted";
-        if (granted) sendNotification({ title: "Mythra Code needs your approval", body: `“${thread?.name || thread?.preview || "A Claude task"}” is waiting for permission to continue.` });
+        if (granted) sendNotification({ title: "Mythra Code needs your approval", body: onThisDevice(`“${thread?.name || thread?.preview || "A Claude task"}” is waiting for permission to continue.`) });
       })().catch(() => {});
     },
     onTurnCompleted: (threadId) => {
@@ -4447,11 +4516,11 @@ export default function App() {
       }
       // A parent waiting for its sub-agents has not finished: that notice comes
       // from the turn that actually completes the run.
-      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId && !useTaskStore.getState().parentRuns[threadId]) {
+      if (settings.notificationsEnabled && watchedThreadId() !== threadId && !useTaskStore.getState().parentRuns[threadId]) {
         void (async () => {
           let granted = await isPermissionGranted();
           if (!granted) granted = (await requestPermission()) === "granted";
-          if (granted) sendNotification({ title: "Mythra Code task complete", body: `“${known?.name || known?.preview || "Claude task"}” finished.` });
+          if (granted) sendNotification({ title: "Mythra Code task complete", body: onThisDevice(`“${known?.name || known?.preview || "Claude task"}” finished.`) });
         })().catch(() => {});
       }
       const projectPath = threadProjectBindingsRef.current?.[threadId];
@@ -4475,12 +4544,12 @@ export default function App() {
       scheduleCursorThreadSave(threadId);
     },
     onApprovalRequested: (threadId) => {
-      if (!settings.notificationsEnabled || useTaskStore.getState().activeThreadId === threadId) return;
+      if (!settings.notificationsEnabled || watchedThreadId() === threadId) return;
       const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
       void (async () => {
         let granted = await isPermissionGranted();
         if (!granted) granted = (await requestPermission()) === "granted";
-        if (granted) sendNotification({ title: "Mythra Code needs your approval", body: `“${thread?.name || thread?.preview || "A Cursor task"}” is waiting for permission to continue.` });
+        if (granted) sendNotification({ title: "Mythra Code needs your approval", body: onThisDevice(`“${thread?.name || thread?.preview || "A Cursor task"}” is waiting for permission to continue.`) });
       })().catch(() => {});
     },
     onTurnCompleted: (threadId) => {
@@ -4500,11 +4569,11 @@ export default function App() {
       }
       // A parent waiting for its sub-agents has not finished: that notice comes
       // from the turn that actually completes the run.
-      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId && !useTaskStore.getState().parentRuns[threadId]) {
+      if (settings.notificationsEnabled && watchedThreadId() !== threadId && !useTaskStore.getState().parentRuns[threadId]) {
         void (async () => {
           let granted = await isPermissionGranted();
           if (!granted) granted = (await requestPermission()) === "granted";
-          if (granted) sendNotification({ title: "Mythra Code task complete", body: `“${known?.name || known?.preview || "Cursor task"}” finished.` });
+          if (granted) sendNotification({ title: "Mythra Code task complete", body: onThisDevice(`“${known?.name || known?.preview || "Cursor task"}” finished.`) });
         })().catch(() => {});
       }
       const projectPath = threadProjectBindingsRef.current?.[threadId];
@@ -4903,7 +4972,17 @@ export default function App() {
       void getCurrentWebview()
         .onDragDropEvent((event) => {
           // Native drops bypass DOM inert and pointer capture.
-          if (isVoiceInputLocked()) { setDropActive(false); return; }
+          if (isRemoteMachineActive()) {
+            setDropActive(false);
+            useActiveMachine.setState({ remoteDropHover: event.payload.type === "over" });
+            if (event.payload.type === "drop") machineActions()?.dropFiles(event.payload.paths);
+            return;
+          }
+          if (useActiveMachine.getState().remoteDropHover) useActiveMachine.setState({ remoteDropHover: false });
+          if (localInputBlocked()) {
+            setDropActive(false);
+            return;
+          }
           if (event.payload.type === "over") setDropActive(true);
           else if (event.payload.type === "drop") {
             setDropActive(false);
@@ -5055,105 +5134,27 @@ export default function App() {
     };
   }, [activeWorkspace, localSearchScope, runtimeStatus?.available, threadSearch, workspaceHasRuntimeThreads, sidebarThreadBindings]);
 
-  const startProjectPointerDrag = (event: ReactPointerEvent<HTMLDivElement>, projectId: string) => {
-    if (isVoiceInputLocked()) return;
-    if ((event.button !== undefined && event.button !== 0) || (event.target as HTMLElement).closest(".row-menu")) return;
-    const pointerId = event.pointerId;
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const workspaceList = event.currentTarget.closest(".workspace-list") as HTMLElement | null;
-    let active = false;
-    const isCurrentPointer = (candidate: number | undefined) =>
-      pointerId === undefined || candidate === undefined || candidate === pointerId;
-
-    // A drag reorders within the pinned or the unpinned block, never across
-    // them, so only same-group rows are offered as drop targets. The indicator
-    // then always sits where the project will actually land, instead of
-    // promising a slot the pinned-first order would immediately take back.
-    const sourcePinned = Boolean(projectsRef.current.find((project) => project.id === projectId)?.pinned);
-    const inSourceGroup = (row: HTMLElement) => (row.dataset.projectPinned === "true") === sourcePinned;
-
-    const updateTarget = (clientX: number, clientY: number) => {
-      if (!workspaceList) return;
-      const listBounds = workspaceList.getBoundingClientRect();
-      if (clientY < listBounds.top - 8 || clientY > listBounds.bottom + 8) {
-        projectDropTargetRef.current = null;
-        setProjectDropTarget(null);
-        return;
-      }
-      if (clientY < listBounds.top + 24) workspaceList.scrollTop -= 8;
-      else if (clientY > listBounds.bottom - 24) workspaceList.scrollTop += 8;
-
-      const pointedRow = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-project-id]");
-      if (pointedRow?.dataset.projectId === projectId) {
-        projectDropTargetRef.current = null;
-        setProjectDropTarget(null);
-        return;
-      }
-      const rows = [...workspaceList.querySelectorAll<HTMLElement>("[data-project-id]")]
-        .filter((row) => row.dataset.projectId !== projectId && inSourceGroup(row));
-      const targetRow = pointedRow && pointedRow.dataset.projectId !== projectId && inSourceGroup(pointedRow) && workspaceList.contains(pointedRow)
-        ? pointedRow
-        : rows.reduce<HTMLElement | null>((nearest, row) => {
-            if (!nearest) return row;
-            const rowDistance = Math.abs(clientY - (row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2));
-            const nearestBounds = nearest.getBoundingClientRect();
-            const nearestDistance = Math.abs(clientY - (nearestBounds.top + nearestBounds.height / 2));
-            return rowDistance < nearestDistance ? row : nearest;
-          }, null);
-      const targetId = targetRow?.dataset.projectId;
-      if (!targetRow || !targetId) return;
-      const bounds = targetRow.getBoundingClientRect();
-      const position: ProjectDropPosition = clientY < bounds.top + bounds.height / 2 ? "before" : "after";
-      const nextTarget = { id: targetId, position };
-      projectDropTargetRef.current = nextTarget;
-      setProjectDropTarget((current) => current?.id === targetId && current.position === position ? current : nextTarget);
-    };
-
-    const onMove = (moveEvent: PointerEvent) => {
-      if (!isCurrentPointer(moveEvent.pointerId)) return;
-      if (!active && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 5) return;
-      moveEvent.preventDefault();
-      if (!active) {
-        active = true;
-        draggedProjectIdRef.current = projectId;
-        setDraggedProjectId(projectId);
-        document.body.classList.add("project-reordering");
-      }
-      updateTarget(moveEvent.clientX, moveEvent.clientY);
-    };
-
-    const onEnd = (endEvent: PointerEvent) => {
-      if (!isCurrentPointer(endEvent.pointerId)) return;
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onEnd);
-      window.removeEventListener("pointercancel", onEnd);
-      document.body.classList.remove("project-reordering");
-
-      const target = projectDropTargetRef.current;
-      if (endEvent.type === "pointerup" && active && target) {
+  const beginProjectPointerDrag = (event: ReactPointerEvent<HTMLDivElement>, projectId: string) => {
+    if (localInputBlocked()) return;
+    startProjectPointerDrag(event, projectId, {
+      isPinned: (id) => Boolean(projectsRef.current.find((project) => project.id === id)?.pinned),
+      setDragged: (id) => { draggedProjectIdRef.current = id; setDraggedProjectId(id); },
+      setTarget: (target) => { projectDropTargetRef.current = target; setProjectDropTarget(target); },
+      onDrop: (target) => {
         setProjects((current) => reorderProjects(current, projectId, target.id, target.position));
         suppressProjectClickRef.current = true;
         window.setTimeout(() => {
           suppressProjectClickRef.current = false;
         }, 0);
-      }
-      draggedProjectIdRef.current = null;
-      projectDropTargetRef.current = null;
-      setDraggedProjectId(null);
-      setProjectDropTarget(null);
-    };
-
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onEnd);
-    window.addEventListener("pointercancel", onEnd);
+      },
+    });
   };
 
   const addProject = async () => {
-    if (isVoiceInputLocked()) return false;
-    const voiceGeneration = voiceInputLockGeneration();
+    if (localInputBlocked()) return false;
+    const voiceGeneration = localInputGeneration();
     const selected = await open({ directory: true, multiple: false, title: "Choose a project folder" });
-    if (isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return false;
+    if (localInputBlocked() || voiceGeneration !== localInputGeneration()) return false;
     if (!selected || Array.isArray(selected)) return false;
     const existing = projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(selected));
     if (existing) {
@@ -5187,62 +5188,55 @@ export default function App() {
     const workingLabel = `${workingCount} thread${workingCount === 1 ? "" : "s"} working`;
     const scheduledCounts = scheduledPromptCounts.workspaces[normalizedProjectPath(project.path)];
     const rowLabel = [project.name, workingCount > 0 ? workingLabel : "", scheduledCounts ? scheduledCountsLabel(scheduledCounts) : ""].filter(Boolean).join(", ");
-    return <div
+    return <WorkspaceRow
       key={project.id}
+      name={project.name}
+      title={project.path}
+      label={rowLabel}
+      pinned={project.pinned}
+      scale={(settings.uiScale || 100) / 100}
       className={[
-        "workspace-row-wrap",
         workspaceMode === "project" && project.id === activeProjectId ? "active" : "",
         draggedProjectId === project.id ? "dragging" : "",
         projectDropTarget?.id === project.id ? `drop-${projectDropTarget.position}` : "",
       ].filter(Boolean).join(" ")}
-      data-project-id={project.id}
-      data-project-pinned={project.pinned ? "true" : "false"}
-      onPointerDown={(event) => startProjectPointerDrag(event, project.id)}
-    >
-      <button
-        className="workspace-row"
-        aria-label={rowLabel}
-        onClick={(event) => {
-          if (suppressProjectClickRef.current) {
-            event.preventDefault();
-            return;
-          }
-          setActiveProjectId(project.id);
-          setWorkspaceMode("project");
-        }}
-        title={project.path}
-      >
-        <span className="workspace-icon">{project.pinned ? <Pin size={13} /> : <Folder size={14} />}</span>
-        <span className="workspace-name">{project.name}</span>
-        <span className="workspace-counts">
-          <ScheduledCountBadge {...scheduledCounts} />
-          {workingCount > 0 && (
-            <span
-              className="workspace-thread-count"
-              title={workingLabel}
-              aria-hidden="true"
-            >
-              {workingCount}
-            </span>
-          )}
-        </span>
-      </button>
-      <RowMenu
-        label={`Options for ${project.name}`}
-        scale={(settings.uiScale || 100) / 100}
-        items={[
+      wrapProps={{
+        "data-project-id": project.id,
+        "data-project-pinned": project.pinned ? "true" : "false",
+        onPointerDown: (event) => beginProjectPointerDrag(event, project.id),
+      }}
+      onOpen={(event) => {
+        if (suppressProjectClickRef.current) {
+          event.preventDefault();
+          return;
+        }
+        setActiveProjectId(project.id);
+        setWorkspaceMode("project");
+      }}
+      counts={<>
+        <ScheduledCountBadge {...scheduledCounts} />
+        {workingCount > 0 && (
+          <span
+            className="workspace-thread-count"
+            title={workingLabel}
+            aria-hidden="true"
+          >
+            {workingCount}
+          </span>
+        )}
+      </>}
+      menu={[
           { label: project.pinned ? "Unpin project" : "Pin project", icon: project.pinned ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleProjectPin(project) },
           { label: "Project settings", icon: <Settings size={13} />, onSelect: () => openSettings("projects") },
           { label: "Open folder", icon: <FolderOpen size={13} />, onSelect: () => void openWorkspaceFolder(project.path) },
           { label: "Remove from Mythra Code", icon: <Trash2 size={13} />, danger: true, onSelect: () => removeProject(project) },
-        ]}
-      />
-    </div>;
+      ]}
+    />;
   };
 
   const removeProject = async (project: Project) => {
-    if (isVoiceInputLocked()) return;
-    const voiceGeneration = voiceInputLockGeneration();
+    if (localInputBlocked()) return;
+    const voiceGeneration = localInputGeneration();
     const isolatedCount = Object.values(threadWorktreesRef.current).filter(
       (record) => normalizedProjectPath(record.projectPath) === normalizedProjectPath(project.path)
         && record.status !== "removed",
@@ -5252,7 +5246,7 @@ export default function App() {
       return;
     }
     const confirmed = await confirmDialog(`Remove “${project.name}” from Mythra Code?\n\nIts folder and every file inside it will remain untouched on your computer.`);
-    if (!confirmed || isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return;
+    if (!confirmed || localInputBlocked() || voiceGeneration !== localInputGeneration()) return;
     const next = projects.filter((entry) => entry.id !== project.id);
     autoPublish.disable(project.id);
     setProjects(next);
@@ -5423,8 +5417,8 @@ export default function App() {
   }, [activeThread, projectDefaultProvider, threads, watchThreadNameSaves]);
 
   const selectThread = async (thread: Thread) => {
-    if (isVoiceInputLocked()) return;
-    const voiceGeneration = voiceInputLockGeneration();
+    if (localInputBlocked()) return;
+    const voiceGeneration = localInputGeneration();
     if (!activeWorkspace) return;
     const threadAvailable = () => !archivingThreadIdsRef.current.has(thread.id)
       && !deletedThreadIdsRef.current.has(thread.id)
@@ -5444,8 +5438,8 @@ export default function App() {
     // one whose resume RPC happened to finish last.
     const requestId = ++selectThreadRequestRef.current;
     pendingThreadSelectionRef.current = { threadId: thread.id, requestId };
-    const ownsSelection = () => !isVoiceInputLocked()
-      && voiceGeneration === voiceInputLockGeneration()
+    const ownsSelection = () => !localInputBlocked()
+      && voiceGeneration === localInputGeneration()
       && selectThreadRequestRef.current === requestId && threadAvailable();
     const selectedProvider = providerFromThread(thread, projectDefaultProvider);
     const existingTask = useTaskStore.getState().tasks[thread.id];
@@ -5928,12 +5922,12 @@ export default function App() {
   };
 
   const editMessageIntoComposer = useCallback((text: string) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     composerRef.current?.setDraft(text);
   }, []);
 
   const newThread = () => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     selectThreadRequestRef.current += 1;
     // A still-submitting first send owns its original composer and attachment
     // draft. New must have another key so failure recovery cannot write into it.
@@ -5956,8 +5950,8 @@ export default function App() {
   };
 
   const startNewThreadWithProvider = async (provider: Provider) => {
-    if (isVoiceInputLocked()) return;
-    const voiceGeneration = voiceInputLockGeneration();
+    if (localInputBlocked()) return;
+    const voiceGeneration = localInputGeneration();
     if (running) {
       setError("Stop the running task before starting a thread with another provider.");
       return;
@@ -5985,8 +5979,8 @@ export default function App() {
         setError(friendlyError(reason));
         return null;
       });
-      if (!formatter || selection !== selectThreadRequestRef.current || isVoiceInputLocked()
-        || voiceGeneration !== voiceInputLockGeneration()) return;
+      if (!formatter || selection !== selectThreadRequestRef.current || localInputBlocked()
+        || voiceGeneration !== localInputGeneration()) return;
       const prompt = formatter.buildProviderHandoffPrompt({
         title: sourceTitle,
         sourceProvider,
@@ -6006,7 +6000,7 @@ export default function App() {
       setDraftThreadIsolated(false);
       setError(null);
       requestAnimationFrame(() => {
-        if (!isVoiceInputLocked() && voiceGeneration === voiceInputLockGeneration()) composerRef.current?.setDraft(prompt);
+        if (!localInputBlocked() && voiceGeneration === localInputGeneration()) composerRef.current?.setDraft(prompt);
       });
       return;
     }
@@ -6136,7 +6130,7 @@ export default function App() {
       ultra: false,
       serviceTier: projectResolved.serviceTier,
       permission: projectResolved.permission,
-      engine: threadSettings.subagentEngine,
+      engine: sanitizeSubagentEngine(threadSettings.subagentEngine),
       subagentsEnabled: threadSettings.subagentsEnabled,
       executionPath: normalizedProjectPath(executionPath) === normalizedProjectPath(run.execution.executionPath) ? run.execution.executionPath : executionPath,
       sessionId: policy.sessionId,
@@ -6148,6 +6142,19 @@ export default function App() {
   };
   // Fresh account identity is probed before reservation. This synchronous part
   // runs again at preparation boundaries, including immediately before dispatch.
+  // The whole current context and hook result, for host work addressed to other
+  // threads. Local callers keep their usual destructured methods.
+  const turnRunnerContextRef = useRef<TurnRunnerContext | null>(null);
+  const turnRunnerRef = useRef<ReturnType<typeof useTurnRunner> | null>(null);
+  const remoteHostRef = useRef<ReturnType<typeof import("./lib/remote/host").createRemoteHost> | null>(null);
+  // While this device hosts, local work records its native owners so a paired device can stop it.
+  const hostingOn = useRemoteDevices((state) => Boolean(state.snapshot?.ready && state.snapshot.hosting));
+  const useRecordedTurnRunner = (context: TurnRunnerContext) => {
+    turnRunnerContextRef.current = context;
+    const runner = useTurnRunner(context);
+    turnRunnerRef.current = runner;
+    return runner;
+  };
   const parentExecutionCurrent = (run: ParentRun): string | null => parentExecutionDifference(run.execution, parentExecutionFor(run));
 
   const {
@@ -6156,7 +6163,8 @@ export default function App() {
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
     beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,
     stopTurn, resumeParentTurn, hasParentRunDelivery, parentRunFolderBusy,
-  } = useTurnRunner({
+  } = useRecordedTurnRunner({
+    trackNativeOwners: hostingOn,
     parentExecutionCurrent,
     activeThread,
     activeWorkspace,
@@ -6277,6 +6285,12 @@ export default function App() {
     setRuntimeSetupOpen,
     setAuthRequiredOpen,
     openSettings,
+    // A remote queue resolves against its host receipt, never a guessed context.
+    resolveRemoteQueuedDelivery: (entry) => {
+      const host = remoteHostRef.current;
+      return host ? host.resolveQueued(entry) : Promise.reject(new HostReadError("host_unavailable", "Remote queue delivery is not ready."));
+    },
+    remoteQueuesReady: () => remoteHostRef.current?.isReady() === true,
   });
   // Stable props for the memoized transcript (see ConversationTimeline).
   const agentQuestionDelivery = useMemo(() => activeThreadId ? { threadId: activeThreadId, send: answerQuestions } : null, [activeThreadId, answerQuestions]);
@@ -6318,7 +6332,7 @@ export default function App() {
         .join("\n").toLowerCase().includes(inboxQuery)))
     : [];
   const openSavedDraft = (key: string) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     if (!activeWorkspace || !isWorkspaceDraftKey(key, activeWorkspace.path)) return;
     const workspacePath = normalizedProjectPath(activeWorkspace.path);
     if (hasSavedDraftContent(workspaceDraftKey)) setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, new Set(firstPromptDraftKeysRef.current.values()), { workspacePath, key: workspaceDraftKey }));
@@ -6335,7 +6349,7 @@ export default function App() {
     requestAnimationFrame(() => composerRef.current?.focus());
   };
   const openPendingFirstPrompt = (prompt: PendingPrompt) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     if (prompt.workspacePath !== activeWorkspacePathRef.current) return;
     if (activeWorkspace && hasSavedDraftContent(workspaceDraftKey)) {
       setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, new Set(firstPromptDraftKeysRef.current.values()), { workspacePath: activeWorkspace.path, key: workspaceDraftKey }));
@@ -6466,6 +6480,7 @@ export default function App() {
       || threadWorktreesRef.current[rootThreadId]?.gitDir !== gitDir) {
       return { started: false, reason: "This conversation's execution folder or ownership changed before its command could start." };
     }
+    if (hostCommandBusy(scope, "run")) return { started: false, reason: "A paired device is already running this project's command. Wait for it to finish." };
     const busy = terminal.runningIn(scope);
     if (busy.running) {
       return { started: false, reason: `The Terminal panel is already running \`${busy.command}\` for this project. Ask the user to stop it with the Stop button first.` };
@@ -6507,7 +6522,7 @@ export default function App() {
     archivedThreads.map((record) => record.id), projects.map((project) => [project.id, project.path])]),
   [archivedThreads, projects, threadAvailabilityRevision, worktreeBusy]);
 
-  const { acceptChildAgent, captureChildStopFrontier, cancelChildAgentsFor, continueParentRun, parentRunObligations, getManagedSubagentV2LockedReason, hasChildStartInFlight, invalidateChildAgentGuidance, noteExplicitChildStart, settleExplicitChildStart, retryChildAgentGuidance, respondToSettingsProposal, stopChildAgent } = useChildAgents({
+  const { acceptChildAgent, beginRemoteAcceptance, stopRemoteWorker, captureChildStopFrontier, cancelChildAgentsFor, continueParentRun, parentRunObligations, getManagedSubagentV2LockedReason, hasChildStartInFlight, invalidateChildAgentGuidance, noteExplicitChildStart, settleExplicitChildStart, retryChildAgentGuidance, respondToSettingsProposal, stopChildAgent } = useChildAgents({
     parentRunEnvironmentRevision,
     parentRunFolderBusy,
     policies: childAgentPolicies,
@@ -6627,7 +6642,7 @@ export default function App() {
    * too, and a genuinely unresolvable id reports why instead of doing nothing.
    */
   const openSubAgentWorker = useCallback(async (worker: SubAgentWorker) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     if (archivedThreadsRef.current.some((record) => record.id === worker.id)) {
       throw new Error("This sub-agent's conversation is archived. Restore it from the Sub-agents inbox's Archived list to open it.");
     }
@@ -6764,15 +6779,15 @@ export default function App() {
     }
     for (const run of Object.values(state.parentRuns)) {
       if (run.phase !== "paused" || !run.autoResume || previous.parentRuns[run.rootThreadId]?.phase === "paused"
-        || !parentRunNotificationsRef.current || state.activeThreadId === run.rootThreadId) continue;
+        || !parentRunNotificationsRef.current || watchedThreadId() === run.rootThreadId) continue;
       const thread = knownThreadsRef.current?.[run.rootThreadId];
       void (async () => {
         let granted = await isPermissionGranted();
         if (!granted) granted = (await requestPermission()) === "granted";
         const current = useTaskStore.getState();
-        if (granted && parentRunNotificationsRef.current && current.activeThreadId !== run.rootThreadId
+        if (granted && parentRunNotificationsRef.current && watchedThreadId() !== run.rootThreadId
           && current.parentRuns[run.rootThreadId]?.id === run.id && current.parentRuns[run.rootThreadId]?.phase === "paused") {
-          sendNotification({ title: "Mythra Code needs your input", body: `“${thread?.name || thread?.preview || "A background task"}” paused while following its sub-agents.` });
+          sendNotification({ title: "Mythra Code needs your input", body: onThisDevice(`“${thread?.name || thread?.preview || "A background task"}” paused while following its sub-agents.`) });
         }
       })().catch(() => {});
     }
@@ -7002,7 +7017,7 @@ export default function App() {
     setRenamingThreadId(thread.id);
   };
 
-  const renameThread = async (thread: Thread, draft: string) => {
+  const renameThread = async (thread: Thread, draft: string, strict = false) => {
     const name = draft.trim();
     const previous = threadRenameWritesRef.current.get(thread.id);
     setRenamingThreadId(null);
@@ -7018,7 +7033,10 @@ export default function App() {
         await titleCancellation;
         const target = knownThreadsRef.current?.[thread.id];
         if (!target || archivingThreadIdsRef.current.has(thread.id) || deletedThreadIdsRef.current.has(thread.id)
-          || archivedThreadsRef.current.some((record) => record.id === thread.id)) return;
+          || archivedThreadsRef.current.some((record) => record.id === thread.id)) {
+          if (strict) throw new HostReadError("stale_target", "This conversation is no longer available.");
+          return;
+        }
         if (isLocalSubscriptionThread(target)) {
           await renameLocalTranscript(isClaudeThread(target) ? "claude" : "cursor", thread.id, name);
         } else {
@@ -7036,6 +7054,7 @@ export default function App() {
         setThreads((entries) => entries.map((entry) => (entry.id === thread.id ? { ...entry, name } : entry)));
         setActiveThread((entry) => (entry?.id === thread.id ? { ...entry, name } : entry));
       } catch (reason) {
+        if (strict) throw reason;
         if (threadRenameWritesRef.current.get(thread.id)?.token === token && knownThreadsRef.current?.[thread.id]
           && !archivingThreadIdsRef.current.has(thread.id) && !deletedThreadIdsRef.current.has(thread.id)) setError(friendlyError(reason));
       }
@@ -7099,7 +7118,7 @@ export default function App() {
       || mailbox.queuedForChild > 0 || mailbox.unansweredQuestions > 0;
   };
 
-  const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean, automatic = false): Promise<boolean> => {
+  const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean, automatic = false, strict = false): Promise<boolean> => {
     let label = thread.name || thread.preview || "Untitled thread";
     const archiveActivityBlock = () => {
       if (automatic && managedChildArchivePending(thread.id)) return "This sub-agent still needs sign-off or has pending work.";
@@ -7133,12 +7152,16 @@ export default function App() {
     };
     const initialBlock = archiveActivityBlock();
     if (initialBlock) {
+      if (strict) throw new HostReadError("busy", initialBlock);
       if (confirmArchive) setError(initialBlock);
       return false;
     }
     // Archiving is reversible from the Archived list, so it runs without a
     // confirmation dialog. Only permanent deletion asks first.
-    if (archivingThreadIdsRef.current.has(thread.id)) return false;
+    if (archivingThreadIdsRef.current.has(thread.id) || hostRowReservationsRef.current.has(thread.id)) {
+      if (strict) throw new HostReadError("busy", "This conversation is already being archived.");
+      return false;
+    }
     archivingThreadIdsRef.current.add(thread.id);
     setThreadAvailabilityRevision((revision) => revision + 1);
     invalidatePendingThreadSelection(thread.id);
@@ -7178,6 +7201,7 @@ export default function App() {
       );
       return true;
     } catch (reason) {
+      if (strict) throw reason;
       setError(friendlyError(reason));
       return false;
     } finally {
@@ -7246,7 +7270,7 @@ export default function App() {
     }
   };
 
-  const unarchiveThread = async (record: ArchivedThread) => {
+  const unarchiveThread = async (record: ArchivedThread, strict = false) => {
     try {
       const claudeTranscript = record.provider === "cursor" ? null : await loadClaudeTranscript(record.id);
       const cursorTranscript = claudeTranscript || record.provider === "claude" ? null : await loadCursorTranscript(record.id);
@@ -7261,21 +7285,25 @@ export default function App() {
       persistArchivedThreads((current) => current.filter((entry) => entry.id !== record.id));
       void loadThreads(activeWorkspace);
     } catch (reason) {
+      if (strict) throw reason;
       setError(friendlyError(reason));
     }
   };
 
-  const deleteThreadRecord = async (threadId: string, label: string, confirmDelete: boolean): Promise<boolean> => {
+  const deleteThreadRecord = async (threadId: string, label: string, confirmDelete: boolean, strict = false): Promise<boolean> => {
+    const refuse = (message: string): false => {
+      if (strict) throw new HostReadError("busy", message);
+      setError(message);
+      return false;
+    };
     const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
     const isolation = threadWorktreesRef.current[threadId];
     if (isolation && isolation.status !== "removed") {
-      setError(`Remove “${isolation.branch}” from the Worktrees workspace tab before permanently deleting this thread.`);
-      return false;
+      return refuse(`Remove “${isolation.branch}” from the Worktrees workspace tab before permanently deleting this thread.`);
     }
     const taskStatus = useTaskStore.getState().statuses[threadId];
     if (taskStatus === "starting" || taskStatus === "running" || useTaskStore.getState().workflowOwners[threadId]) {
-      setError(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
-      return false;
+      return refuse(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
     }
     const nativeDeletionBusy = () => {
       const current = useTaskStore.getState();
@@ -7295,14 +7323,12 @@ export default function App() {
         || hasChildStartInFlight(threadId);
     };
     if (nativeDeletionBusy()) {
-      setError("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
-      return false;
+      return refuse("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
     }
     if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === threadId && !link.terminalStatus)
       || useTaskStore.getState().tasks[threadId]?.agents.some((agent) => isActiveAgentRecord(agent.status))
       || hasChildStartInFlight(threadId)) {
-      setError("Finish or stop this task’s sub-agents before deleting it.");
-      return false;
+      return refuse("Finish or stop this task’s sub-agents before deleting it.");
     }
     const archived = archivedThreads.find((record) => record.id === threadId);
     let legacyClaudeTranscript = false;
@@ -7310,6 +7336,7 @@ export default function App() {
       try {
         legacyClaudeTranscript = Boolean(await loadClaudeTranscript(threadId));
       } catch (reason) {
+        if (strict) throw reason;
         setError(friendlyError(reason));
         return false;
       }
@@ -7321,7 +7348,7 @@ export default function App() {
         : "openai";
     const localSubscription = provider === "claude" || provider === "cursor";
     if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
-    if (archivingThreadIdsRef.current.has(threadId)) return false;
+    if (archivingThreadIdsRef.current.has(threadId) || hostRowReservationsRef.current.has(threadId)) return strict ? refuse("This conversation is already being removed.") : false;
     archivingThreadIdsRef.current.add(threadId);
     setThreadAvailabilityRevision((revision) => revision + 1);
     invalidatePendingThreadSelection(threadId);
@@ -7331,16 +7358,14 @@ export default function App() {
       // otherwise it can write a name into a transcript that was just removed.
       await threadRenameWritesRef.current.get(threadId)?.promise;
       if (nativeDeletionBusy()) {
-        setError("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
-        return false;
+        return refuse("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
       }
       // Cancellation cannot stop a save already in flight. Let its captured
       // revision finish before deleting the file so it cannot recreate it.
       if (localSubscription && thread && useTaskStore.getState().tasks[threadId]?.transcriptDirty) {
         await localTranscriptSaves.flush(threadId);
         if (nativeDeletionBusy()) {
-          setError("Finish or stop this task and its sub-agents before deleting it.");
-          return false;
+          return refuse("Finish or stop this task and its sub-agents before deleting it.");
         }
       }
       localTranscriptSaves.cancel(threadId);
@@ -7391,6 +7416,7 @@ export default function App() {
       if (cleanupErrors.length) setError(`Deleted “${label}”, but some sub-agent cleanup did not finish: ${cleanupErrors.join(" ")}`);
       return true;
     } catch (reason) {
+      if (strict) throw reason;
       setError(friendlyError(reason));
       return false;
     } finally {
@@ -7428,14 +7454,21 @@ export default function App() {
   };
 
   const openStudio = (tab: StudioTab) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     setStudioTab(tab);
     setStudioOpen(true);
     if (tab === "git") void refreshGitHubAccount();
   };
 
   const openGitRoute = (route: Omit<GitRoute, "nonce">) => {
-    if (isVoiceInputLocked()) return;
+    if (isRemoteMachineActive()) {
+      gitRouteNonceRef.current += 1;
+      setGitRoute({ ...route, nonce: gitRouteNonceRef.current });
+      setStudioTab("git");
+      setRemoteStudioOpen(true);
+      return;
+    }
+    if (localInputBlocked()) return;
     gitRouteNonceRef.current += 1;
     setGitRoute({ ...route, nonce: gitRouteNonceRef.current });
     openStudio("git");
@@ -7489,8 +7522,8 @@ export default function App() {
     { label: "Configured sub-agents", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
     { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
     { label: "Permissions", value: permissionLabel(effectiveSettings.permission) },
-    { label: "Service tier", value: settings.serviceTier || "standard" },
-  ], [activeDelegationPolicy?.collaborationV2, activeProject, childAgentSummary, effectiveSettings, settings.projectInstructionsEnabled, settings.projectClaudeInstructionsEnabled, settings.serviceTier, skills, skillsFolder]);
+    { label: "Service tier", value: effectiveSettings.serviceTier || "standard" },
+  ], [activeDelegationPolicy?.collaborationV2, activeProject, childAgentSummary, effectiveSettings, settings.projectInstructionsEnabled, settings.projectClaudeInstructionsEnabled, skills, skillsFolder]);
 
   const startReview = async () => {
     if (!activeThread || !activeProject) return;
@@ -7525,7 +7558,7 @@ export default function App() {
   };
 
   const openAgent = async (threadId: string) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     const localLink = childAgentLinks[threadId];
     const nativeLink = nativeAgentLinks[threadId];
     if (nativeLink?.runtime === "claude" || threadId.startsWith("claude-native:")) {
@@ -7575,8 +7608,8 @@ export default function App() {
   };
 
   const forkThread = async (checkpoint?: CheckpointRecord) => {
-    if (isVoiceInputLocked()) return;
-    const voiceGeneration = voiceInputLockGeneration();
+    if (localInputBlocked()) return;
+    const voiceGeneration = localInputGeneration();
     if (!activeThread) return;
     if (activeThreadWorktree && activeThreadWorktree.status !== "removed") {
       setError(
@@ -7608,7 +7641,7 @@ export default function App() {
       persistThreadReasoning(result.thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
       // The fork remains available in the sidebar, but a voice session that
       // started during preparation permanently abandons this navigation.
-      if (isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return;
+      if (localInputBlocked() || voiceGeneration !== localInputGeneration()) return;
       setActiveThread(loaded.thread);
       const history = timelineFromTurns(loaded.turns, { includeContextCompaction: effectiveSettings.provider === "openai" });
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace?.path, loaded.history);
@@ -7623,16 +7656,17 @@ export default function App() {
     }
   };
 
+  /** Fork for a host request: same bookkeeping, no navigation, failures thrown. */
   const rollbackTurn = async () => {
-    if (isVoiceInputLocked()) return;
-    const voiceGeneration = voiceInputLockGeneration();
+    if (localInputBlocked()) return;
+    const voiceGeneration = localInputGeneration();
     if (!activeThread) return;
     if (!await confirmDialog("Undo the last turn?\n\nThis permanently removes the latest exchange from the conversation. Files changed by the turn are not reverted.")) return;
     try {
       await waitForThreadPreparation(activeThread.id);
       const result = await rpc<{ thread: Thread }>("thread/rollback", { threadId: activeThread.id, numTurns: 1 });
       rememberThread(result.thread);
-      if (isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return;
+      if (localInputBlocked() || voiceGeneration !== localInputGeneration()) return;
       setActiveThread(sidebarThread(result.thread));
       const history = timelineFromTurns(result.thread.turns, {
         includeContextCompaction: providerFromThread(activeThread, projectDefaultProvider) === "openai",
@@ -8645,8 +8679,8 @@ export default function App() {
   };
 
   const cloneGitHubProject = async (url: string, parent: string): Promise<boolean> => {
-    if (isVoiceInputLocked()) return false;
-    const voiceGeneration = voiceInputLockGeneration();
+    if (localInputBlocked()) return false;
+    const voiceGeneration = localInputGeneration();
     if (githubClonePendingRef.current) return false;
     const target = parseGitHubCloneTarget(url);
     if (!target) throw new Error("Enter a valid GitHub repository URL with a cross-platform folder name.");
@@ -8660,7 +8694,7 @@ export default function App() {
       const project: Project = existing ?? { id: crypto.randomUUID(), name: target.name, path: destination };
       // A clone can take minutes. Never replace projects added while it was running.
       if (!existing) setProjects((current) => [...current, project]);
-      if (isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return true;
+      if (localInputBlocked() || voiceGeneration !== localInputGeneration()) return true;
       setActiveProjectId(project.id);
       setWorkspaceMode("project");
       showSuccessToast("GitHub repository cloned and added");
@@ -8680,6 +8714,10 @@ export default function App() {
     if (!activeProject || !projectRun) return;
     if (!runtimeStatus?.available) {
       setRuntimeSetupOpen(true);
+      return;
+    }
+    if (hostCommandBusy(activeExecutionPath || activeProject.path, "run")) {
+      setError("A paired device is already running this project's command. Wait for it to finish.");
       return;
     }
     if (terminal.running) {
@@ -8981,23 +9019,446 @@ export default function App() {
 
   useAppShortcuts({
     escapeStopsRun: settings.escapeStopsRun,
-    running: Boolean((running || childrenRunning) && activeThread),
+    // Hidden local work must not answer keys meant for the machine on screen.
+    running: remoteActive ? remoteRunning : Boolean((running || childrenRunning) && activeThread),
     modalOpen: Boolean(voiceSession) || spellingMenuOpen || confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
-    threadOpen: Boolean(activeThreadId),
-    workspaceOpen: studioOpen && Boolean(activeProject),
-    workspaceAvailable: Boolean(activeProject),
-    toggleWorkspace: () => (studioOpen ? setStudioOpen(false) : openStudio(studioTab)),
-    closeWorkspace: () => setStudioOpen(false),
+    threadOpen: remoteActive ? remoteThreadOpen : Boolean(activeThreadId),
+    workspaceOpen: remoteActive ? remoteStudioOpen : studioOpen && Boolean(activeProject),
+    workspaceAvailable: remoteActive || Boolean(activeProject),
+    toggleWorkspace: () => { if (remoteActive) setRemoteStudioOpen((open) => !open); else if (studioOpen) setStudioOpen(false); else openStudio(studioTab); },
+    closeWorkspace: () => { if (remoteActive) setRemoteStudioOpen(false); else setStudioOpen(false); },
     toggleCommandPalette: () => setCommandPaletteOpen((open) => !open),
     openConversationSearch: () => {
+      if (isRemoteMachineActive()) { machineActions()?.findInConversation(); return; }
       setConvSearchOpen(true);
       requestAnimationFrame(() => convSearchInputRef.current?.focus());
     },
-    newThread,
+    newThread: () => { if (isRemoteMachineActive()) machineActions()?.newThread(); else newThread(); },
     openSettings,
-    stopTurn: () => void stopTurnAndChildren(),
+    stopTurn: () => { if (isRemoteMachineActive()) machineActions()?.stopTurn(); else void stopTurnAndChildren(); },
   });
+  /** Things Settings can start only happen on this device, which isn't on
+   * screen. Saying so beats a button that does nothing. */
+  const noticeLocalOnly = () => {
+    if (!isRemoteMachineActive()) return false;
+    showToast(`You're viewing ${remoteMachineName}. Switch to ${localMachine} to do this.`, "info");
+    return true;
+  };
+  useEffect(() => {
+    if (!remoteActive) return;
+    setCommandPaletteOpen(false);
+    setPermissionOpen(false);
+    setDropActive(false);
+  }, [remoteActive]);
+  // Other machines stay ready, so switching to one shows what is already known.
+  useEffect(() => {
+    if (!machineOnline && !remoteActive) return;
+    void loadRemoteShell().then(setRemoteUi);
+    void import("./lib/remote/remoteWork").then(({ keepRemoteDevices }) => {
+      const entries = machineOnline ? machineOnline.split(",").map((entry) => entry.split(":")) : [];
+      keepRemoteDevices(entries.map(([device]) => device), entries.filter(([, online]) => online === "1").map(([device]) => device));
+    });
+  }, [machineOnline, remoteActive]);
+
+  // Serving other devices starts with the Allow access switch and ends with it,
+  // so nobody who leaves it off loads or runs any of this.
+  // Everything the host reads or runs, current as of this render. Host requests
+  // arrive at any time, so nothing below captures state from one render.
+  const remoteHostValues = {
+    settleRemoteCheckpoint, chatWorkspace, runtimeStatus, rememberThread, reconcileIdleClaudeNativeChildren, activeThreadId, activeProject, workspaceGitInfo, worktreeBusy,
+    runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, childAgentReadiness, skills, workflows, pinnedThreadIds,
+    archiveThreadRecord, deleteThreadRecord, setProjects,
+    captureChildStopFrontier, cancelChildAgentsFor, autoPublish, checkpoints, checkpointHeads, toggleCheckpointAccepted, stopChildAgent, stageDelegationCrew,
+    parentRunObligations, refreshModels, refreshClaudeModels, refreshCursorModels, refreshOpenRouterModels, terminal, checks,
+    automaticTitles, localTranscriptSaves, invalidateChildAgentGuidance, retryChildAgentGuidance, hasChildStartInFlight,
+    newThread, loadThreads, activeWorkspace, childAgentPolicies, projectDefaultProvider, threadModels, effectiveSettings,
+    projectActions, workflowRuns, threadHandoffs, mcpServers, beginRemoteAcceptance, stopRemoteWorker, scheduledPromptCounts,
+    // Live per-provider popover views, not whichever provider this host has selected.
+    getHeaderAccountUsage: () => {
+      const now = Date.now();
+      const openAiOwned = openAiUsageSnapshot?.accountKey === openAiAccountKey ? openAiUsageSnapshot : null;
+      const claudeOwned = claudeUsageSnapshot?.accountKey === claudeAccountKey ? claudeUsageSnapshot : null;
+      const openAiCurrent = currentAccountUsageSnapshot(openAiOwned, openAiAccountKey, now);
+      const claudeCurrent = currentAccountUsageSnapshot(claudeOwned, claudeAccountKey, now);
+      return (["openai", "claude"] as const).map((provider) => ({ provider, display: settings.usageDisplay,
+        view: providerAccountUsage(provider, {
+          openAiRateLimits: openAiCurrent?.limits ?? null, openAiRateLimitsRead: Boolean(openAiCurrent), openAiUpdatedAt: openAiOwned?.updatedAt,
+          openAiConnected: account?.type === "chatgpt", openAiApiKey: openAiBilling === "apiKey", openAiApiKeyReady: account?.type === "apiKey",
+          claudeStatus, claudeRateLimits: claudeCurrent?.limits ?? null, claudeUpdatedAt: claudeOwned?.updatedAt,
+          cursorStatus, openRouterReady, openRouterCredits, openRouterCreditsRead, openRouterCreditsError, lmStudioReady,
+          usageDisplay: settings.usageDisplay, now,
+        }),
+      }));
+    },
+  };
+  // How many providers a paired device could use here, for the host's own diagnostics.
+  // Told when a lease attaches and when the count moves. It never polls.
+  const hostLeaseGeneration = useRef<number | null>(null);
+  const hostReadyProviders = [childAgentReadiness.codexRuntimeAvailable && childAgentReadiness.openAiSignedIn, childAgentReadiness.openRouterReady,
+    childAgentReadiness.lmStudioReady, childAgentReadiness.claudeReady, childAgentReadiness.cursorReady].filter(Boolean).length;
+  const hostReadyRef = useRef(hostReadyProviders);
+  hostReadyRef.current = hostReadyProviders;
+  const reportHostReadiness = useCallback(() => {
+    const generation = hostLeaseGeneration.current;
+    if (generation === null) return;
+    void invoke("remote_host_provider_status", { generation, readyProviders: hostReadyRef.current, totalProviders: 5 }).catch(() => undefined);
+  }, []);
+  useEffect(() => { reportHostReadiness(); }, [hostReadyProviders, reportHostReadiness]);
+  const remoteHostLive = useRef({ ...remoteHostValues, stopWorkflowRun: undefined as ((workflowId: string, runId: string, stopRoot?: () => Promise<void>) => Promise<boolean>) | undefined,
+    runWorkflow: undefined as RemoteWorkflowEngine["runWorkflow"] | undefined });
+  Object.assign(remoteHostLive.current, remoteHostValues);
+  const hostGitCacheRef = useRef(new Map<string, WorkspaceGitInfo | null>());
+  useEffect(() => {
+    if (!hostingOn) return;
+    let disposed = false;
+    let dispose: (() => void) | undefined;
+    const live = remoteHostLive;
+    const archivedRecord = (threadId: string) => archivedThreadsRef.current.find((record) => record.id === threadId);
+    const projectIdForPath = (path: string) => projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(path))?.id
+      ?? (live.current.chatWorkspace && normalizedProjectPath(live.current.chatWorkspace.path) === normalizedProjectPath(path) ? live.current.chatWorkspace.id : null);
+    // Live getters and bookkeeping only. Nothing here selects a thread or
+    // changes what the user of this device is looking at.
+    const sources: HostContextSources = {
+      getWorkspaces: () => {
+        const chat = live.current.chatWorkspace;
+        return chat ? [...projectsRef.current, chat] : projectsRef.current;
+      },
+      getKnownThreads: () => knownThreadsRef.current ?? {},
+      getBindings: () => threadProjectBindingsRef.current ?? {},
+      getOwnershipLinks: () => childThreadLinksRef.current,
+      getArchivedThreadIds: () => new Set(archivedThreadsRef.current.map((record) => record.id)),
+      getArchivedThreads: () => archivedThreadsRef.current.map(synthesizedArchivedThread),
+      getPinnedThreadIds: () => new Set(live.current.pinnedThreadIds),
+      getUnavailableThreadIds: () => deletedThreadIdsRef.current,
+      getRuntime: () => ({
+        available: Boolean(live.current.runtimeStatus?.available),
+        dataHome: live.current.runtimeStatus?.dataHome,
+      }),
+      getDefaultProvider: () => settingsRef.current.provider,
+      watchThreadNames: () => watchThreadNameSaves(),
+      getGrant: (device) => useRemoteDevices.getState().snapshot?.devices.find((entry) => entry.fingerprint === device)?.grant ?? null,
+      executionPathFor,
+      onCursorSession: (threadId, sessionId) => { cursorSessionIdsRef.current[threadId] = sessionId; },
+      rememberThread: (thread) => live.current.rememberThread(thread),
+      reconcile: async (isCurrent) => {
+        const roots = new Set(Object.values(nativeAgentLinksRef.current).map((link) => link.rootThreadId));
+        for (const threadId of roots) {
+          if (!isCurrent()) return;
+          await live.current.reconcileIdleClaudeNativeChildren(threadId);
+        }
+      },
+      getSettings: () => settingsRef.current,
+      getThreadModels: () => threadModelsRef.current,
+      getThreadReasoning: () => threadReasoningRef.current,
+      getThreadSubagents: () => threadSubagentSettingsRef.current,
+      getRuntimeModels: () => live.current.runtimeModels,
+      getBaseContext: () => {
+        const context = turnRunnerContextRef.current;
+        if (!context) throw new HostReadError("host_unavailable", "Mythra Code is still starting.");
+        return context;
+      },
+      getWorkspaceGitInfo: (workspaceId) => {
+        if (live.current.activeProject?.id === workspaceId) return selectedHostWorkspaceGit(hostGitCacheRef.current, workspaceId, live.current.workspaceGitInfo);
+        const path = projectsRef.current.find((project) => project.id === workspaceId)?.path;
+        return path ? hostWorkspaceGit(hostGitCacheRef.current, workspaceId, () => readWorkspaceGitInfo(path)) : null;
+      },
+      refreshWorkspaceGitInfo: async (workspaceId) => {
+        const path = projectsRef.current.find((project) => project.id === workspaceId)?.path;
+        if (path) await refreshHostWorkspaceGit(hostGitCacheRef.current, workspaceId, () => readWorkspaceGitInfo(path),
+          live.current.activeProject?.id === workspaceId ? live.current.workspaceGitInfo : undefined);
+      },
+      // The busy flag describes the worktree of the thread on screen.
+      isWorktreeBusy: (threadId) => Boolean(threadId && threadId === live.current.activeThreadId && live.current.worktreeBusy),
+      onRemoteCodexRuntimeOwned: (threadId, instance) => {
+        codexRuntimeOwnersRef.current.set(threadId, instance);
+        knownCodexRuntimeInstancesRef.current.add(instance);
+        if (useTaskStore.getState().activeThreadId === threadId) activeCodexRuntimeInstanceRef.current = instance;
+      },
+      getProviderCatalog: () => hostProviderCatalog({ ...live.current, ready: {
+        openai: Boolean(live.current.childAgentReadiness.openAiSignedIn), claude: Boolean(live.current.childAgentReadiness.claudeReady), cursor: Boolean(live.current.childAgentReadiness.cursorReady),
+        openrouter: Boolean(live.current.childAgentReadiness.openRouterReady), lmstudio: Boolean(live.current.childAgentReadiness.lmStudioReady),
+      } }),
+      getHeaderAccountUsage: () => live.current.getHeaderAccountUsage(),
+      getThreadCrew: (threadId) => {
+        const policy = childAgentPolicyForThread(childAgentPoliciesRef.current, threadId);
+        return policy ? { maxConcurrent: policy.pendingRecapture?.maxConcurrent ?? policy.maxConcurrent, targets: policy.pendingRecapture?.targets ?? policy.targets } : undefined;
+      },
+      stageThreadCrew: (threadId, next, dryRun) => {
+        const policy = childAgentPolicyForThread(childAgentPoliciesRef.current, threadId);
+        if (!policy) return "none";
+        const task = useTaskStore.getState().tasks[threadId];
+        if (task?.status === "starting" || task?.status === "running" || task?.queuedTurns.length || task?.agents.some((agent) => isActiveAgentRecord(agent.status))) return "busy";
+        if (next.targets.length && !readyChildAgentTargets({ enabled: true, targets: next.targets }, live.current.childAgentReadiness).length) return "not-ready";
+        if (!dryRun) live.current.stageDelegationCrew(policy, next.maxConcurrent, next.targets);
+        return "staged";
+      },
+      getParentObligations: (run) => live.current.parentRunObligations(run),
+      getAutoPublish: (workspaceId) => {
+        const config = live.current.autoPublish.configs[workspaceId];
+        return { enabled: Boolean(config?.enabled), status: config?.status ?? "idle", message: config?.message ?? "Automatic publishing is off.",
+          ...(config?.binding.repository ? { repository: config.binding.repository } : {}) };
+      },
+      getScheduledCounts: () => live.current.scheduledPromptCounts,
+      getProjectActions: () => live.current.projectActions,
+      getHostWorkflows: () => live.current.workflows,
+      getHostWorkflowRuns: () => live.current.workflowRuns,
+      getThreadHandoffs: () => live.current.threadHandoffs,
+      // Connected servers are only known for the project open on this machine.
+      getHostTools: (workspaceId) => workspaceId === live.current.activeWorkspace?.id ? live.current.mcpServers : undefined,
+      getAgentLifecycle: () => ({ beginAcceptance: (rootThreadId, worker) => {
+        try { return live.current.beginRemoteAcceptance(rootThreadId, worker); }
+        catch (reason) { throw new HostReadError("busy", reason instanceof Error ? reason.message : "This sub-agent can't be signed off right now."); }
+      }, stopWorker: (rootThreadId, worker, cutoff, assertAllowed) => live.current.stopRemoteWorker(rootThreadId, worker, cutoff, assertAllowed) }),
+      // The engine itself, not the screen's launch wrappers: a remote run must not navigate here.
+      getWorkflowEngine: () => {
+        const { runWorkflow, stopWorkflowRun } = live.current;
+        if (!runWorkflow || !stopWorkflowRun) throw new HostReadError("host_unavailable", "Mythra Code is still starting.");
+        return { runWorkflow, stopWorkflowRun };
+      },
+      getLocalSkills: () => live.current.skills,
+      isLocalCommandRunning: (root, kind) => kind === "run" ? live.current.terminal.runningIn(root).running : live.current.checks.runningIn(root),
+      refreshProviderCatalog: async (provider) => {
+        const { refreshModels, refreshClaudeModels, refreshCursorModels, refreshOpenRouterModels } = live.current;
+        if (provider === "claude") await refreshClaudeModels();
+        else if (provider === "cursor") await refreshCursorModels();
+        else if (provider === "openrouter") await refreshOpenRouterModels();
+        else if (provider === "openai") await refreshModels();
+      },
+      settleRemoteCheckpoint: (id, error) => live.current.settleRemoteCheckpoint(id, error),
+      getStudioReads: () => ({
+        getCheckpoints: () => live.current.checkpoints,
+        getCheckpointHead: (root) => live.current.checkpointHeads[normalizedProjectPath(root)],
+        getThreadWorktree: (threadId) => threadWorktreesRef.current[threadId],
+      }),
+      getPublicSkills: () => live.current.skills.map((skill) => ({ name: skill.name, description: skill.description, enabled: skill.enabled })),
+      getPublicWorkflows: (workspaceId) => live.current.workflows.filter((workflow) => workflow.enabled && (!workflow.projectId || workflow.projectId === workspaceId))
+        .map((workflow) => ({ id: workflow.id, name: workflow.name, description: workflow.description })),
+    };
+    const stop: StopActionSources = {
+      bumpRootCutoffIntent: (threadId) => { rootCutoffIntentRef.current.set(threadId, (rootCutoffIntentRef.current.get(threadId) ?? 0) + 1); },
+      captureChildStopFrontier: (threadId) => live.current.captureChildStopFrontier(threadId),
+      cancelChildAgentsFor: (threadId, frontier) => live.current.cancelChildAgentsFor(threadId, frontier as ReturnType<typeof captureChildStopFrontier>),
+      stopWorkflow: (workflowId, runId, stopRoot) => live.current.stopWorkflowRun?.(workflowId, runId, stopRoot) ?? Promise.resolve(false),
+    };
+    const rows: HostRowActions = {
+      archivedThread: (threadId) => {
+        const record = archivedRecord(threadId);
+        const workspaceId = record ? projectIdForPath(record.path) : null;
+        if (!record || !workspaceId) return null;
+        if (record.provider) return { thread: synthesizedArchivedThread(record), workspaceId };
+        // An old record names no provider. The transcript says, exactly as local restore and delete find out.
+        return (async () => {
+          const local = (await loadClaudeTranscript(record.id)) ?? (await loadCursorTranscript(record.id));
+          return { thread: local?.thread ?? synthesizedArchivedThread(record), workspaceId };
+        })();
+      },
+      execute: async (op, args, operation) => {
+        const workspaceId = typeof args.workspaceId === "string" ? args.workspaceId : "";
+        switch (op) {
+          case "projects.remove": {
+            const project = projectsRef.current.find((entry) => entry.id === workspaceId);
+            if (!project) throw new HostReadError("thread_unavailable", "This project is unavailable.");
+            if (Object.values(threadWorktreesRef.current).some((record) => normalizedProjectPath(record.projectPath) === normalizedProjectPath(project.path) && record.status !== "removed")) {
+              throw new HostReadError("busy", "Remove this project's isolated worktrees first.");
+            }
+            operation.assertAllowed();
+            live.current.autoPublish.disable(project.id);
+            live.current.setProjects((current) => current.filter((entry) => entry.id !== project.id));
+            if (activeProjectIdRef.current === project.id) {
+              const next = projectsRef.current.find((entry) => entry.id !== project.id);
+              setActiveProjectId(next?.id ?? null);
+              if (!next) setWorkspaceMode("chat");
+            }
+            return { state: "accepted", workspaceId };
+          }
+          default: throw new HostReadError("unsupported", "This action isn't available.");
+        }
+      },
+    };
+    /** Sidebar ownership for one remote row change. Native has done the provider
+     * work and the saves, so `committed` only brings this device's memory and screen level. */
+    const lifecycleSources: ThreadLifecycleSources = {
+      evidence: (threadId) => ({
+        deleted: deletedThreadIdsRef.current.has(threadId),
+        archived: archivedThreadsRef.current.some((record) => record.id === threadId),
+        worktree: threadWorktreesRef.current[threadId],
+        worktreeBusy: live.current.activeThreadId === threadId && live.current.worktreeBusy,
+        childLinks: childAgentLinksRef.current,
+        nativeLinks: nativeAgentLinksRef.current,
+        childStartInFlight: live.current.hasChildStartInFlight(threadId),
+      }),
+      reserve: (op, threadId) => {
+        if (hostRowReservationsRef.current.has(threadId) || archivingThreadIdsRef.current.has(threadId)) throw new HostReadError("busy", "Another action is changing this conversation.");
+        const token = Symbol(threadId);
+        const removal = op === "thread.archive" || op === "thread.delete";
+        hostRowReservationsRef.current.set(threadId, token);
+        if (removal) {
+          archivingThreadIdsRef.current.add(threadId);
+          setThreadAvailabilityRevision((revision) => revision + 1);
+          invalidatePendingThreadSelection(threadId);
+        }
+        return {
+          assertOwned: () => {
+            if (hostRowReservationsRef.current.get(threadId) !== token) throw new HostReadError("stale_target", "This conversation changed.");
+            if (!removal && archivingThreadIdsRef.current.has(threadId)) throw new HostReadError("busy", "This conversation is being removed.");
+          },
+          release: () => {
+            if (hostRowReservationsRef.current.get(threadId) === token) hostRowReservationsRef.current.delete(threadId);
+            if (!removal) return;
+            archivingThreadIdsRef.current.delete(threadId);
+            setThreadAvailabilityRevision((revision) => revision + 1);
+            live.current.retryChildAgentGuidance(threadId);
+          },
+        };
+      },
+      cancelTitle: (threadId) => live.current.automaticTitles.cancel(threadId),
+      joinRenames: async (threadId) => { await threadRenameWritesRef.current.get(threadId)?.promise.catch(() => undefined); },
+      waitPreparation: (threadId) => waitForThreadPreparation(threadId),
+      flushTranscript: (threadId) => live.current.localTranscriptSaves.flush(threadId),
+      cancelTranscriptSave: (threadId) => live.current.localTranscriptSaves.cancel(threadId),
+      committed: async ({ op, previous, threadId, thread, rows: committedRows, history }) => {
+        const row = (key: string) => committedRows.find((entry) => entry.key === key)?.value;
+        const known = row("kiwi.knownThreads"), bindings = row("kiwi.threadProjects");
+        if (known && typeof known === "object") knownThreadsRef.current = known as ThreadSidebarIndex;
+        if (bindings && typeof bindings === "object") threadProjectBindingsRef.current = bindings as Record<string, string>;
+        const id = previous.id, provider = providerFromThread(thread ?? previous, live.current.projectDefaultProvider);
+        const releaseChildren = async (reason: string, deleted: boolean) => {
+          live.current.invalidateChildAgentGuidance(id, reason);
+          await live.current.cancelChildAgentsFor(id).catch(() => undefined);
+          await releaseChildAgentSessions(live.current.childAgentPolicies, id, childAgentLinksRef.current, Boolean(nativeAgentLinksRef.current[id])).catch(() => undefined);
+          cancelQueuedForChild(id, reason);
+          if (deleted) { forgetChildMailbox(id); forgetSubagentCapabilities(id); }
+        };
+        const leaveThread = () => {
+          if (useTaskStore.getState().activeThreadId === id) live.current.newThread();
+          forgetRuntimePerformanceProvider(id);
+          forgetTurnContext(id);
+          forgetQueuedDeliveries(id);
+          setThreads((current) => current.filter((entry) => entry.id !== id));
+        };
+        switch (op) {
+          case "thread.rename": {
+            markThreadNameSaved(id);
+            const name = thread?.name ?? null;
+            setThreads((entries) => entries.map((entry) => entry.id === id ? { ...entry, name } : entry));
+            setActiveThread((entry) => entry?.id === id ? { ...entry, name } : entry);
+            return;
+          }
+          case "thread.archive":
+            await releaseChildren("The conversation was archived.", false);
+            leaveThread();
+            return;
+          case "thread.delete":
+            // Before any await: this ID is gone for everything from here on.
+            deletedThreadIdsRef.current.add(id);
+            delete cursorSessionIdsRef.current[id];
+            await releaseChildren("The conversation was deleted.", true);
+            leaveThread();
+            forgetQuestionRecords(id);
+            setAttachmentDrafts((current) => forgetAttachmentDraft(current, id));
+            return;
+          case "thread.restore":
+            if (provider === "cursor") {
+              const transcript = await loadCursorTranscript(id).catch(() => null);
+              if (transcript?.cursorSessionId) cursorSessionIdsRef.current[id] = transcript.cursorSessionId;
+            }
+            void live.current.loadThreads(live.current.activeWorkspace);
+            return;
+          case "thread.fork":
+            registerRuntimePerformanceProvider(threadId, provider);
+            void live.current.loadThreads(live.current.activeWorkspace);
+            return;
+          case "thread.rollback":
+            // The timeline was already replaced with the provider's history. This is the sidebar's copy.
+            if (history) setActiveThread((entry) => entry?.id === id ? sidebarThread(history) : entry);
+            return;
+          default: return;
+        }
+      },
+    };
+    const parity: HostParityActions = createHostParity({
+      getProject: (workspaceId) => projectsRef.current.find((project) => project.id === workspaceId) ?? null,
+      updateProject: (workspaceId, change) => live.current.setProjects((current) => current.map((project) => project.id === workspaceId ? change(project) : project)),
+      getWorkflows: () => live.current.workflows,
+      getPublicSkills: sources.getPublicSkills,
+      stopAgent: (parent, agentId) => live.current.stopChildAgent(childAgentLinksRef.current[agentId]?.rootThreadId ?? nativeAgentLinksRef.current[agentId]?.rootThreadId ?? parent, agentId),
+      getArchived: (workspaceId) => archivedThreadsRef.current.filter((record) => projectIdForPath(record.path) === workspaceId)
+        .map((record) => ({ id: record.id, label: record.label, archivedAt: record.archivedAt, provider: record.provider, child: Boolean(childThreadLinksRef.current[record.id]) })),
+      searchThreads: async (context, query) => {
+        const workspacePath = normalizedProjectPath(context.activeWorkspace?.path ?? "");
+        const bindings = threadProjectBindingsRef.current ?? {};
+        const inWorkspace = (thread: Thread) => normalizedProjectPath(bindings[thread.id] || thread.cwd) === workspacePath;
+        const known = Object.values(knownThreadsRef.current ?? {}).filter(inWorkspace);
+        const words = query.toLowerCase();
+        const found = new Map(known.filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(words)).map((thread) => [thread.id, thread]));
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10_000);
+        try {
+          if (live.current.runtimeStatus?.available) {
+            const page = await rpc<ThreadSearchResponse>("thread/search", threadSearchParams(query, 50, undefined));
+            for (const thread of threadsForWorkspace(page?.data ?? [], context.activeWorkspace?.path ?? "", bindings)) found.set(thread.id, thread);
+          }
+          const locals = known.flatMap((thread): { provider: "claude" | "cursor"; threadId: string }[] => isClaudeThread(thread) ? [{ provider: "claude", threadId: thread.id }]
+            : isCursorThread(thread) ? [{ provider: "cursor", threadId: thread.id }] : []);
+          const local = await searchLocalTranscripts(query, locals, controller.signal);
+          for (const hit of local.hits) {
+            const thread = knownThreadsRef.current?.[hit.threadId];
+            if (thread) found.set(thread.id, thread);
+          }
+        } catch { /* Name and preview matches stand on their own. */ } finally { clearTimeout(timer); }
+        return [...found.values()];
+      },
+      archiveThread: async (threadId) => {
+        const thread = knownThreadsRef.current?.[threadId];
+        if (!thread) throw new HostReadError("thread_unavailable", "A conversation is unavailable.");
+        await live.current.archiveThreadRecord(thread, false, false, true);
+      },
+      deleteThread: async (threadId) => { await live.current.deleteThreadRecord(threadId, archivedRecord(threadId)?.label ?? "this conversation", false, true); },
+      stopWorkflow: (workflowId, runId) => live.current.stopWorkflowRun?.(workflowId, runId) ?? Promise.resolve(false),
+      pumpQueue: (threadId) => turnRunnerRef.current?.pumpRemoteQueue(threadId),
+      // The checks and the briefing a local handoff uses, for the thread that was asked about.
+      handoffPrompt: async (context) => {
+        const thread = context.activeThread;
+        if (!thread) throw new HostReadError("thread_unavailable", "This conversation is unavailable.");
+        const isolation = threadWorktreesRef.current[thread.id];
+        if (isolation && isolation.status !== "removed") throw new HostReadError("busy", "Provider handoff is unavailable while this conversation owns an isolated worktree.");
+        const task = useTaskStore.getState().tasks[thread.id];
+        if (task?.status === "starting" || task?.status === "running") throw new HostReadError("busy", "Stop the running task before starting a thread with another provider.");
+        const { buildProviderHandoffPrompt } = await import("./lib/providerHandoffPrompt");
+        return buildProviderHandoffPrompt({
+          title: thread.name || thread.preview || "Untitled task",
+          sourceProvider: providerFromThread(thread, live.current.projectDefaultProvider),
+          sourceModel: live.current.threadModels[thread.id] ?? context.effectiveSettings.model,
+          workspaceName: context.activeWorkspace?.name ?? "Workspace",
+          workspacePath: context.activeWorkspace?.path ?? thread.cwd,
+          messages: task?.messages ?? [],
+        });
+      },
+    });
+    void import("./lib/remote/host").then(({ createRemoteHost, createRemoteWork, createThreadRowLifecycle }) => {
+      if (disposed) return;
+      rows.threadLifecycle = createThreadRowLifecycle(lifecycleSources);
+      sources.canArchiveThreads = () => Boolean(rows.threadLifecycle);
+      sources.createWork = (lease) => { hostLeaseGeneration.current = lease.generation; reportHostReadiness(); return createRemoteWork({
+        ...lease, sources, stop, rows, parity,
+        getRunner: () => {
+          const runner = turnRunnerRef.current;
+          if (!runner) throw new HostReadError("host_unavailable", "Mythra Code is still starting.");
+          return runner;
+        },
+        subscribeAuthority: (changed) => useRemoteDevices.subscribe(changed),
+      }); };
+      const host = createRemoteHost(sources);
+      remoteHostRef.current = host;
+      dispose = () => { if (remoteHostRef.current === host) remoteHostRef.current = null; host.dispose(); };
+      void host.start();
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+      dispose?.();
+    };
+  }, [archivedThreadsRef, executionPathFor, hostingOn, nativeAgentLinksRef, projectsRef, settingsRef, threadModelsRef, threadReasoningRef, threadSubagentSettingsRef, watchThreadNameSaves]);
   useThreadHealth({
     runtimeAvailable: Boolean(runtimeStatus?.available),
     threadFor: (threadId) => knownThreadsRef.current?.[threadId] ?? (activeThread?.id === threadId ? activeThread : undefined),
@@ -9024,7 +9485,8 @@ export default function App() {
   const openWorkflowThreadRef = useRef(openAgent);
   openWorkflowThreadRef.current = openAgent;
 
-  const { runWorkflow, stopWorkflow } = useWorkflowEngine({
+  const { runWorkflow, stopWorkflow, stopWorkflowRun } = useWorkflowEngine({
+    trackNativeOwners: hostingOn,
     workflows,
     projects,
     automaticGitInitialization: settings.automaticGitInitialization === true,
@@ -9069,7 +9531,7 @@ export default function App() {
       if (source === "manual") {
         const voiceGeneration = workflowNavigationGenerations.current.get(threadId);
         workflowNavigationGenerations.current.delete(threadId);
-        if (voiceGeneration === undefined || isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return;
+        if (voiceGeneration === undefined || localInputBlocked() || voiceGeneration !== localInputGeneration()) return;
         setActiveProjectId(project.id);
         setWorkspaceMode("project");
         setPendingWorkflowOpen({ projectId: project.id, threadId, voiceGeneration });
@@ -9080,9 +9542,11 @@ export default function App() {
     onError: (message) => setError(message),
   });
   stopWorkflowRef.current = stopWorkflow;
+  remoteHostLive.current.stopWorkflowRun = stopWorkflowRun;
+  remoteHostLive.current.runWorkflow = runWorkflow;
 
   useEffect(() => {
-    if (pendingWorkflowOpen && (isVoiceInputLocked() || pendingWorkflowOpen.voiceGeneration !== voiceInputLockGeneration())) {
+    if (pendingWorkflowOpen && (localInputBlocked() || pendingWorkflowOpen.voiceGeneration !== localInputGeneration())) {
       setPendingWorkflowOpen(null);
       return;
     }
@@ -9096,7 +9560,7 @@ export default function App() {
   }, [activeProject?.id, pendingWorkflowOpen, workspaceMode]);
 
   const openWorkflowRunThread = (threadId: string) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     const run = workflowRuns.find((item) => item.threadId === threadId);
     const workflow = workflows.find((item) => item.lastThreadId === threadId);
     const projectId = run?.projectId ?? workflow?.projectId;
@@ -9109,7 +9573,7 @@ export default function App() {
     }
     setActiveProjectId(project.id);
     setWorkspaceMode("project");
-    setPendingWorkflowOpen({ projectId: project.id, threadId, voiceGeneration: voiceInputLockGeneration() });
+    setPendingWorkflowOpen({ projectId: project.id, threadId, voiceGeneration: localInputGeneration() });
   };
 
   const workflowLaunchRef = useRef(workflowLaunch);
@@ -9124,7 +9588,7 @@ export default function App() {
     setWorkflowLaunch(null);
   }, []);
   const runWorkflowFromShortcut = useCallback((workflow: WorkflowDefinition) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     if (workflowLaunchRef.current || workflowLaunchStarting.current) return;
     if (workflowRuns.some((run) => run.workflowId === workflow.id && run.status === "running")) {
       setError(`“${workflow.name}” is already running.`);
@@ -9136,7 +9600,7 @@ export default function App() {
   }, [workflowRuns, activeProject?.id]);
 
   const invokeComposerWorkflow = (id: string, prompt: string): Promise<boolean> => {
-    if (isVoiceInputLocked()) return Promise.resolve(false);
+    if (localInputBlocked()) return Promise.resolve(false);
     const workflow = workflows.find((item) => item.id === id && item.enabled);
     if (!workflow || workflowLaunchRef.current || workflowLaunchStarting.current) return Promise.resolve(false);
     if (running || hasQueuedWork || attachments.length || feedback.notes.length) {
@@ -9167,7 +9631,7 @@ export default function App() {
   };
 
   const launchReviewedWorkflow = (id: string, variables: Record<string, string>, projectId: string) => {
-    if (isVoiceInputLocked()) return;
+    if (localInputBlocked()) return;
     const launch = workflowLaunchRef.current;
     if (!launch || launch.workflow.id !== id || workflowLaunchStarting.current) return;
     const latest = workflows.find((workflow) => workflow.id === id);
@@ -9183,7 +9647,7 @@ export default function App() {
     workflowLaunchStarting.current = launch;
     workflowLaunchRef.current = null;
     setWorkflowLaunch(null);
-    const voiceGeneration = voiceInputLockGeneration();
+    const voiceGeneration = localInputGeneration();
     void runWorkflow(id, "manual", variables, projectId, {
       userPrompt: launch.prompt,
       onStarted: (threadId) => {
@@ -9279,6 +9743,28 @@ export default function App() {
     </button>;
   });
 
+  const paletteTrigger = (
+    <button className="command-palette-trigger" onClick={() => setCommandPaletteOpen(true)} aria-label="Open command palette">
+      <Search size={13} aria-hidden="true" />
+      <span>Search</span>
+      <kbd>{primaryModifierLabel()}+K</kbd>
+    </button>
+  );
+  const sidebarSplitter = (
+    <div
+      className="sidebar-section-resize"
+      onPointerDown={startSidebarSplitResize}
+      onKeyDown={resizeSidebarSplitWithKeyboard}
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize projects and threads"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(sidebarSplitRatio * 100)}
+      tabIndex={0}
+    />
+  );
+
   // Main renders rows flat; Sub-agents renders the same rows under parents.
   // Inbox cards are memoized; give each thread object one stable open handler
   // so an App render does not re-render hundreds of unchanged cards.
@@ -9347,10 +9833,11 @@ export default function App() {
   }), [settings.warnOnMaxReasoning, attachmentKey, activeWorkspace?.path, effectiveSettings.provider, effectiveSettings.model, settingsOpen]);
 
   return (
-    <div className="app-shell" onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-model-provider={effectiveSettings.provider} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100, ...(activeChatFont.startsWith("custom:") ? { "--chat-font": chatFontCss(activeChatFont, customFonts) } : {}) } as CSSProperties}>
+    <div className="app-shell" data-machine-phase={machinePhase === "idle" ? undefined : machinePhase} onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-model-provider={effectiveSettings.provider} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100, ...(activeChatFont.startsWith("custom:") ? { "--chat-font": chatFontCss(activeChatFont, customFonts) } : {}) } as CSSProperties}>
       <RendererLaunchCommitMarker />
       <MaxReasoningWarningContext.Provider value={maxReasoningWarning}>
-      <FeedbackProvider enabled={Boolean(activeThread) && !settingsOpen && !onboardingOpen} scopeKey={feedbackScope} onAdd={(anchor, comment) => Boolean(feedback.addNote(anchor, comment))}>
+      <FeedbackProvider enabled={(remoteActive ? Boolean(remoteFeedbackScope) : Boolean(activeThread)) && !settingsOpen && !onboardingOpen} scopeKey={remoteActive ? remoteFeedbackScope ?? "" : feedbackScope} onAdd={(anchor, comment) => remoteActive ? addRemoteFeedback(anchor, comment) : Boolean(feedback.addNote(anchor, comment))}>
+      {remoteUi && <remoteUi.RemoteNotices />}
       {successToast && (
         <div ref={mountToast} popover={typeof HTMLElement.prototype.showPopover === "function" ? "manual" : undefined} className={`app-toast ${toastKind}`} role="status" aria-live="polite">
           <span className="app-toast-icon">{toastKind === "success" ? <Check size={14} strokeWidth={2.5} /> : <MessageSquare size={14} />}</span>
@@ -9389,12 +9876,13 @@ export default function App() {
             <MythraMark />
           </div>
           <span>Mythra Code</span>
+          <MachineSwitcher onManageDevices={() => openSettings("devices")} />
           <button className="icon-button subtle collapse-button" onClick={() => setSidebarOpen(false)} title="Hide sidebar" aria-label="Hide sidebar">
             <PanelLeftClose size={17} />
           </button>
         </div>
 
-        <button className="new-thread-button" onClick={newThread} disabled={!activeWorkspace} title={activeWorkspace?.isChat ? "Start a chat without a project folder" : activeProject ? `Start a thread in ${activeProject.name}` : "Select a workspace first"}>
+        <button className="new-thread-button" onClick={remoteActive ? () => machineActions()?.newThread() : newThread} disabled={!remoteActive && !activeWorkspace} title={activeWorkspace?.isChat ? "Start a chat without a project folder" : activeProject ? `Start a thread in ${activeProject.name}` : "Select a workspace first"}>
           <Plus size={16} />
           <span>New thread</span>
           <kbd>{primaryModifierLabel()}+N</kbd>
@@ -9404,26 +9892,14 @@ export default function App() {
             --sidebar-split on this container, written directly while dragging
             and committed to React once on release. */}
         <div className="sidebar-sections" ref={sidebarSectionsRef}>
-        <div className="sidebar-section workspaces-section">
-          <div className="section-label-row">
-            <span className="section-label">Workspaces</span>
-            <button className="icon-button tiny" onClick={addProject} title="Add project" aria-label="Add project">
-              <Plus size={14} />
-            </button>
-          </div>
-          <div className="workspace-list">
-            <button
-              className={`workspace-row chat ${workspaceMode === "chat" ? "active" : ""}`}
-              onClick={() => setWorkspaceMode("chat")}
-              title="Conversations without a project folder"
-              aria-label={chatScheduledCounts ? `Chats, ${scheduledCountsLabel(chatScheduledCounts)}` : "Chats"}
-            >
-              <span className="workspace-icon chat">
-                <MessageSquare size={14} />
-              </span>
-              <span className="workspace-name">Chats</span>
-              <ScheduledCountBadge {...chatScheduledCounts} />
-            </button>
+        <div className="sidebar-machine-lists" hidden={shownRemote || undefined} inert={remoteActive || undefined}>
+        <WorkspacesSection onAdd={addProject}>
+            <ChatsRow
+              active={workspaceMode === "chat"}
+              onOpen={() => setWorkspaceMode("chat")}
+              label={chatScheduledCounts ? `Chats, ${scheduledCountsLabel(chatScheduledCounts)}` : "Chats"}
+              scheduled={chatScheduledCounts}
+            />
             {pinnedProjects.length > 0 && (
               <PinnedWorkspaceGroup count={pinnedProjects.length} containsActiveWorkspace={workspaceMode === "project" && pinnedProjects.some((project) => project.id === activeProjectId)}>
                 {pinnedProjects.map(renderProjectRow)}
@@ -9436,36 +9912,21 @@ export default function App() {
                 Open a folder
               </button>
             )}
-          </div>
-        </div>
+        </WorkspacesSection>
 
-        <div
-          className="sidebar-section-resize"
-          onPointerDown={startSidebarSplitResize}
-          onKeyDown={resizeSidebarSplitWithKeyboard}
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Resize projects and threads"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(sidebarSplitRatio * 100)}
-          tabIndex={0}
-        />
+        {sidebarSplitter}
 
-        <div className="sidebar-section threads-section">
-          <div className="section-label-row">
-            <span className="section-label">Threads</span>
-            {activeWorkspace && <div className="thread-kind-switch" role="group" aria-label="Thread type">
+        <ThreadsSection
+          kindSwitch={activeWorkspace && <div className="thread-kind-switch" role="group" aria-label="Thread type">
               <button className={threadKindView === "main" ? "active" : ""} onClick={() => setThreadKindView("main")} aria-pressed={threadKindView === "main"}>Main <span>{threadKindCounts.main + workspacePendingFirstPrompts.length}</span></button>
               <button className={threadKindView === "subagents" ? "active" : ""} onClick={() => setThreadKindView("subagents")} aria-pressed={threadKindView === "subagents"}>Sub-agents <span>{threadKindCounts.subagents}</span></button>
             </div>}
-          </div>
-          {activeWorkspace && (
-            <div className="thread-search-actions">
-              <label className="thread-search">
-                <Search size={11} />
-                <TransitionInput value={threadSearch} onValueChange={setThreadSearch} placeholder={`Search ${workspaceMode === "chat" ? "chats" : (activeProject?.name ?? "threads")}…`} />
-              </label>
+          search={activeWorkspace && (
+            <ThreadSearch
+              value={threadSearch}
+              onChange={setThreadSearch}
+              placeholder={`Search ${workspaceMode === "chat" ? "chats" : (activeProject?.name ?? "threads")}…`}
+              action={
               <button
                 className="thread-bulk-button"
                 onClick={() => void archiveAllThreadsInInbox()}
@@ -9475,9 +9936,10 @@ export default function App() {
                 <Archive size={12} />
                 <span>Archive all</span>
               </button>
-            </div>
+              }
+            />
           )}
-          <div className="thread-list">
+          list={<>
             {displayedPendingFirstPrompts.map((prompt) => (
               <div key={prompt.id} className={`thread-row-wrap ${selectedFirstPrompt?.id === prompt.id ? "active" : ""}`}>
                 <ThreadInboxCard
@@ -9533,8 +9995,8 @@ export default function App() {
                 {threadSearchStatus ? "No matching conversations."
                   : threadKindView === "subagents" ? "No sub-agent threads yet" : workspaceMode === "chat" ? "No normal chats yet" : "No threads in this project yet"}
               </div>}
-          </div>
-          {workspaceArchived.length > 0 && (
+          </>}
+          footer={workspaceArchived.length > 0 && (
             <div className="archived-threads">
               <div className="archived-header">
                 <button className="archived-toggle" onClick={() => setArchivedOpen((open) => !open)} aria-expanded={archivedOpen}
@@ -9582,19 +10044,25 @@ export default function App() {
                 })}
             </div>
           )}
+        />
         </div>
+        {shownRemote && remoteUi && <ErrorBoundary label="remote device" key={shownMachine}>
+          <remoteUi.RemoteSidebar device={shownMachine} splitter={sidebarSplitter} scale={(settings.uiScale || 100) / 100} active={sidebarOpen && !settingsOpen && !onboardingOpen} />
+        </ErrorBoundary>}
         </div>
 
         <div className="sidebar-footer">
           <button className="sidebar-settings" onClick={() => openSettings()} onMouseEnter={preloadSettingsModal} onFocus={preloadSettingsModal} onPointerDown={preloadSettingsModal}>
             <Settings size={16} />
-            <span>Settings</span>
+            <span>{remoteActive ? `Settings for ${localMachine}` : "Settings"}</span>
             <span className={`provider-dot ${settings.provider}`} title={`Default provider: ${providerLabel(settings.provider)}`} />
           </button>
         </div>
       </aside>
 
       <main inert={settingsOpen || onboardingOpen ? true : undefined} className="main-panel">
+        {/* Hidden, never unmounted: local turns, drafts and listeners carry on. */}
+        <div className="local-machine-surface" inert={remoteActive || undefined} data-covered={shownRemote || undefined}>
         <header className="topbar">
           <div className="topbar-left">
             {!sidebarOpen && (
@@ -9687,11 +10155,7 @@ export default function App() {
                 <Download size={15} />
               </button>
             )}
-            <button className="command-palette-trigger" onClick={() => setCommandPaletteOpen(true)} aria-label="Open command palette">
-              <Search size={13} aria-hidden="true" />
-              <span>Search</span>
-              <kbd>{primaryModifierLabel()}+K</kbd>
-            </button>
+            {paletteTrigger}
             <div className="runtime-status" title={parentRunStatus ? parentRunStatus.title : childrenStatusUnknown && !running && !childrenWorking ? "A sub-agent's current status has not been confirmed." : status}>
               {(running || childrenWorking) && parentRunStatus?.kind !== "paused" ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
               <span>{parentRunStatus?.status ?? (running || childrenWorking ? "Working" : childrenStatusUnknown ? "Status unknown" : "Ready")}</span>
@@ -9771,50 +10235,12 @@ export default function App() {
             <section className="conversation">
               {ActivityDemo ? <Suspense fallback={<div className="timeline-loading">Loading isolated activity preview…</div>}><ActivityDemo /></Suspense> : <>
               {activeThreadId && <ThreadOpenCommitMarker threadId={activeThreadId} commitToken={threadOpenCommitToken} />}
-              {convSearchOpen && activeThreadId && (
-                <div className="conv-search-bar" role="search">
-                  <Search size={12} />
-                  <TransitionInput
-                    ref={convSearchInputRef}
-                    value={convSearchQuery}
-                    onValueChange={(query) => {
-                      setConvSearchQuery(query);
-                      setConvSearchIndex(0);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        setConvSearchIndex((current) => current + (event.shiftKey ? -1 : 1));
-                      }
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setConvSearchOpen(false);
-                        setConvSearchQuery("");
-                      }
-                    }}
-                    placeholder="Search this conversation…"
-                    aria-label="Search this conversation"
-                  />
-                  <small>{convSearchQuery.trim() ? (convSearchCount ? `${(((convSearchIndex % convSearchCount) + convSearchCount) % convSearchCount) + 1} of ${convSearchCount}` : "No matches") : ""}</small>
-                  <button onClick={() => setConvSearchIndex((current) => current - 1)} disabled={!convSearchCount} title="Previous match" aria-label="Previous match">
-                    <ChevronDown style={{ transform: "rotate(180deg)" }} size={13} />
-                  </button>
-                  <button onClick={() => setConvSearchIndex((current) => current + 1)} disabled={!convSearchCount} title="Next match" aria-label="Next match">
-                    <ChevronDown size={13} />
-                  </button>
-                  <button
-                    onClick={() => {
-                      setConvSearchOpen(false);
-                      setConvSearchQuery("");
-                    }}
-                    title="Close search"
-                    aria-label="Close conversation search"
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
-              )}
+              {convSearchOpen && activeThreadId && <ConversationSearchBar
+                inputRef={convSearchInputRef} query={convSearchQuery} index={convSearchIndex} count={convSearchCount}
+                onQuery={(query) => { setConvSearchQuery(query); setConvSearchIndex(0); }}
+                onIndex={setConvSearchIndex}
+                onClose={() => { setConvSearchOpen(false); setConvSearchQuery(""); }}
+              />}
               {visibleStartingPrompt && timelineEmpty ? (
                 <PendingFirstPrompt prompt={visibleStartingPrompt} />
               ) : timelineEmpty || !activeThreadId ? (
@@ -9993,7 +10419,7 @@ export default function App() {
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
-                    {effectiveSettings.provider === "openai" && <ModelPowerControl signedIn={childAgentReadiness.openAiSignedIn} onSignInRequired={() => showToast(providerSignInIssue("openai", childAgentReadiness)!, "info")} providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} loading={runtimeModelsLoading} error={runtimeModelsError} onRefresh={() => void refreshOpenAiModelsFromPicker()} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl signedIn={childAgentReadiness.openAiSignedIn} onSignInRequired={() => showToast(providerSignInIssue("openai", childAgentReadiness)!, "info")} providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={effectiveSettings.serviceTier === "priority"} runtimeModels={runtimeModels} loading={runtimeModelsLoading} error={runtimeModelsError} onRefresh={() => void refreshOpenAiModelsFromPicker()} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={persistComposerFast} />}
                     {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}
@@ -10039,34 +10465,7 @@ export default function App() {
                 }
                 controls={
                   <>
-                    <div className="permission-control" ref={permissionControlRef}>
-                      <button className="toolbar-button" onClick={() => setPermissionOpen((open) => !open)} aria-haspopup="menu" aria-expanded={permissionOpen}>
-                        <PermissionIcon mode={effectiveSettings.permission} />
-                        {permissionLabel(effectiveSettings.permission)}
-                        <ChevronDown size={13} />
-                      </button>
-                      {permissionOpen && (
-                        <div className="permission-menu" role="menu" aria-label="Permission mode">
-                          {(["read-only", "ask", "full"] as PermissionMode[]).map((mode) => (
-                            <button
-                              key={mode}
-                              className={effectiveSettings.permission === mode ? "selected" : ""}
-                              onClick={() => {
-                                persistComposerPermission(mode);
-                                setPermissionOpen(false);
-                              }}
-                            >
-                              <PermissionIcon mode={mode} size={17} />
-                              <span>
-                                <strong>{permissionLabel(mode)}</strong>
-                                <small>{mode === "read-only" ? "Inspect without changing files" : mode === "ask" ? "Work locally; ask for elevated actions" : "Unrestricted local access"}</small>
-                              </span>
-                              {effectiveSettings.permission === mode && <Check size={15} />}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                    <PermissionPicker value={effectiveSettings.permission} open={permissionOpen} rootRef={permissionControlRef} onOpenChange={setPermissionOpen} onChange={persistComposerPermission} />
                     <SubAgentCommandCenter
                       policy={activeThreadSubagentPolicy}
                       engine={sanitizeSubagentEngine(effectiveSettings.subagentEngine)}
@@ -10127,13 +10526,29 @@ export default function App() {
             </section>
           </>
         )}
+        </div>
+        {shownRemote && remoteUi && <ErrorBoundary label="remote device" key={shownMachine}>
+          <remoteUi.RemoteConversation device={shownMachine} notifications={settings.notificationsEnabled} leaving={activeMachine !== shownMachine} sidebarOpen={sidebarOpen} chatFont={activeChatFont} voiceInput={voiceInputConfig}
+            actions={paletteTrigger} modelFavorites={modelFavorites} onToggleModelFavorite={toggleModelFavorite}
+            headerUsageWindows={headerUsageWindows} onHeaderUsageWindow={(provider, label) => setHeaderUsageWindows((current) => ({ ...current, [provider]: label }))} usageDisplay={settings.usageDisplay} onOpenTool={(tab, view) => { setStudioTab(tab); setRemoteStudioOpen(true); if (view) { gitRouteNonceRef.current += 1; setGitRoute({ view, nonce: gitRouteNonceRef.current }); } }}
+            studioToggle={<button className={`workspace-tools-trigger studio-toggle ${remoteStudioOpen ? "active" : ""}`} onClick={() => setRemoteStudioOpen((open) => !open)} title={`Thread tools on ${remoteMachineName}`}>
+              <PanelRight size={17} />
+              <span>Thread tools</span>
+              <kbd>{workspaceShortcutLabel()}</kbd>
+            </button>}
+            onShowSidebar={() => setSidebarOpen(true)} onManageDevices={() => openSettings("devices")} />
+        </ErrorBoundary>}
       </main>
 
+      {shownRemote && remoteUi && <ErrorBoundary label="remote thread tools" key={`remote-tools:${shownMachine}`}>
+        <remoteUi.RemoteStudio device={shownMachine} open={remoteStudioOpen} rootRef={paneRefs.dock} onResizeStart={startPaneResize("dock")} onResizeKeyDown={resizePaneWithKeyboard("dock")}
+          resizeValue={paneSizes.dock} tab={studioTab} gitRoute={gitRoute} onTab={setStudioTab} onClose={() => setRemoteStudioOpen(false)} onFork={() => machineActions()?.forkThread()} />
+      </ErrorBoundary>}
       <ErrorBoundary label="thread tools" key={`workspace-tools:${studioView.attempt}`} resetKey={JSON.stringify([activeProject?.id, activeThreadId, studioTab])} showError={studioOpen} onDismiss={() => setStudioOpen(false)} onRetry={() => setStudioView((current) => ({ View: lazy(loadStudioDock), attempt: current.attempt + 1 }))}>
         <Suspense fallback={null}>
           <StudioDockView
-            open={studioOpen && Boolean(activeProject)}
-            rootRef={paneRefs.dock}
+            open={!shownRemote && studioOpen && Boolean(activeProject)}
+            rootRef={shownRemote ? undefined : paneRefs.dock}
             onResizeStart={startPaneResize("dock")}
             onResizeKeyDown={resizePaneWithKeyboard("dock")}
             resizeValue={paneSizes.dock}
@@ -10155,7 +10570,10 @@ export default function App() {
                 && anchor.command === checks.latest!.command && anchor.cwd === checks.latest!.cwd
                 && anchor.checkedAt === checks.latest!.finishedAt && anchor.status === checks.latest!.status) ? checks.latest.id : null}
               disabledReason={!runtimeStatus?.available ? "Start the local runtime to run checks." : isPullRequestMutationRunning(activeExecutionPath) ? "Wait for the repository operation to finish." : undefined}
-              onRun={() => void checks.start()}
+              onRun={() => {
+                if (activeExecutionPath && hostCommandBusy(activeExecutionPath, "checks")) setError("A paired device is already running this project's checks. Wait for them to finish.");
+                else void checks.start();
+              }}
               onStop={() => { void checks.stop().catch((cause: unknown) => setError(friendlyError(cause))); }}
               onSave={persistActiveProjectCheck}
               discovery={checkDiscovery}
@@ -10406,6 +10824,7 @@ export default function App() {
         onCursorRefresh={refreshCursorStatus}
         onRuntimeRequired={() => setRuntimeSetupOpen(true)}
         onWorkspaceTools={() => {
+          if (noticeLocalOnly()) return;
           closeSettings();
           openStudio("tools");
         }}
@@ -10456,8 +10875,9 @@ export default function App() {
         onSchedules={setScheduledTasks}
         onWorkflows={setWorkflows}
         onRunWorkflow={async (workflowId, variables, projectId) => {
-          if (isVoiceInputLocked()) return;
-          const voiceGeneration = voiceInputLockGeneration();
+          if (noticeLocalOnly()) return;
+          if (localInputBlocked()) return;
+          const voiceGeneration = localInputGeneration();
           closeSettings();
           await runWorkflow(workflowId, "manual", variables, projectId, {
             onStarted: (threadId) => workflowNavigationGenerations.current.set(threadId, voiceGeneration),
@@ -10467,6 +10887,7 @@ export default function App() {
         onProjects={setProjects}
         scheduleRuns={scheduleRuns}
         onOpenRun={(threadId) => {
+          if (noticeLocalOnly()) return;
           closeSettings();
           openWorkflowRunThread(threadId);
         }}
@@ -10485,6 +10906,7 @@ export default function App() {
         onRemoveSkill={removeSkill}
         onRestoreSkill={restoreSkill}
         onOpenOnboarding={() => {
+          if (noticeLocalOnly()) return;
           closeSettings();
           openOnboarding();
         }}
@@ -10519,10 +10941,11 @@ export default function App() {
           key={`${pendingApproval.threadId}:${pendingApproval.id}:${pendingApproval.receivedAt}`}
           approval={pendingApproval}
           threadLabel={(() => {
-            if (pendingApproval.threadId === "runtime") return undefined;
+            if (pendingApproval.threadId === "runtime") return remoteActive ? localMachine : undefined;
             const known = knownThreadsRef.current?.[pendingApproval.threadId];
             const thread = threads.find((entry) => entry.id === pendingApproval.threadId) ?? known;
-            return thread?.name || thread?.preview || `thread ${pendingApproval.threadId.slice(0, 8)}`;
+            const label = thread?.name || thread?.preview || `thread ${pendingApproval.threadId.slice(0, 8)}`;
+            return remoteActive ? `${label} on ${localMachine}` : label;
           })()}
           pendingCount={pendingApprovalCount - 1}
           onRespond={(result) => respondToApproval(pendingApproval, result)}
@@ -10531,24 +10954,27 @@ export default function App() {
       {commandPaletteOpen && <ErrorBoundary label="command palette" retryable={false} overlay onDismiss={() => setCommandPaletteOpen(false)}><Suspense fallback={null}>
       <CommandPalette
         open={commandPaletteOpen}
-        projects={projects}
-        threads={paletteThreads}
-        workflows={workflows}
-        projectActive={Boolean(activeProject)}
+        projects={remoteActive ? machineActions()?.palette().projects ?? EMPTY_PROJECTS : projects}
+        threads={remoteActive ? machineActions()?.palette().threads ?? EMPTY_THREADS : paletteThreads}
+        workflows={remoteActive ? machineActions()?.palette().workflows ?? EMPTY_WORKFLOWS : workflows}
+        projectActive={remoteActive || Boolean(activeProject)}
         onClose={() => setCommandPaletteOpen(false)}
         onProject={(project) => {
+          if (isRemoteMachineActive()) { machineActions()?.openProject(project.id); return; }
+          if (localInputBlocked()) return;
           setActiveProjectId(project.id);
           setWorkspaceMode("project");
         }}
-        onThread={(thread) => void selectThread(thread)}
-        onWorkflow={(workflow) => void runWorkflowFromShortcut(workflow)}
-        onNewThread={newThread}
+        onThread={(thread) => { if (isRemoteMachineActive()) machineActions()?.openThread(thread.id); else void selectThread(thread); }}
+        onWorkflow={(workflow) => { if (isRemoteMachineActive()) machineActions()?.runWorkflow(workflow.id); else void runWorkflowFromShortcut(workflow); }}
+        onNewThread={() => { if (isRemoteMachineActive()) machineActions()?.newThread(); else newThread(); }}
         onSettings={() => openSettings()}
-        onTool={openStudio}
+        onTool={(tab) => { if (isRemoteMachineActive()) { setStudioTab(tab); setRemoteStudioOpen(true); } else openStudio(tab); }}
         onGitRoute={openGitRoute}
       />
       </Suspense></ErrorBoundary>}
       {!voiceSession && <ConfirmDialogModal />}
+      {remoteActive && !voiceSession && (runtimeSetupOpen || authRequiredOpen || confirmationOpen) && <p className="machine-dialog-label" role="status">This is on {localMachine}, not {remoteMachineName}.</p>}
       <SpellingMenu scope={JSON.stringify([attachmentKey, settingsOpen, confirmationOpen, Boolean(pendingApproval), voiceSession?.id])} />
       </FeedbackProvider>
       </MaxReasoningWarningContext.Provider>

@@ -12,8 +12,10 @@ import { EMPTY_REVIEW_DIFF, type ReviewDiff } from "./gitDiff";
 import { isActiveAgentRecord } from "./subAgentActivity";
 import { durationForTurn, recordTurnDuration } from "./turnDurations";
 import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_HISTORY_KEY, USAGE_LEDGER_KEY } from "./usageLedger";
-import { loadStored, removeStoredValue, storeValue } from "./storage";
+import { isRemoteStateFenced, loadStored, removeStoredValue, storeValue } from "./storage";
 import { parentRunAtRunStart, sanitizeStoredParentRuns, type ParentRun } from "./parentRun";
+import { restoredRemoteProvenance, type RemoteExecutionProvenance } from "./remote/host/provenance";
+import { isLiveRemoteEngineOwner } from "./remote/host/engineOwners";
 import { EMPTY_THREAD_HISTORY, type ThreadHistoryState } from "./threadHistory";
 import { beginRuntimePerformanceTurn, bindRuntimePerformanceTurn, completeRuntimePerformanceTurn, recordStreamingDelta, recordStreamingFlush, resetRuntimePerformanceDiagnostics } from "./runtimePerformanceBridge";
 
@@ -26,7 +28,38 @@ export interface WorkflowThreadOwner {
 
 export type QueuedTurnStatus = "queued" | "sending" | "failed";
 
+/** No prompts or credentials here: only durable delivery identity/disposition. */
+export interface RemoteQueuedDelivery {
+  provenance?: RemoteExecutionProvenance;
+  ownerHandle?: string;
+  device: string; opId: string; opSeq: number; workspaceId: string;
+  attemptId: string; messageId: string;
+  disposition: "queued" | "dispatched" | "accepted" | "rejected" | "uncertain";
+  needsRecovery?: boolean;
+  attachmentIds?: string[];
+  errorCode?: string;
+}
+
+function restoredRemoteDelivery(value: unknown, id: string, adoptLive = false): RemoteQueuedDelivery {
+  const entry = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const text = (key: string) => typeof entry[key] === "string" && (entry[key] as string).trim().length > 0 && (entry[key] as string).length <= 256 ? entry[key] as string : "invalid";
+  const provenance = restoredRemoteProvenance(entry.provenance);
+  const valid = (entry.provenance === undefined || Boolean(provenance)) && (entry.ownerHandle === undefined || adoptLive && typeof entry.ownerHandle === "string" && isLiveRemoteEngineOwner(entry.ownerHandle)) && ["device", "opId", "workspaceId", "attemptId", "messageId"].every((key) => text(key) !== "invalid")
+    && typeof entry.opSeq === "number" && Number.isSafeInteger(entry.opSeq) && entry.opSeq > 0;
+  const disposition = valid && entry.disposition === "queued" ? "queued"
+    : valid && entry.disposition === "rejected" ? "rejected"
+    : valid && entry.disposition === "accepted" ? "accepted" : "uncertain";
+  return { device: text("device"), opId: text("opId"), opSeq: valid ? entry.opSeq as number : 0,
+    workspaceId: text("workspaceId"), attemptId: text("attemptId"), messageId: valid ? text("messageId") : id,
+    disposition, needsRecovery: true, ...(Array.isArray(entry.attachmentIds) && entry.attachmentIds.length <= 20 && entry.attachmentIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= 256) ? { attachmentIds: entry.attachmentIds as string[] } : {}),
+    ...(provenance ? { provenance } : {}),
+    ...(adoptLive && typeof entry.ownerHandle === "string" && isLiveRemoteEngineOwner(entry.ownerHandle) ? { ownerHandle: entry.ownerHandle } : {}),
+    ...(typeof entry.errorCode === "string" ? { errorCode: entry.errorCode.slice(0, 64) } : {}) };
+}
+
 export interface QueuedTurn {
+  remoteAdmissionPending?: boolean;
+  remoteEdit?: { handle: string; device: string; generation: number; expiresAt: number };
   id: string;
   threadId: string;
   text: string;
@@ -34,6 +67,7 @@ export interface QueuedTurn {
   createdAt: number;
   status: QueuedTurnStatus;
   error?: string;
+  remoteDelivery?: RemoteQueuedDelivery;
   /** Hold delivery until the user saves or cancels the inline editor. */
   editing?: boolean;
   /** Literal prompts (such as generated reviews) must not expand @skill mentions after restore. */
@@ -60,7 +94,7 @@ const PARENT_RUNS_KEY = "kiwi.parentRuns";
  * half-written record must never turn into a model turn with a missing prompt
  * or a bogus attachment path.
  */
-export function sanitizeStoredQueuedTurns(stored: unknown): Record<string, QueuedTurn[]> {
+export function sanitizeStoredQueuedTurns(stored: unknown, adoptLive = false): Record<string, QueuedTurn[]> {
   if (!stored || typeof stored !== "object") return {};
   const result: Record<string, QueuedTurn[]> = {};
   const seenIds = new Set<string>();
@@ -94,8 +128,10 @@ export function sanitizeStoredQueuedTurns(stored: unknown): Record<string, Queue
         createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
         // A process cannot still be delivering after an app restart, and an
         // unknown status would be a queue entry the pump never picks up.
-        status: entry.status === "failed" ? "failed" : "queued",
-        ...(entry.editing === true ? { editing: true } : {}),
+        status: Object.hasOwn(entry, "remoteDelivery") && restoredRemoteDelivery(entry.remoteDelivery, entry.id, adoptLive).disposition !== "queued"
+          ? "failed" : entry.status === "failed" ? "failed" : "queued",
+        ...(Object.hasOwn(entry, "remoteDelivery") ? { remoteDelivery: restoredRemoteDelivery(entry.remoteDelivery, entry.id, adoptLive) } : {}),
+        ...(entry.editing === true && !entry.remoteEdit && !entry.remoteAdmissionPending ? { editing: true } : {}),
         ...(entry.resolveSkillMentions === false ? { resolveSkillMentions: false as const } : {}),
         ...(typeof entry.skillInvocationText === "string" ? { skillInvocationText: entry.skillInvocationText } : {}),
         ...(typeof entry.error === "string" && entry.error ? { error: entry.error } : {}),
@@ -131,7 +167,41 @@ function loadQueuedTurns(): Record<string, QueuedTurn[]> {
 
 let queuedTurnsCache = loadQueuedTurns();
 
+/** Adopt one already-committed retirement without a blind whole-map write. */
+export function adoptRemoteParentDismissal(threadId: string, expectedRunId: string): void {
+  if (useTaskStore.getState().parentRuns[threadId]?.id !== expectedRunId) return;
+  parentRunStopEpochs.set(threadId, parentRunStopEpoch(threadId) + 1);
+  parentRunRetirements.set(threadId, "dismiss");
+  try { useTaskStore.setState((state) => {
+    if (state.parentRuns[threadId]?.id !== expectedRunId) return state;
+    const parentRuns = { ...state.parentRuns }; delete parentRuns[threadId]; return { parentRuns };
+  }); } finally { parentRunRetirements.delete(threadId); }
+}
+/** Native thread deletion already committed queue/parent bookkeeping. Drop only
+ * resident state and streaming routes; removeTask would issue blind saves. */
+export function adoptRemoteThreadRemoval(threadId: string): void {
+  const run = useTaskStore.getState().parentRuns[threadId];
+  if (run) adoptRemoteParentDismissal(threadId, run.id);
+  forgetCursorTurnOwnership(threadId);
+  pendingDeltas.delete(threadId);
+  localDeltaRowsWithoutHistory.delete(threadId);
+  localTranscriptThreads.delete(threadId);
+  locallyHydratedAssistantRows.delete(threadId);
+  clearReasoningBuffers(threadId);
+  useTaskStore.setState((state) => {
+    const tasks = { ...state.tasks }, statuses = { ...state.statuses }, workflowOwners = { ...state.workflowOwners };
+    delete tasks[threadId]; delete statuses[threadId]; delete workflowOwners[threadId];
+    return { tasks, statuses, workflowOwners, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId,
+      approvalQueryToken: state.tasks[threadId]?.approvals.length ? {} : state.approvalQueryToken, queueRevision: state.queueRevision + 1 };
+  });
+}
+export function storedQueuedTurnsForThread(threadId: string): readonly QueuedTurn[] { return queuedTurnsCache[threadId] ?? []; }
+export function storedRemoteQueuedTurns(): QueuedTurn[] {
+  return Object.values(queuedTurnsCache).flat().filter((entry) => Boolean(entry.remoteDelivery));
+}
+
 function persistQueuedTurns(threadId: string, entries: QueuedTurn[]): void {
+  if (isRemoteStateFenced(QUEUED_TURNS_KEY)) throw new Error("This queue is being changed remotely. Try again after the change settles.");
   if (entries.length) queuedTurnsCache = { ...queuedTurnsCache, [threadId]: entries };
   else {
     const next = { ...queuedTurnsCache };
@@ -139,6 +209,38 @@ function persistQueuedTurns(threadId: string, entries: QueuedTurn[]): void {
     queuedTurnsCache = next;
   }
   storeValue(QUEUED_TURNS_KEY, queuedTurnsCache);
+}
+/** Already committed native rows: adopt without issuing another blind write. */
+export function adoptRemoteQueuedTurns(value: unknown): void {
+  const normalized = sanitizeStoredQueuedTurns(value, true);
+  const raw = value && typeof value === "object" ? value as Record<string, QueuedTurn[]> : {};
+  for (const [id, entries] of Object.entries(normalized)) for (const entry of entries) {
+    const original = raw[id]?.find((row) => row.id === entry.id);
+    if (!original) continue;
+    if (original.remoteAdmissionPending) { entry.remoteAdmissionPending = true; entry.editing = true; }
+    if (!entry.remoteDelivery && original.status === "sending") entry.status = "sending";
+    if (original.remoteEdit && original.remoteEdit.expiresAt > Date.now()) { entry.remoteEdit = original.remoteEdit; entry.editing = true; }
+  }
+  queuedTurnsCache = normalized;
+  useTaskStore.setState((state) => ({ queueRevision: state.queueRevision + 1,
+    tasks: Object.fromEntries(Object.entries(state.tasks).map(([id, task]) => [id, { ...task, queuedTurns: normalized[id] ?? [] }])) }));
+}
+export function releaseRemoteQueueAdmission(threadId: string, id: string, attemptId: string): void {
+  const entries = queuedTurnsCache[threadId];
+  if (!entries) return;
+  const next = entries.map((entry) => entry.id === id && entry.remoteDelivery?.attemptId === attemptId
+    ? { ...entry, remoteAdmissionPending: undefined, editing: undefined, status: "queued" as const } : entry);
+  persistQueuedTurns(threadId, next);
+  useTaskStore.setState((state) => ({ queueRevision: state.queueRevision + 1,
+    ...(state.tasks[threadId] ? { tasks: { ...state.tasks, [threadId]: { ...state.tasks[threadId], queuedTurns: next } } } : {}) }));
+}
+export function releaseRemoteQueueEdit(threadId: string, id: string, handle: string): void {
+  const entries = queuedTurnsCache[threadId];
+  if (!entries?.some((entry) => entry.id === id && entry.remoteEdit?.handle === handle)) return;
+  const next = entries.map((entry) => entry.id === id && entry.remoteEdit?.handle === handle ? { ...entry, remoteEdit: undefined, editing: undefined } : entry);
+  persistQueuedTurns(threadId, next);
+  useTaskStore.setState((state) => ({ queueRevision: state.queueRevision + 1,
+    ...(state.tasks[threadId] ? { tasks: { ...state.tasks, [threadId]: { ...state.tasks[threadId], queuedTurns: next } } } : {}) }));
 }
 
 function loadParentRuns(): Record<string, ParentRun> {
@@ -220,6 +322,7 @@ export function storedPendingTimedTurns(): QueuedTurn[] {
 }
 
 export interface ThreadTaskState {
+  expiredApprovals?: { id: string; summary: string }[];
   threadId: string;
   activeTurnId?: string;
   /**
@@ -291,7 +394,36 @@ export interface HistoryReadBoundary {
 
 export interface HistoryHydrationOptions {
   /** Local disk trails renderer observations; provider history is authoritative. */
-  source: "local";
+  source?: "local";
+  /** Background readers must not acknowledge the host user's unread output. */
+  preserveUnread?: boolean;
+  /** Confirmed, stopped native rollback only; never preserve deleted timeline rows. */
+  replaceTimeline?: boolean;
+}
+
+const transcriptPins = new Map<string, number>();
+
+/** Independent readers own independent, idempotently released pins. */
+export function pinTaskTranscript(threadId: string): () => void {
+  transcriptPins.set(threadId, (transcriptPins.get(threadId) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (transcriptPins.get(threadId) ?? 1) - 1;
+    if (remaining > 0) transcriptPins.set(threadId, remaining);
+    else transcriptPins.delete(threadId);
+  };
+}
+
+/** Native host ticks materialize text even when WebKit suspends animation frames. */
+export function drainTaskDeltas(): void {
+  if (deltaFrame !== null) {
+    if (typeof requestAnimationFrame === "function") cancelAnimationFrame(deltaFrame as number);
+    else clearTimeout(deltaFrame);
+    deltaFrame = null;
+  }
+  useTaskStore.getState().flushDeltas();
 }
 
 /** Capture before requesting history, while the pending/live identity is still known. */
@@ -359,7 +491,8 @@ interface TaskStoreState {
   clearApprovals: (threadId: string) => void;
   /** Bumped by every queue mutation so subscribers can skip per-token store writes. */
   queueRevision: number;
-  enqueueTurn: (threadId: string, text: string, attachments: AttachmentRecord[], options?: { resolveSkillMentions?: false; skillInvocationText?: string; deliverAt?: number }) => QueuedTurn;
+  enqueueTurn: (threadId: string, text: string, attachments: AttachmentRecord[], options?: { resolveSkillMentions?: false; skillInvocationText?: string; deliverAt?: number; remoteDelivery?: RemoteQueuedDelivery }) => QueuedTurn;
+  setRemoteQueuedDisposition: (threadId: string, queuedTurnId: string, disposition: RemoteQueuedDelivery["disposition"], errorCode?: string) => void;
   /** Move due timed prompts into the FIFO at their delivery time. */
   releaseTimedTurns: (threadId: string, queuedTurnIds: string[]) => void;
   /** Persist that these prompts' times passed unobserved; works for restored, unopened threads. */
@@ -737,6 +870,7 @@ function evictColdTranscripts(
   const victims = hydrated
     .filter((task) => (
       task.threadId !== activeThreadId
+      && !transcriptPins.has(task.threadId)
       && state.statuses[task.threadId] !== "starting"
       && state.statuses[task.threadId] !== "running"
       && !state.workflowOwners[task.threadId]
@@ -918,7 +1052,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     };
   }),
   hydrateTask: (threadId, messages, activities, workspacePath, history, readBoundary, options) => set((state) => {
-    const existing = state.tasks[threadId];
+    let existing = state.tasks[threadId];
+    const removedApprovals = Boolean(options?.replaceTimeline && existing?.approvals.length);
+    if (options?.replaceTimeline && existing) {
+      if (existing.status === "starting" || existing.status === "running") throw new Error("Cannot replace the history of a live turn.");
+      pendingDeltas.delete(threadId); clearReasoningBuffers(threadId);
+      existing = { ...existing, messages: [], activities: [], approvals: [], activeTurnId: undefined, lastCompletedTurnId: undefined };
+      state = { ...state, tasks: { ...state.tasks, [threadId]: existing } };
+    }
     const local = options?.source === "local";
     if (local) localTranscriptThreads.add(threadId);
     else localTranscriptThreads.delete(threadId);
@@ -993,7 +1134,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       .filter((entry) => entry.turnStatus === "interrupted" && entry.turnId
         && representedTurnIds.has(entry.turnId) && !authoritativeTerminalTurnIds.has(entry.turnId))
       .map((entry) => entry.turnId!));
-    const restoredMessages = restoreQuestionRequests(threadId, messages, activities, !history?.hasMore);
+    const restoredMessages = options?.replaceTimeline ? messages : restoreQuestionRequests(threadId, messages, activities, !history?.hasMore);
     const reconciled = reconcileUserMessages(restoredMessages, existing?.messages ?? []);
     const hydratedMessages = reconciled.messages.map((message) => {
       const previous = existingMessagesById.get(message.id);
@@ -1102,7 +1243,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         // protected until the save scheduler acknowledges their revision.
         transcriptDirty: local ? existing?.transcriptDirty ?? false : false,
         history: history ?? existing?.history ?? EMPTY_THREAD_HISTORY,
-        unread: false,
+        unread: options?.preserveUnread ? existing?.unread ?? false : false,
         updatedAt: Date.now(),
       },
     };
@@ -1110,7 +1251,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       ? { ...state.statuses, [threadId]: "idle" as const }
       : state.statuses;
     const evictedTasks = evictColdTranscripts({ ...state, tasks: nextTasks, statuses }, state.activeThreadId);
-    return { tasks: evictedTasks ?? nextTasks, statuses };
+    return { tasks: evictedTasks ?? nextTasks, statuses, ...(removedApprovals ? { approvalQueryToken: {} } : {}) };
   }),
   setHistory: (threadId, patch) => set((state) => {
     const task = state.tasks[threadId];
@@ -2010,6 +2151,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       attachments: attachments.map((attachment) => ({ ...attachment })),
       createdAt: Date.now(),
       status: "queued",
+      ...(options?.remoteDelivery ? { remoteDelivery: { ...options.remoteDelivery } } : {}),
       ...(options?.resolveSkillMentions === false ? { resolveSkillMentions: false as const } : {}),
       ...(options?.skillInvocationText !== undefined ? { skillInvocationText: options.skillInvocationText } : {}),
       ...(options?.deliverAt !== undefined && validEpoch(options.deliverAt) ? { deliverAt: options.deliverAt } : {}),
@@ -2022,6 +2164,22 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     });
     return queuedTurn;
   },
+  setRemoteQueuedDisposition: (threadId, queuedTurnId, disposition, errorCode) => set((state) => {
+    const entries = state.tasks[threadId]?.queuedTurns ?? queuedTurnsCache[threadId];
+    if (!entries) return state;
+    const queuedTurns = entries.map((entry) => entry.id === queuedTurnId && entry.remoteDelivery ? {
+      ...entry,
+      remoteDelivery: { ...entry.remoteDelivery, disposition, needsRecovery: false, ...(errorCode ? { errorCode } : {}) },
+      ...(disposition === "rejected" || disposition === "uncertain" || disposition === "accepted" ? {
+        status: "failed" as const,
+        error: disposition === "rejected" ? "Remote access or the delivery target changed before this instruction could run."
+          : "Delivery may already have occurred. This instruction will not be sent again automatically.",
+      } : {}),
+    } : entry);
+    persistQueuedTurns(threadId, queuedTurns);
+    const task = state.tasks[threadId];
+    return { queueRevision: state.queueRevision + 1, ...(task ? { tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns } } } : {}) };
+  }),
   releaseTimedTurns: (threadId, queuedTurnIds) => set((state) => {
     const task = state.tasks[threadId];
     if (!task || !queuedTurnIds.length) return state;
@@ -2085,7 +2243,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   beginQueuedTurnEdit: (threadId, queuedTurnId) => {
     const task = get().tasks[threadId];
     const entry = task?.queuedTurns.find((item) => item.id === queuedTurnId);
-    if (!entry || entry.status === "sending" || entry.editing) return false;
+    if (!entry || entry.status === "sending" || entry.editing || entry.remoteDelivery) return false;
     const queuedTurns = task.queuedTurns.map((item) => item.id === queuedTurnId ? { ...item, editing: true } : item);
     persistQueuedTurns(threadId, queuedTurns);
     set((state) => ({ queueRevision: state.queueRevision + 1, tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } }));
@@ -2094,7 +2252,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   finishQueuedTurnEdit: (threadId, queuedTurnId, text) => {
     const task = get().tasks[threadId];
     const entry = task?.queuedTurns.find((item) => item.id === queuedTurnId);
-    if (!entry?.editing || entry.status === "sending" || (text !== undefined && !text.trim())) return false;
+    if (!entry?.editing || entry.status === "sending" || entry.remoteDelivery || (text !== undefined && !text.trim())) return false;
     const queuedTurns = task.queuedTurns.map((item) => {
       if (item.id !== queuedTurnId) return item;
       const nextText = text === undefined ? item.text : text.trim();
@@ -2116,6 +2274,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const task = state.tasks[threadId];
     if (!task || !task.queuedTurns.some((entry) => entry.id === queuedTurnId)) return state;
     const target = task.queuedTurns.find((entry) => entry.id === queuedTurnId);
+    if (status === "queued" && target?.remoteDelivery && target.remoteDelivery.disposition !== "queued") return state;
     if (status === "sending" && target?.editing) return state;
     // Defense in depth: no delivery path may start a timed prompt early.
     if (status === "sending" && target?.deliverAt !== undefined && target.releasedAt === undefined) return state;
@@ -2127,6 +2286,12 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   removeQueuedTurn: (threadId, queuedTurnId) => set((state) => {
     const task = state.tasks[threadId];
+    if (!task) {
+      const entries = queuedTurnsCache[threadId];
+      if (!entries?.some((entry) => entry.id === queuedTurnId && entry.remoteDelivery)) return state;
+      persistQueuedTurns(threadId, entries.filter((entry) => entry.id !== queuedTurnId));
+      return { queueRevision: state.queueRevision + 1 };
+    }
     if (!task || !task.queuedTurns.some((entry) => entry.id === queuedTurnId)) return state;
     const queuedTurns = task.queuedTurns.filter((entry) => entry.id !== queuedTurnId);
     persistQueuedTurns(threadId, queuedTurns);

@@ -1,3 +1,5 @@
+import { hasRemoteWork } from "../lib/remote/host/engineOwners";
+import { checkpointUnlessRemote } from "../lib/remote/host/remoteCheckpoint";
 import { latestCodexTurn, terminalTurnStatus } from "./useThreadHealth";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
@@ -881,6 +883,12 @@ function settleChildInParent(
 }
 
 export function useChildAgents(context: ChildAgentContext): {
+  /** A sign-off from another device, under the same rules as one made here. */
+  beginRemoteAcceptance: (rootThreadId: string, worker: { id: string; title: string; reviewToken?: string }) => {
+    prepare(): Promise<void>; assertAllowed(): void; release(): void; committed(childId: string): void;
+  };
+  /** A Stop from another device, whose host-supplied cutoff replaces the provider stop. */
+  stopRemoteWorker: (rootThreadId: string, worker: { id: string; createdAt?: number; reviewToken?: string }, cutoff: () => Promise<TaskStatus>, assertAllowed: () => void) => Promise<void>;
   /** Stop a root's children; pass one Stop's frontier to both waves. */
   cancelChildAgentsFor: (rootThreadId: string, frontier?: ChildStopFrontier) => Promise<void>;
   /** Capture the exact child work a Stop targets, before stopping the root. */
@@ -997,6 +1005,8 @@ export function useChildAgents(context: ChildAgentContext): {
   const provisionalOwnersRef = useRef(new Map<string, { rootThreadId: string; sessionId: string }>());
   /** Children whose same-conversation follow-up is being started. */
   const followUpsInFlightRef = useRef(new Set<string>());
+  const remoteAcceptancesRef = useRef(new Set<string>());
+  const remoteStopsRef = useRef(new Set<string>());
   /** Children currently blocked in read_parent_messages. */
   const childReadersRef = useRef(new Map<string, number>());
   /** Wake outstanding collection/read waits when ownership or Stop changes. */
@@ -1167,6 +1177,8 @@ export function useChildAgents(context: ChildAgentContext): {
   const noteExplicitChildStart = useCallback((threadId: string, attemptId: string): void => {
     const link = linksIncludingPending(contextRef.current.links)[threadId];
     if (!link || !attemptId) return;
+    if (remoteAcceptancesRef.current.has(threadId)) throw new Error("This sub-agent is being signed off from another device. Try again in a moment.");
+    if (remoteStopsRef.current.has(threadId)) throw new Error("This sub-agent is being stopped from another device. Try again in a moment.");
     const task = useTaskStore.getState().tasks[threadId];
     const revision = (link.resultRevision ?? 0) + 1;
     explicitStartsRef.current.set(threadId, { attemptId, before: link, revision, notedAt: Date.now(), beforeCompleted: task?.lastCompletedTurnId, beforeStatus: taskStatusOf(threadId) });
@@ -1597,12 +1609,11 @@ export function useChildAgents(context: ChildAgentContext): {
         claimDispatch: async (childThreadId) => {
           await claimChildAgentSpawn(request, childThreadId);
         },
-        prepareNewThreadGit: projectId ? (childThreadId) => ctx.prepareNewThreadGit?.(childThreadId, projectId, logicalPath) ?? Promise.resolve(false) : undefined,
+        prepareNewThreadGit: projectId ? (childThreadId) => hasRemoteWork(rootThreadId) ? Promise.resolve(false) : ctx.prepareNewThreadGit?.(childThreadId, projectId, logicalPath) ?? Promise.resolve(false) : undefined,
         canDiscardUnusedChild,
         onDiscardUnusedChild: (childThreadId) => contextRef.current.onDiscardUnusedChild?.(childThreadId),
-        beginCheckpoint: async (childThreadId) => {
-          return ctx.beginRunCheckpoint(childThreadId, executionPath, prompt, target.provider, childAgentModel(target));
-        },
+        beginCheckpoint: (childThreadId) => checkpointUnlessRemote([rootThreadId, childThreadId], projectId ? rootThreadId : null,
+          () => ctx.beginRunCheckpoint(childThreadId, executionPath, prompt, target.provider, childAgentModel(target))),
         discardCheckpoint: ctx.discardRunCheckpoint,
         // The child's first tool call can be a parent message that lands
         // before its ownership link exists.
@@ -2316,6 +2327,59 @@ export function useChildAgents(context: ChildAgentContext): {
     void auditEvent("childAgent.stopped", { rootThreadId, childThreadId, kind: link ? "cross-provider" : "native", origin });
   }, [childNeedsCutoff, childObservationGuard, linksIncludingPending, managedCutoffGuard, persistNativeSettlement, settleManagedCutoff, updateLink]);
 
+  /**
+   * Stop from another device. The same path as stopChildAgent, except that the host
+   * supplies the cutoff, so nothing here can reach an untagged provider stop. From
+   * here until it ends, no new follow-up or typed turn can start for this child.
+   */
+  const stopRemoteWorker = useCallback(async (rootThreadId: string, worker: { id: string; createdAt?: number; reviewToken?: string },
+    cutoff: () => Promise<TaskStatus>, assertAllowed: () => void): Promise<void> => {
+    const childThreadId = worker.id;
+    if (remoteStopsRef.current.has(childThreadId) || remoteAcceptancesRef.current.has(childThreadId)) throw new Error("This sub-agent is already being changed from another device.");
+    const ctx = contextRef.current;
+    const link = linksIncludingPending(ctx.links)[childThreadId];
+    remoteStopsRef.current.add(childThreadId);
+    try {
+      if (link) {
+        if (link.rootThreadId !== rootThreadId || worker.createdAt !== undefined && worker.createdAt !== link.createdAt
+          || worker.reviewToken && childReviewToken(link) !== worker.reviewToken) throw new Error("This sub-agent's assignment changed. Refresh and try again.");
+        assertAllowed();
+        childStopGenerationRef.current.set(childThreadId, (childStopGenerationRef.current.get(childThreadId) ?? 0) + 1);
+        cancelQueuedForChild(childThreadId, "The user stopped this sub-agent.");
+        updateLink(childThreadId, (current) => ({ ...current, stopOrigin: "user" }));
+        if (followUpsInFlightRef.current.has(childThreadId) && !isChildActive(taskStatusOf(childThreadId))) return;
+        if (!childNeedsCutoff(linksIncludingPending(contextRef.current.links)[childThreadId] ?? link)) {
+          const terminalStatus = childLifecycleForLink(link, taskStatusOf(childThreadId)) as "completed" | "cancelled" | "failed";
+          settleChildInParent(rootThreadId, childThreadId, link.title, terminalStatus, terminalStatus);
+          return;
+        }
+        const current = linksIncludingPending(contextRef.current.links)[childThreadId] ?? link;
+        const assertCurrent = childObservationGuard(current);
+        const assertActivation = managedCutoffGuard(current);
+        await ensureChildHydrated(current, assertCurrent).catch(() => undefined);
+        assertCurrent(); assertActivation(); assertAllowed();
+        const status = await cutoff();
+        // The child has stopped. Anything failing from here is presentation.
+        try { assertActivation(); settleManagedCutoff(current, status); }
+        catch (reason) { void auditEvent("childAgent.stopSettlementFailed", { rootThreadId, childThreadId, reason: friendlyError(reason) }, rootThreadId); }
+        void auditEvent("childAgent.stopped", { rootThreadId, childThreadId, kind: "cross-provider", origin: "user" });
+        return;
+      }
+      const agent = nativeChildrenFor(rootThreadId, ctx.nativeLinks).find((entry) => entry.id === childThreadId);
+      if (!agent) throw new Error(`\`${childThreadId}\` was not started from this thread.`);
+      if (agent.runtime === "claude" || agent.provider === "claude" || childThreadId.startsWith("claude-native:")) {
+        throw new Error("Claude native sub-agents share their root process. Stop the root thread to stop them.");
+      }
+      assertNativeChildActivation(agent); assertAllowed();
+      const status = await cutoff();
+      try {
+        settleStoppedChild(agent.rootThreadId, childThreadId, agent.prompt, status);
+        persistNativeSettlement(ctx.nativeLinks?.[childThreadId], status);
+      } catch (reason) { void auditEvent("childAgent.stopSettlementFailed", { rootThreadId, childThreadId, reason: friendlyError(reason) }, rootThreadId); }
+      void auditEvent("childAgent.stopped", { rootThreadId, childThreadId, kind: "native", origin: "user" });
+    } finally { remoteStopsRef.current.delete(childThreadId); }
+  }, [childNeedsCutoff, childObservationGuard, linksIncludingPending, managedCutoffGuard, persistNativeSettlement, settleManagedCutoff, updateLink]);
+
   const cancelChild = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
     const ctx = contextRef.current;
     const childId = String(request.arguments.childId ?? "");
@@ -2360,7 +2424,7 @@ export function useChildAgents(context: ChildAgentContext): {
    * exactly its own reservation.
    */
   const startFollowUp = useCallback(async (childThreadId: string): Promise<void> => {
-    if (followUpsInFlightRef.current.has(childThreadId)) return;
+    if (followUpsInFlightRef.current.has(childThreadId) || remoteAcceptancesRef.current.has(childThreadId) || remoteStopsRef.current.has(childThreadId)) return;
     const ctx = contextRef.current;
     const link = linksIncludingPending(ctx.links)[childThreadId];
     const waitFor = (reason: string) => { followUpWaitReasonRef.current.set(childThreadId, reason); };
@@ -2575,7 +2639,8 @@ export function useChildAgents(context: ChildAgentContext): {
         resolveSkillPrompts: ctx.resolveSkillPrompts,
         assertCanStart,
         beginCheckpoint: async (threadId) => {
-          checkpointId = await ctx.beginRunCheckpoint(threadId, executionPath, prompt, link.provider, link.model);
+          checkpointId = await checkpointUnlessRemote([rootThreadId, threadId], projectId ? rootThreadId : null,
+            () => ctx.beginRunCheckpoint(threadId, executionPath, prompt, link.provider, link.model));
         },
         onDispatch: (startRequestId) => {
           assertCanStart();
@@ -3015,6 +3080,7 @@ export function useChildAgents(context: ChildAgentContext): {
       throw new Error("The child or parent conversation is unavailable for acceptance.");
     }
     if (link.acceptedAt) return { childId, phase: "accepted", note: "This sub-agent was already accepted." };
+    if (remoteAcceptancesRef.current.has(childId)) throw new Error("This sub-agent is being signed off from another device.");
     if (supersededUncertainRef.current.has(childId) || explicitStartsRef.current.has(childId)) {
       throw new Error("This sub-agent has preparing or unconfirmed work. Confirm or stop it before accepting its result.");
     }
@@ -3049,6 +3115,7 @@ export function useChildAgents(context: ChildAgentContext): {
     // A correction that failed after this token was collected changed the
     // guidance revision inside the token, so the comparison above refused
     // it; a token collected alongside the reported outcome accepts as is.
+    if (remoteAcceptancesRef.current.has(childId)) throw new Error("This sub-agent is being signed off from another device.");
     const cancelled = cancelQueuedForChild(childId, `Cancelled because the ${by === "user" ? "user" : "parent"} accepted the sub-agent's work.`);
     // Explicit acceptance is the resolution of every undelivered outcome the
     // accepted token covered (and of the cancellations it just caused).
@@ -3083,6 +3150,44 @@ export function useChildAgents(context: ChildAgentContext): {
     const reviewToken = typeof request.arguments.reviewToken === "string" ? request.arguments.reviewToken : undefined;
     return acceptChild(link.rootThreadId, childId, "parent", note, reviewToken, request);
   }, [acceptChild, linksIncludingPending]);
+
+  /** A sign-off from another device. It answers to everything acceptChild does, and
+   * holds off a follow-up from the moment it's asked until the saved change lands. */
+  const beginRemoteAcceptance = useCallback((rootThreadId: string, worker: { id: string; title: string; reviewToken?: string }) => {
+    const childId = worker.id;
+    if (remoteAcceptancesRef.current.has(childId)) throw new Error("This sub-agent is already being signed off.");
+    if (remoteStopsRef.current.has(childId)) throw new Error("This sub-agent is being stopped.");
+    const rendererGeneration = lifecycleRef.current.generation;
+    const check = () => {
+      const link = linksIncludingPending(contextRef.current.links)[childId];
+      if (!link || link.rootThreadId !== rootThreadId || link.signoff !== "required" || link.acceptedAt) throw new Error("This sub-agent's assignment changed. Refresh and try again.");
+      if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration) throw new Error("Mythra Code restarted while this sign-off was preparing.");
+      if (contextRef.current.threadUnavailable?.(childId)) throw new Error("The child conversation is unavailable.");
+      if (link.activationPending || pendingActivationsRef.current.has(childId) || followUpsInFlightRef.current.has(childId)
+        || supersededUncertainRef.current.has(childId) || explicitStartsRef.current.has(childId)) throw new Error("This sub-agent has work still starting. Try again when it settles.");
+      if (isChildActive(taskStatusOf(childId))) throw new Error("This sub-agent is still working.");
+      if (!worker.reviewToken || childReviewToken(link) !== worker.reviewToken) throw new Error("This sub-agent's result changed. Refresh and try again.");
+      if (getChildMailbox(childId)?.messages.some((message) => message.direction === "toChild" && message.state === "delivering")) throw new Error("Guidance is still reaching this sub-agent.");
+      return link;
+    };
+    check();
+    remoteAcceptancesRef.current.add(childId);
+    return {
+      prepare: async () => {
+        if (await recoverCurrentChild(check())) throw new Error("This sub-agent may still be running.");
+        check();
+      },
+      assertAllowed: () => { check(); },
+      release: () => { remoteAcceptancesRef.current.delete(childId); },
+      // The saved change itself is the host's. This only tells this screen.
+      committed: () => {
+        followUpWaitReasonRef.current.delete(childId);
+        recordParentActivity(rootThreadId, `child-accepted-${childId}-${Date.now()}`, `Accepted sub-agent work: ${worker.title}`, "Signed off from another device.", childId, "close");
+        void auditEvent("childAgent.accepted", { childThreadId: childId, by: "user" }, rootThreadId);
+        contextRef.current.onChildAccepted?.(childId);
+      },
+    };
+  }, [linksIncludingPending, recordParentActivity, recoverCurrentChild]);
 
   const acceptChildAgent = useCallback(async (rootThreadId: string, childThreadId: string, expectedReviewToken?: string): Promise<void> => {
     await acceptChild(rootThreadId, childThreadId, "user", undefined, expectedReviewToken);
@@ -4295,7 +4400,7 @@ export function useChildAgents(context: ChildAgentContext): {
   }, [captureChildStopFrontier, childNeedsCutoff, childObservationGuard, invalidateChildAgentGuidance, linksIncludingPending, managedCutoffGuard, persistNativeSettlement, rootRunStopped, settleManagedCutoff, updateLink]);
 
   return {
-    acceptChildAgent, cancelChildAgentsFor, captureChildStopFrontier, continueParentRun, getManagedSubagentV2LockedReason,
+    acceptChildAgent, beginRemoteAcceptance, stopRemoteWorker, cancelChildAgentsFor, captureChildStopFrontier, continueParentRun, getManagedSubagentV2LockedReason,
     parentRunObligations, hasChildStartInFlight, invalidateChildAgentGuidance, managedSubagentV2LockRevision,
     noteExplicitChildStart, respondToSettingsProposal, retryChildAgentGuidance, settleExplicitChildStart, stopChildAgent,
   };

@@ -10,6 +10,10 @@
     "dialog:allow-confirm",
     "notification:default",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "x-apple.systempreferences:com.apple.preference.security[?]Privacy_LocalNetwork" }]
+    },
     "updater:default",
     "process:allow-restart"
   ]

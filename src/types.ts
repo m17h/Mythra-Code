@@ -25,7 +25,7 @@ export type EffortSliderStyle = "studio" | "pixel" | "aurora" | "astra" | "ink" 
 export type BuiltInChatFont = "system" | "humanist" | "serif" | "mono" | "pixelify" | "vt323";
 export type ChatFont = BuiltInChatFont | `custom:${string}`;
 export type WorkspaceMode = "chat" | "project";
-export type SettingsSection = "general" | "models" | "voice" | "github" | "usage" | "prompts" | "memory" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "system" | "updates";
+export type SettingsSection = "general" | "models" | "voice" | "github" | "devices" | "usage" | "prompts" | "memory" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "system" | "updates";
 export type ProjectPromptMode = "replace" | "append";
 
 /** Voice input's own API provider, independent of every chat provider. */

@@ -746,6 +746,7 @@ fn reconcile_local_transcript(
     provider: &str,
     thread_id: &str,
 ) -> Result<Option<LocalTranscriptReconciliation>, String> {
+    if remote_transcript_deleted(connection,provider,thread_id)?{return Ok(None);}
     let legacy_key = local_transcript_key(provider, thread_id)?;
     let legacy_updated_at = connection
         .query_row(
@@ -1165,13 +1166,14 @@ fn write_local_transcript_snapshot(
         .and_then(Value::as_str)
         .filter(|thread_id| !thread_id.trim().is_empty())
         .ok_or_else(|| "Local transcript snapshot has no thread id".to_string())?;
+    if remote_transcript_deleted(connection,provider,thread_id)?{return Err("This conversation was permanently deleted and cannot be saved again.".into());}
     let legacy_key = local_transcript_key(provider, thread_id)?;
     let cursor_session_id = object
         .get("cursorSessionId")
         .and_then(Value::as_str)
         .map(str::to_string);
     let chunks = local_transcript_chunks(value)?;
-    let thread_json = serde_json::to_string(&thread)
+    let thread_json = serde_json::to_string(&remote_named_thread(connection,provider,thread_id,&thread)?)
         .map_err(|error| format!("Could not encode local thread metadata: {error}"))?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1415,6 +1417,7 @@ fn rename_local_transcript(
          WHERE provider = ?1 AND thread_id = ?2",
         params![provider, thread_id, thread.to_string(), now],
     ).map_err(|error| format!("Could not rename thread: {error}"))?;
+    if remote_name_override(&transaction,provider,thread_id)?.is_some(){remote_remember_thread_name(&transaction,provider,thread_id,name)?;}
     transaction
         .commit()
         .map_err(|error| format!("Could not commit thread rename: {error}"))
@@ -1458,7 +1461,7 @@ fn write_local_transcript_metadata(
     if !verify_local_transcript_writable(connection, provider, thread_id)? {
         return Err("Local transcript no longer exists".to_string());
     }
-    let thread_json = serde_json::to_string(thread)
+    let thread_json = serde_json::to_string(&remote_named_thread(connection,provider,thread_id,thread)?)
         .map_err(|error| format!("Could not encode local thread metadata: {error}"))?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -2044,7 +2047,13 @@ fn write_state_value(
     value: &Value,
     now: i64,
 ) -> Result<(), String> {
-    let json = serde_json::to_string(value)
+    if let Some((provider,thread))=local_transcript_identity_from_key(key){if remote_transcript_deleted(connection,provider,thread)?{return Err("This conversation was permanently deleted and cannot be saved again.".into());}}
+    let protected=if let Some((provider,id))=local_transcript_identity_from_key(key){
+        if let (Some(name),Some(_))=(remote_name_override(connection,provider,id)?,value.get("thread").and_then(Value::as_object)){
+            let mut updated=value.clone();updated["thread"]["name"]=Value::String(name);Some(updated)
+        }else{None}
+    }else{None};
+    let json = serde_json::to_string(protected.as_ref().unwrap_or(value))
         .map_err(|error| format!("Could not encode Mythra Code state: {error}"))?;
     connection
         .execute(
@@ -2063,7 +2072,9 @@ pub(super) async fn state_write(app: AppHandle, key: String, value: Value) -> Re
     let connection = shared_state_db(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let connection = lock_state_db(&connection)?;
-        write_state_value(&connection, &key, &value, unix_timestamp_ms())
+        write_state_value(&connection, &key, &value, unix_timestamp_ms())?;
+        if key=="kiwi.archivedThreads"{crate::remote_local_archive_snapshot(&app,&value);}
+        Ok(())
     })
     .await
     .map_err(|error| format!("State write task failed: {error}"))?
@@ -2077,6 +2088,9 @@ fn delete_state_value(connection: &mut Connection, key: &str) -> Result<(), Stri
         .execute("DELETE FROM app_state WHERE key = ?1", params![key])
         .map_err(|error| format!("Could not delete Mythra Code state: {error}"))?;
     if let Some((provider, thread_id)) = local_transcript_identity_from_key(key) {
+        if remote_name_override(&transaction,provider,thread_id)?.is_some(){
+            transaction.execute("DELETE FROM remote_thread_names WHERE provider=?1 AND thread_id=?2",params![provider,thread_id]).map_err(|e|format!("Could not delete conversation name: {e}"))?;
+        }
         transaction
             .execute(
                 "DELETE FROM local_transcript_tail_state WHERE provider = ?1 AND thread_id = ?2",
@@ -2106,8 +2120,62 @@ pub(super) async fn state_delete(app: AppHandle, key: String) -> Result<(), Stri
     let connection = shared_state_db(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let mut connection = lock_state_db(&connection)?;
-        delete_state_value(&mut connection, &key)
+        delete_state_value(&mut connection, &key)?;
+        if key=="kiwi.archivedThreads"{crate::remote_local_archive_snapshot(&app,&serde_json::json!([]));}
+        Ok(())
     })
     .await
     .map_err(|error| format!("State delete task failed: {error}"))?
+}
+
+// Same reconciliation/integrity check used by ordinary local metadata writes;
+// called only under the remote operation's live grant fence before its row tx.
+pub(crate) fn remote_prepare_local_transcript(connection:&mut Connection,provider:&str,thread:&str)->Result<(),String>{
+    if verify_local_transcript_writable(connection,provider,thread)?{Ok(())}else{Err("The conversation no longer exists on this device.".into())}
+}
+fn remote_transcript_deleted(connection:&Connection,provider:&str,thread:&str)->Result<bool,String>{
+    let table:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='remote_deleted_transcripts')",[],|r|r.get(0)).map_err(|error|format!("Could not check conversation deletion: {error}"))?;
+    if !table{return Ok(false);}connection.query_row("SELECT EXISTS(SELECT 1 FROM remote_deleted_transcripts WHERE provider=?1 AND thread_id=?2)",params![provider,thread],|r|r.get(0)).map_err(|error|format!("Could not check conversation deletion: {error}"))
+}
+
+fn remote_name_override(connection:&Connection,provider:&str,thread:&str)->Result<Option<String>,String>{
+    let table:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='remote_thread_names')",[],|r|r.get(0)).map_err(|e|format!("Could not read conversation name: {e}"))?;
+    if !table{return Ok(None);}connection.query_row("SELECT name FROM remote_thread_names WHERE provider=?1 AND thread_id=?2",params![provider,thread],|r|r.get(0)).optional().map_err(|e|format!("Could not read conversation name: {e}"))
+}
+fn remote_named_thread(connection:&Connection,provider:&str,id:&str,thread:&Value)->Result<Value,String>{
+    let mut thread=thread.clone();if let Some(name)=remote_name_override(connection,provider,id)?{if let Some(object)=thread.as_object_mut(){object.insert("name".into(),Value::String(name));}}Ok(thread)
+}
+pub(crate) fn remote_remember_thread_name(connection:&Connection,provider:&str,id:&str,name:&str)->Result<(),String>{
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS remote_thread_names(provider TEXT NOT NULL,thread_id TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(provider,thread_id));").map_err(|e|format!("Could not save conversation name: {e}"))?;
+    connection.execute("INSERT INTO remote_thread_names VALUES(?1,?2,?3) ON CONFLICT(provider,thread_id) DO UPDATE SET name=excluded.name",params![provider,id,name]).map_err(|e|format!("Could not save conversation name: {e}"))?;Ok(())
+}
+
+#[cfg(test)]
+mod remote_transcript_fence_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn remote_manual_name_survives_old_saves_but_a_later_local_rename_wins() {
+        let mut db = open_state_db(Path::new(":memory:")).unwrap();
+        let old = json!({"thread":{"id":"t","name":"old","cwd":"/project","modelProvider":"claude"},"messages":[],"activities":[]});
+        write_local_transcript_snapshot(&mut db,"claude",&old,1).unwrap();
+        remote_remember_thread_name(&db,"claude","t","remote name").unwrap();
+        let saved=write_local_transcript_snapshot(&mut db,"claude",&old,2).unwrap();
+        write_local_transcript_metadata(&mut db,"claude","t",&old["thread"],None,saved.generation,3).unwrap();
+        let metadata = |db:&Connection| -> Value {serde_json::from_str(&db.query_row("SELECT thread_json FROM local_transcript_meta WHERE provider='claude' AND thread_id='t'",[],|r|r.get::<_,String>(0)).unwrap()).unwrap()};
+        assert_eq!(metadata(&db)["name"],"remote name");
+        write_state_value(&db,"kiwi.claudeThread.t",&old,4).unwrap();
+        let compatibility:Value=serde_json::from_str(&db.query_row("SELECT value FROM app_state WHERE key='kiwi.claudeThread.t'",[],|r|r.get::<_,String>(0)).unwrap()).unwrap();
+        assert_eq!(compatibility["thread"]["name"],"remote name");
+        rename_local_transcript(&mut db,"claude","t","later local name",5).unwrap();
+        let generation=db.query_row("SELECT generation FROM local_transcript_meta WHERE provider='claude' AND thread_id='t'",[],|r|r.get::<_,i64>(0)).unwrap();
+        write_local_transcript_metadata(&mut db,"claude","t",&old["thread"],None,generation,6).unwrap();
+        assert_eq!(metadata(&db)["name"],"later local name");
+        // IDs untouched by remote naming retain the ordinary local behavior.
+        let mut untouched=old.clone();untouched["thread"]["id"]=json!("untouched");
+        write_local_transcript_snapshot(&mut db,"claude",&untouched,7).unwrap();
+        assert!(remote_name_override(&db,"claude","untouched").unwrap().is_none());
+        delete_state_value(&mut db,"kiwi.claudeThread.t").unwrap();
+        assert!(remote_name_override(&db,"claude","t").unwrap().is_none());
+    }
 }

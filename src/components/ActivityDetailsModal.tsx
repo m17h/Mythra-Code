@@ -7,6 +7,7 @@ import { adoptPortalTheme, effectiveZoom } from "../lib/floatingLayer";
 import { prefersReducedMotion } from "../lib/flipRoster";
 import { isWindowsPlatform } from "../lib/platform";
 import { useModalFocus } from "../hooks/useModalFocus";
+import { useTimelineEnvironment } from "./TimelineEnvironment";
 import { SETTLED_ACTIVITY_LABELS, UNCONFIRMED_ACTIVITY_LABEL, type ActivityStatusCategory } from "./ActivityStatus";
 import { PixelWorkingMark } from "./PixelWorkingMark";
 import { InfoPopover } from "./InfoPopover";
@@ -203,6 +204,7 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
   }
   const reasoning = activity.kind === "reasoning";
   const warning = activity.kind === "warning";
+  const DetailWrapper = useTimelineEnvironment().ActivityDetail;
   const Icon = activity.kind === "command" ? TerminalSquare : activity.kind === "file" ? FileCode2 : reasoning ? Sparkles
     : warning ? TriangleAlert : activity.kind === "agent" ? UsersRound : CircleDot;
   const detail = activity.detail?.trim() ? activity.detail : "";
@@ -223,6 +225,15 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
   const label = reasoning
     ? <span className="activity-step-kind">{title}</span>
     : <span className={`activity-step-title${mono ? " mono" : ""}`}>{title}</span>;
+  const output = reasoning ? <>
+    <div className={`activity-step-thought${clamped ? " is-clamped" : ""}`}>{detail}</div>
+    {clampable && (
+      <button type="button" className="activity-step-more" aria-expanded={!clamped} aria-label={clamped ? "Show all thinking" : "Show less thinking"}
+        onClick={() => setFullThought((value) => !value)}>
+        {clamped ? "Show all" : "Show less"}
+      </button>
+    )}
+  </> : <pre className="activity-step-output">{detail}</pre>;
   const row = <li className={`activity-step kind-${activity.kind}${tone === "bad" ? " is-failed" : ""}${flags}`} data-step-id={step.id}>
     <span className={`activity-step-node${thinkingNow ? " working" : ""}`} aria-hidden="true">{thinkingNow ? <PixelWorkingMark /> : <Icon size={11} />}</span>
     <div className="activity-step-body">
@@ -241,15 +252,7 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
       {coordination && <CoordinationRoute />}
       {coordination?.receiptDetail && <CoordinationReceipt detail={coordination.receiptDetail} reveal={match} />}
       {!showDetail && reasoning && detail && <p className="activity-step-preview">{detail.slice(0, 220)}</p>}
-      {showDetail && (reasoning ? <>
-        <div className={`activity-step-thought${clamped ? " is-clamped" : ""}`}>{detail}</div>
-        {clampable && (
-          <button type="button" className="activity-step-more" aria-expanded={!clamped} aria-label={clamped ? "Show all thinking" : "Show less thinking"}
-            onClick={() => setFullThought((value) => !value)}>
-            {clamped ? "Show all" : "Show less"}
-          </button>
-        )}
-      </> : <pre className="activity-step-output">{detail}</pre>)}
+      {showDetail && (DetailWrapper ? <DetailWrapper activity={activity}>{output}</DetailWrapper> : output)}
     </div>
   </li>;
   return coordination ? <CoordinationPresentation activity={activity} record={coordination}>{row}</CoordinationPresentation> : row;
