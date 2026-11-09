@@ -1,6 +1,6 @@
+import { sanitizeParentFollowUpLimit } from "./appConfig";
 import { auditEvent } from "./codex";
 import {
-  MAX_AUTOMATIC_PARENT_RESUMES,
   parentExecutionChange,
   type ParentExecutionChange,
   type ParentRun,
@@ -13,10 +13,8 @@ import { takeParentRunRetirement, type ParentRunRetirement } from "./taskStore";
  * Local records of what a parent run did, so a failed or surprising follow-up
  * can be diagnosed from the app's existing audit log.
  *
- * Only identifiers and finite categories appear here. There is deliberately no
- * field that could carry a prompt, child output, a title, a path, an account
- * detail or a provider's error text. A paused run's free-text detail is never
- * read, except through `parentExecutionChange`, which maps it to a category.
+ * Only identifiers, validated counts and finite categories appear here.
+ * `parentExecutionChange` maps a paused run's free-text detail to a category.
  */
 
 export const PARENT_RUN_AUDIT_KIND = "parentRun.transition";
@@ -40,7 +38,8 @@ export interface ParentRunDiagnostic {
   from: ParentRunPhase | "none";
   to: ParentRunPhase | "closed";
   resumesUsed: number;
-  budget: number;
+  /** The saved follow-up limit when this transition happened. */
+  budget: number | "unlimited";
   followUpId?: string;
   trigger?: "automatic" | "explicit";
   pauseReason?: ParentRunPauseReason;
@@ -75,7 +74,7 @@ function pausedOutcome(reason: ParentRunPauseReason | undefined): ParentRunOutco
  * replacement and missing-conversation closures still matter. The same phase
  * with new fields is an internal update and is not recorded.
  */
-export function parentRunDiagnostic(previous: ParentRun | undefined, next: ParentRun | undefined, closure: ParentRunClosure): ParentRunDiagnostic | null {
+export function parentRunDiagnostic(previous: ParentRun | undefined, next: ParentRun | undefined, closure: ParentRunClosure, limit: number | null): ParentRunDiagnostic | null {
   const run = next ?? previous;
   if (!run || previous === next) return null;
   if (!UUID.test(run.id) || !Number.isSafeInteger(run.resumesUsed) || run.resumesUsed < 0
@@ -99,7 +98,7 @@ export function parentRunDiagnostic(previous: ParentRun | undefined, next: Paren
     from: previous?.phase ?? "none",
     to: next?.phase ?? "closed",
     resumesUsed: run.resumesUsed,
-    budget: MAX_AUTOMATIC_PARENT_RESUMES,
+    budget: sanitizeParentFollowUpLimit(limit) ?? "unlimited",
     ...(followUpId && UUID.test(followUpId) ? { followUpId } : {}),
     ...(next?.phase === "continuing" && (previous?.phase === "waiting" || previous?.phase === "paused")
       ? { trigger: previous.phase === "waiting" ? "automatic" as const : "explicit" as const } : {}),
@@ -126,8 +125,10 @@ function record(threadId: string, diagnostic: ParentRunDiagnostic | null): void 
 /**
  * Called after a store update that changed parent runs, never inside one.
  * Logging is fire and forget: nothing waits on it, and it cannot fail a turn.
+ * `limit` is the saved follow-up limit read synchronously with the update, the
+ * same value the scheduler decided with; null is unlimited.
  */
-export function recordParentRunTransitions(state: ParentRunState, previous: ParentRunState): void {
+export function recordParentRunTransitions(state: ParentRunState, previous: ParentRunState, limit: number | null): void {
   if (state.parentRuns === previous.parentRuns) return;
   try {
     for (const threadId of new Set([...Object.keys(previous.parentRuns), ...Object.keys(state.parentRuns)])) {
@@ -141,10 +142,10 @@ export function recordParentRunTransitions(state: ParentRunState, previous: Pare
         taskRemoved: !state.tasks[threadId],
       };
       if (before && after && before.id !== after.id) {
-        record(threadId, parentRunDiagnostic(before, undefined, closure));
-        record(threadId, parentRunDiagnostic(undefined, after, closure));
+        record(threadId, parentRunDiagnostic(before, undefined, closure, limit));
+        record(threadId, parentRunDiagnostic(undefined, after, closure, limit));
       } else {
-        record(threadId, parentRunDiagnostic(before, after, closure));
+        record(threadId, parentRunDiagnostic(before, after, closure, limit));
       }
     }
   } catch {

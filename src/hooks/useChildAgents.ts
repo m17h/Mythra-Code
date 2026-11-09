@@ -79,10 +79,10 @@ import {
   buildParentNotice,
   classifyParentObligation,
   decideParentRun,
-  MAX_AUTOMATIC_PARENT_RESUMES,
   NO_FOLLOW_UP_LIST_NOTE,
   PARENT_EXECUTION_UNCONFIRMED,
   parentFollowUpReport,
+  parentResumesRemain,
   parentRunAtTurnEnd,
   parentRunProgress,
   pausedParentRun,
@@ -212,6 +212,8 @@ export interface ChildAgentContext {
   parentRunEnvironmentRevision?: string;
   /** Freshly compare a run's captured identity. Null means provably unchanged. */
   probeParentExecution?: (run: ParentRun) => Promise<string | null>;
+  /** Read the host's saved automatic follow-up limit. Null is unlimited. */
+  getParentFollowUpLimit: () => number | null;
 }
 
 export interface ProjectRunOutcome {
@@ -263,10 +265,10 @@ function parentReviewField(rootThreadId: string): { reviewRunId?: string } {
  * reads the exact run that owns the child and writes nothing: looking at a child
  * never makes it followed.
  */
-function parentResumeTracked(rootThreadId: string, reviewRunId: string | undefined): boolean {
+function parentResumeTracked(rootThreadId: string, reviewRunId: string | undefined, limit: number | null): boolean {
   const run = useTaskStore.getState().parentRuns[rootThreadId];
   return Boolean(run?.autoResume && run.phase !== "paused" && reviewRunId === run.id
-    && run.resumesUsed < MAX_AUTOMATIC_PARENT_RESUMES);
+    && parentResumesRemain(run, limit));
 }
 
 // Re-exported from the policy module, where the UI can reach them without
@@ -1461,7 +1463,7 @@ export function useChildAgents(context: ChildAgentContext): {
       ? { ...current, collectedReviewToken: link.collectedReviewToken } : current;
     const obligation = parentObligationFor(observed);
     return parentFollowUpReport(obligation.state, !obligation.manualTakeover
-      && lifecycleRef.current.mounted && parentResumeTracked(current.rootThreadId, current.reviewRunId), focused);
+      && lifecycleRef.current.mounted && parentResumeTracked(current.rootThreadId, current.reviewRunId, contextRef.current.getParentFollowUpLimit()), focused);
   }, [linksIncludingPending, parentObligationFor]);
 
   const spawnChild = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
@@ -4055,6 +4057,8 @@ export function useChildAgents(context: ChildAgentContext): {
       queue: !head ? "none" : head.status === "failed" || head.editing ? "held" : "pending",
       hasDelivery: Boolean(ctx.resumeParentTurn && ctx.hasParentRunDelivery?.(root)),
       hydrated: Boolean(task?.messages.some((message) => message.role === "assistant")),
+      // Read now, so a limit saved during the identity probe applies to this decision.
+      resumeLimit: ctx.getParentFollowUpLimit(),
     });
   }, []);
 

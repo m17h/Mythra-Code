@@ -15,6 +15,20 @@ export function sanitizeTerminalTimeoutMinutes(value: unknown): number {
     ? value : DEFAULT_TERMINAL_TIMEOUT_MINUTES;
 }
 
+/** Automatic parent follow-ups per authorization. Existing settings keep the original eight. */
+export const DEFAULT_PARENT_FOLLOW_UP_LIMIT = 8;
+export const MAX_PARENT_FOLLOW_UP_LIMIT = 1_000;
+
+/**
+ * A whole number of automatic parent follow-ups, or null for no count limit.
+ * Only an explicit null is unlimited; missing or malformed values keep the default.
+ */
+export function sanitizeParentFollowUpLimit(value: unknown): number | null {
+  if (value === null) return null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= MAX_PARENT_FOLLOW_UP_LIMIT
+    ? value : DEFAULT_PARENT_FOLLOW_UP_LIMIT;
+}
+
 /** Keep finished conversations visible unless automatic archiving was explicitly enabled. */
 export function sanitizeAutoArchiveSubagentThreads(value: unknown): boolean {
   return value === true;
@@ -94,6 +108,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   subagentMax: 3,
   managedSubagentV2: false,
   autoArchiveSubagentThreads: false,
+  parentFollowUpLimit: DEFAULT_PARENT_FOLLOW_UP_LIMIT,
   childAgents: DEFAULT_CHILD_AGENT_SETTINGS,
   childAgentPresets: [],
   subagentModelGuidance: [],

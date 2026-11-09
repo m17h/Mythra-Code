@@ -48,7 +48,7 @@ import { cancelClaudeLogin, isClaudeDefaultModel, isClaudeModelSuperseded, visib
 import { claudeUsesApiKey, codexAccountReady } from "../lib/providerAuth";
 import { ClaudeBillingPanel, OpenAiApiKeyPanel, useProviderAuthOperation } from "./ProviderApiKeyPanel";
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
-import { DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_SETTINGS, DEFAULT_TERMINAL_TIMEOUT_MINUTES, EFFORT_SLIDER_STYLES, MAX_TERMINAL_TIMEOUT_MINUTES, RELEASE_NOTES_URL, THEMES, sanitizeTerminalTimeoutMinutes } from "../lib/appConfig";
+import { DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PARENT_FOLLOW_UP_LIMIT, DEFAULT_SETTINGS, DEFAULT_TERMINAL_TIMEOUT_MINUTES, EFFORT_SLIDER_STYLES, MAX_PARENT_FOLLOW_UP_LIMIT, MAX_TERMINAL_TIMEOUT_MINUTES, RELEASE_NOTES_URL, THEMES, sanitizeParentFollowUpLimit, sanitizeTerminalTimeoutMinutes } from "../lib/appConfig";
 import { latestSolModel } from "../lib/threadProvider";
 import { resolveThreadTitleModel } from "../lib/threadTitles";
 import { formatGitError, friendlyError } from "../lib/errors";
@@ -235,6 +235,7 @@ const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
   { pane: "memory", label: "Learned preferences", keywords: "learning history scope" },
   { pane: "agents", label: "Sub-agent defaults", keywords: "concurrency parallel delegate" },
   { pane: "agents", label: "Model guidance", keywords: "model notes when to use sub-agent preferences" },
+  { pane: "agents", label: "Automatic parent follow-ups", keywords: "follow-up follow up followup limit unlimited continue resume review parent turns budget" },
   { pane: "agents", label: "Archive sub-agent threads automatically", keywords: "cleanup archive" },
   { pane: "agents", label: "Sub-agent presets", keywords: "preset crew setup" },
   { pane: "agents", label: "Custom agents", keywords: "specialist instructions" },
@@ -263,7 +264,7 @@ const SETTING_PANES: Partial<Record<keyof AppSettings, SettingsPane>> = {
   systemPrompt: "prompts", codexSystemPrompt: "prompts", claudeSystemPrompt: "prompts", promptProfileId: "prompts",
   projectInstructionsEnabled: "prompts", projectClaudeInstructionsEnabled: "prompts",
   subagentsEnabled: "agents", subagentMax: "agents", subagentEngine: "agents", nativeSubagentMax: "agents", nativeSubagentOptions: "agents",
-  autoCompactTokens: "agents", autoArchiveSubagentThreads: "agents", childAgents: "agents", childAgentPresets: "agents", managedSubagentV2: "agents", subagentModelGuidance: "agents",
+  autoCompactTokens: "agents", autoArchiveSubagentThreads: "agents", childAgents: "agents", childAgentPresets: "agents", managedSubagentV2: "agents", subagentModelGuidance: "agents", parentFollowUpLimit: "agents",
   automaticGitInitialization: "projects", automaticThreadTitles: "projects", threadTitleProvider: "projects", threadTitleModel: "projects",
   serviceTier: "system", notificationsEnabled: "system", terminalScrollback: "system", terminalTimeoutMinutes: "system",
   usageDisplay: "usage",
@@ -288,6 +289,14 @@ function parseTerminalTimeoutMinutes(text: string): number | null {
   if (!/^\d+$/.test(trimmed)) return null;
   const minutes = Number(trimmed);
   return Number.isSafeInteger(minutes) && minutes > 0 && minutes <= MAX_TERMINAL_TIMEOUT_MINUTES ? minutes : null;
+}
+
+/** A typed follow-up limit, or null while the text is not a whole number in range. */
+function parseParentFollowUpLimit(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const limit = Number(trimmed);
+  return Number.isSafeInteger(limit) && limit > 0 && limit <= MAX_PARENT_FOLLOW_UP_LIMIT ? limit : null;
 }
 
 const INTERFACE_SIZE_OPTIONS: AppSelectOption[] = [
@@ -749,6 +758,9 @@ export function SettingsModal({
   // Minutes as typed. null mirrors the draft setting; while disabled it keeps
   // the last limit so switching back on restores it.
   const [terminalTimeoutText, setTerminalTimeoutText] = useState<string | null>(null);
+  // Same convention for the follow-up limit: while Unlimited, keeps the last limit.
+  const [followUpLimitText, setFollowUpLimitText] = useState<string | null>(null);
+  const followUpLimitId = useId();
   const subagentPanelId = useId();
   const managedSubagentV2Id = useId();
   const managedSubagentV2DraftLocked = Boolean(managedSubagentV2LockedReason)
@@ -870,12 +882,17 @@ export function SettingsModal({
   // Invalid text never reaches the draft, so it blocks Save instead of being
   // silently replaced by the previous limit or read as "disabled".
   const terminalTimeoutInvalid = terminalTimeoutTyped === null;
+  // Null is Unlimited. Missing or malformed saved values read as the default.
+  const followUpLimit = sanitizeParentFollowUpLimit(local.parentFollowUpLimit);
+  const followUpLimited = followUpLimit !== null;
+  // Like the timeout, an unparsable limit blocks Save rather than reading as Unlimited.
+  const followUpLimitInvalid = followUpLimited && followUpLimitText !== null && parseParentFollowUpLimit(followUpLimitText) === null;
   // Keep unrelated drafts out of each keystroke's comparison. In particular,
   // editing a prompt must not serialize every project and profile again.
   const settingsDraftChanged = useMemo(() => open && local !== settings && JSON.stringify(local) !== JSON.stringify(settings), [open, local, settings]);
   const projectsDraftChanged = useMemo(() => open && localProjects !== projects && JSON.stringify(localProjects) !== JSON.stringify(projects), [open, localProjects, projects]);
   const profilesDraftChanged = useMemo(() => open && localProfiles !== profiles && JSON.stringify(localProfiles) !== JSON.stringify(profiles), [open, localProfiles, profiles]);
-  const dirty = open && (settingsDraftChanged || projectsDraftChanged || profilesDraftChanged || terminalTimeoutTyped !== terminalTimeoutMinutes || guidanceDraftChanged);
+  const dirty = open && (settingsDraftChanged || projectsDraftChanged || profilesDraftChanged || terminalTimeoutTyped !== terminalTimeoutMinutes || followUpLimitInvalid || guidanceDraftChanged);
   const activeProjectAppearance = localProjects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
   const activeProjectHasAppearanceOverride = Boolean(activeProjectAppearance?.theme || activeProjectAppearance?.chatFont || activeProjectAppearance?.effortSlider);
   const projectDefaultsComplete = localProjects.every((project) => !project.overrides?.defaults || Boolean(project.overrides.defaults.model.trim()));
@@ -919,6 +936,7 @@ export function SettingsModal({
       setPolicyNotice("");
       setGuidanceDraft(null);
       setTerminalTimeoutText(null);
+      setFollowUpLimitText(null);
       const activeDefaults = projects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
       onThemePreview(initialDraft?.appearance ? seeded.theme : activeDefaults?.theme ?? seeded.theme);
       onEffortSliderPreview(initialDraft?.appearance ? seeded.effortSlider : activeDefaults?.effortSlider ?? seeded.effortSlider);
@@ -930,11 +948,12 @@ export function SettingsModal({
     const baseline = draftBaselineRef.current;
     if (settings !== baseline.settings) {
       // Adopt external settings changes only when the draft is untouched, so
-      // the dirty check keeps meaning "you have unsaved edits". Timeout text
-      // that differs from the draft is an edit even before it parses into it.
-      if (terminalTimeoutTyped === terminalTimeoutMinutes && JSON.stringify(local) === JSON.stringify(baseline.settings)) {
+      // the dirty check keeps meaning "you have unsaved edits". Invalid number
+      // input is still an edit even though it does not reach the draft.
+      if (terminalTimeoutTyped === terminalTimeoutMinutes && !followUpLimitInvalid && JSON.stringify(local) === JSON.stringify(baseline.settings)) {
         setLocal(settings);
         setTerminalTimeoutText(null);
+        setFollowUpLimitText(null);
       }
     }
     if (projects !== baseline.projects) {
@@ -955,7 +974,7 @@ export function SettingsModal({
       setLocalProfiles((current) => mergePromptProfileDrafts(baseline.profiles, current, profiles));
     }
     draftBaselineRef.current = { settings, projects, profiles };
-  }, [activeProjectId, initialDraft, initialSection, lmStudioModels, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, local, open, projects, profiles, settings, terminalTimeoutMinutes, terminalTimeoutTyped]);
+  }, [activeProjectId, followUpLimitInvalid, initialDraft, initialSection, lmStudioModels, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, local, open, projects, profiles, settings, terminalTimeoutMinutes, terminalTimeoutTyped]);
 
   useEffect(() => {
     const previous = settingsEntryRef.current;
@@ -1349,9 +1368,9 @@ export function SettingsModal({
     if (projectsDraftChanged) panes.add("projects");
     if (profilesDraftChanged) panes.add("prompts");
     if (terminalTimeoutTyped !== terminalTimeoutMinutes) panes.add("system");
-    if (guidanceDraftChanged) panes.add("agents");
+    if (guidanceDraftChanged || followUpLimitInvalid) panes.add("agents");
     return panes;
-  }, [open, local, settings, projectsDraftChanged, profilesDraftChanged, terminalTimeoutTyped, terminalTimeoutMinutes, guidanceDraftChanged]);
+  }, [open, local, settings, projectsDraftChanged, profilesDraftChanged, terminalTimeoutTyped, terminalTimeoutMinutes, guidanceDraftChanged, followUpLimitInvalid]);
   // A search result names a row; once its pane renders, bring that row into
   // view and mark it briefly. Lazy panes can take a few frames to mount.
   useEffect(() => {
@@ -1390,7 +1409,7 @@ export function SettingsModal({
   const contentRef = useRef<HTMLDivElement>(null);
   const wideSheet = settingsSection === "usage" || settingsSection === "pricing";
   useSettingsSheetResize(dialogRef, contentRef, wideSheet ? "wide" : "reading", open);
-  const terminalTimeoutInputRef = useCallback((input: HTMLInputElement | null) => {
+  const scrollableNumberInputRef = useCallback((input: HTMLInputElement | null) => {
     if (!input) return;
     const onWheel = (event: WheelEvent) => {
       const pane = input.closest<HTMLElement>(".settings-content");
@@ -1432,7 +1451,7 @@ export function SettingsModal({
       : null;
 
   const saveSettings = async () => {
-    if (!projectDefaultsComplete || terminalTimeoutInvalid) return;
+    if (!projectDefaultsComplete || terminalTimeoutInvalid || followUpLimitInvalid) return;
     // Only an entry's own Save stages it; Save settings never applies an
     // open editor implicitly, and never drops it without asking.
     if (guidanceDraftChanged && !await confirmDialog("Save settings without your unsaved model guidance entry?", { confirmLabel: "Save without it", cancelLabel: "Keep editing" })) {
@@ -1453,7 +1472,24 @@ export function SettingsModal({
       subagentModelGuidance: sanitizeSubagentModelGuidance(local.subagentModelGuidance),
       subagentMax: normalizedSubagents.maxConcurrent,
       terminalTimeoutMinutes,
+      parentFollowUpLimit: followUpLimit,
     });
+  };
+  const setFollowUpLimitUnlimited = (unlimited: boolean) => {
+    if (unlimited && followUpLimited) {
+      // Keep the last valid count in case Limited is selected again.
+      setLocal((current) => ({ ...current, parentFollowUpLimit: null }));
+      setFollowUpLimitText(String(followUpLimit));
+    } else if (!unlimited && !followUpLimited) {
+      const restored = followUpLimitText === null ? null : parseParentFollowUpLimit(followUpLimitText);
+      setLocal((current) => ({ ...current, parentFollowUpLimit: restored ?? DEFAULT_PARENT_FOLLOW_UP_LIMIT }));
+      setFollowUpLimitText(null);
+    }
+  };
+  const editFollowUpLimit = (text: string) => {
+    setFollowUpLimitText(text);
+    const limit = parseParentFollowUpLimit(text);
+    if (limit !== null && limit !== followUpLimit) setLocal((current) => ({ ...current, parentFollowUpLimit: limit }));
   };
   const setTerminalTimeoutEnabled = (enabled: boolean) => {
     if (enabled) {
@@ -2196,7 +2232,7 @@ export function SettingsModal({
                   <div className="terminal-timeout-detail">
                     <label id={`${terminalTimeoutId}-label`} htmlFor={`${terminalTimeoutId}-minutes`}>Timeout</label>
                     <input
-                      ref={terminalTimeoutInputRef}
+                      ref={scrollableNumberInputRef}
                       id={`${terminalTimeoutId}-minutes`}
                       type="number"
                       inputMode="numeric"
@@ -2336,6 +2372,55 @@ export function SettingsModal({
                     onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
                     onChange={(subagentModelGuidance) => setLocal((current) => ({ ...current, subagentModelGuidance }))}
                   />
+                </div>
+              </div>
+            </div>
+
+            <div className="set-group">
+              <h4>Parent follow-ups</h4>
+              <div className="set-card">
+                <div className="set-row terminal-timeout-row">
+                  <div className="set-copy">
+                    <strong>Automatic parent follow-ups</strong>
+                    <small id={`${followUpLimitId}-help`}>Sets how many times a managed parent on this computer can continue automatically. Each follow-up uses your plan or credits like any model turn. Saved changes apply to the next automatic follow-up. Choose “Continue with” to resume a paused run with a fresh count.</small>
+                  </div>
+                  <div className="set-control">
+                    <AppSelectMenu
+                      ariaLabel={`Automatic parent follow-up limit, ${followUpLimited ? "Limited" : "Unlimited"}`}
+                      value={followUpLimited ? "limited" : "unlimited"}
+                      portal
+                      options={[
+                        { value: "limited", label: "Limited", detail: "Pause after a set number" },
+                        { value: "unlimited", label: "Unlimited", detail: "No count limit" },
+                      ]}
+                      onChange={(value) => setFollowUpLimitUnlimited(value === "unlimited")}
+                    />
+                  </div>
+                  {followUpLimited ? (
+                    <div className="terminal-timeout-detail">
+                      <label id={`${followUpLimitId}-label`} htmlFor={`${followUpLimitId}-count`}>Limit</label>
+                      <input
+                        ref={scrollableNumberInputRef}
+                        id={`${followUpLimitId}-count`}
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={MAX_PARENT_FOLLOW_UP_LIMIT}
+                        step={1}
+                        autoComplete="off"
+                        aria-labelledby={`${followUpLimitId}-label ${followUpLimitId}-unit`}
+                        aria-describedby={`${followUpLimitId}-help${followUpLimitInvalid ? ` ${followUpLimitId}-error` : ""}`}
+                        aria-invalid={followUpLimitInvalid}
+                        value={followUpLimitText ?? String(followUpLimit)}
+                        onChange={(event) => editFollowUpLimit(event.target.value)}
+                        onBlur={() => { if (!followUpLimitInvalid) setFollowUpLimitText(null); }}
+                      />
+                      <span id={`${followUpLimitId}-unit`}>follow-ups before pausing</span>
+                      {followUpLimitInvalid && <p id={`${followUpLimitId}-error`} className="terminal-timeout-error" role="alert">
+                        Enter a whole number from 1 to {MAX_PARENT_FOLLOW_UP_LIMIT.toLocaleString()}, or choose Unlimited.
+                      </p>}
+                    </div>
+                  ) : <p className="terminal-timeout-detail">Other pause rules still apply.</p>}
                 </div>
               </div>
             </div>
@@ -2576,9 +2661,9 @@ export function SettingsModal({
           </section>}
             </div>
             <div className="modal-footer">
-              {dirty && <span className="unsaved-hint"><span>{dirtyPanes.size ? `Unsaved changes in ${[...dirtyPanes].map((pane) => SETTINGS_PANES.get(pane)?.label ?? pane).join(", ")}` : "Unsaved changes"}</span>{terminalTimeoutInvalid && <span role="status">· Fix the terminal timeout in Runtime to save</span>}</span>}
+              {dirty && <span className="unsaved-hint"><span>{dirtyPanes.size ? `Unsaved changes in ${[...dirtyPanes].map((pane) => SETTINGS_PANES.get(pane)?.label ?? pane).join(", ")}` : "Unsaved changes"}</span>{terminalTimeoutInvalid && <span role="status">· Fix the terminal timeout in Runtime to save</span>}{followUpLimitInvalid && <span role="status">· Fix the follow-up limit in Sub-agents to save</span>}</span>}
               <button className="secondary-button" onClick={requestClose}>Cancel</button>
-              <button className="primary-button" onClick={() => void saveSettings()} disabled={!projectDefaultsComplete || terminalTimeoutInvalid}>Save settings</button>
+              <button className="primary-button" onClick={() => void saveSettings()} disabled={!projectDefaultsComplete || terminalTimeoutInvalid || followUpLimitInvalid}>Save settings</button>
             </div>
           </div>
         </div>

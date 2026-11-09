@@ -28,7 +28,7 @@ import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { loadStored, readStoredRaw, storeValue, subscribeRemoteStateAdoption } from "./lib/storage";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeParentFollowUpLimit, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { modelCatalogRecentlyRefreshed, shareModelRefresh, type ModelRefreshState } from "./lib/modelCatalogRefresh";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { searchLocalTranscripts, threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
@@ -586,7 +586,7 @@ const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !
 const rawStoredSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const storedSettings = { ...rawStoredSettings, defaultModelExplicit: rawStoredSettings.defaultModelExplicit === true, warnOnMaxReasoning: rawStoredSettings.warnOnMaxReasoning !== false, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true, automaticGitInitialization: rawStoredSettings.automaticGitInitialization === true, transcription: sanitizeTranscriptionSettings(rawStoredSettings.transcription) };
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), subagentModelGuidance: sanitizeSubagentModelGuidance(storedSettings.subagentModelGuidance), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), parentFollowUpLimit: sanitizeParentFollowUpLimit(storedSettings.parentFollowUpLimit), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), subagentModelGuidance: sanitizeSubagentModelGuidance(storedSettings.subagentModelGuidance), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 /**
  * Claude/Cursor transcripts flow memory → disk on a debounced save, so the
@@ -709,9 +709,15 @@ const onThisDevice = (body: string) => isRemoteMachineActive()
   ? `${body} This is on ${localMachineLabel(useRemoteDevices.getState().snapshot)}.` : body;
 
 export default function App() {
+  const [settings, persistSettings, settingsRef] = usePersistedStateRef<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
+  // Scheduling and diagnostics read the saved host setting even before React
+  // renders a change. Adopted settings may still need normalization.
+  const getParentFollowUpLimit = useCallback(() => sanitizeParentFollowUpLimit(settingsRef.current?.parentFollowUpLimit), [settingsRef]);
   // Observe in the layout phase, before passive turn/child subscriptions:
   // queued delivery can synchronously write again during completion notices.
-  useLayoutEffect(() => useTaskStore.subscribe(recordParentRunTransitions), []);
+  useLayoutEffect(() => useTaskStore.subscribe((state, previous) => {
+    if (state.parentRuns !== previous.parentRuns) recordParentRunTransitions(state, previous, getParentFollowUpLimit());
+  }), [getParentFollowUpLimit]);
   useInputModality();
   const voiceSession = useVoiceInputLock((state) => state.session);
   const activeMachine = useActiveMachine((state) => state.machine);
@@ -867,7 +873,6 @@ export default function App() {
     activeFirstPromptIdRef.current = null;
     setActiveFirstPrompt(null);
   }, []);
-  const [settings, persistSettings, settingsRef] = usePersistedStateRef<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
   // Someone asking to use this computer gets a desktop notification, even with the menu closed.
   useAccessNotifications(settings.notificationsEnabled);
   // Parents read model notes from the saved settings at their next real turn.
@@ -6517,10 +6522,12 @@ export default function App() {
     return parentExecutionDifference(captured, parentExecutionFor(run, authKey));
   };
 
-  // Rebuilt only when availability changes; the shell re-renders far more often.
+  // Re-evaluate when availability or the saved limit changes. The evaluator
+  // still requires a waiting run and a wake event before using that limit.
+  const parentFollowUpLimit = sanitizeParentFollowUpLimit(settings.parentFollowUpLimit);
   const parentRunEnvironmentRevision = useMemo(() => JSON.stringify([threadAvailabilityRevision, worktreeBusy,
-    archivedThreads.map((record) => record.id), projects.map((project) => [project.id, project.path])]),
-  [archivedThreads, projects, threadAvailabilityRevision, worktreeBusy]);
+    archivedThreads.map((record) => record.id), projects.map((project) => [project.id, project.path]), parentFollowUpLimit]),
+  [archivedThreads, parentFollowUpLimit, projects, threadAvailabilityRevision, worktreeBusy]);
 
   const { acceptChildAgent, beginRemoteAcceptance, stopRemoteWorker, captureChildStopFrontier, cancelChildAgentsFor, continueParentRun, parentRunObligations, getManagedSubagentV2LockedReason, hasChildStartInFlight, invalidateChildAgentGuidance, noteExplicitChildStart, settleExplicitChildStart, retryChildAgentGuidance, respondToSettingsProposal, stopChildAgent } = useChildAgents({
     parentRunEnvironmentRevision,
@@ -6533,6 +6540,7 @@ export default function App() {
     resumeParentTurn,
     hasParentRunDelivery,
     probeParentExecution,
+    getParentFollowUpLimit,
     openRouterModels,
     lmStudioModels,
     lmStudioBaseUrl: settings.lmStudioBaseUrl,
