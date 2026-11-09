@@ -340,7 +340,7 @@ export interface TurnRunnerContext {
   /** Optional exact parent identity for a UI-generated worker instruction. */
   deliveryGuard?: (ownedRunStartedAt?: number) => boolean;
   /** This turn is a parent run's generated continuation, not an authored prompt. */
-  coordinationResume?: { dispatchId: string; priorStatus: TaskStatus; priorError?: string; execution?: ParentRun };
+  coordinationResume?: { dispatchId: string; priorStatus: TaskStatus; priorError?: string; priorWokenQuestions: string[]; execution?: ParentRun };
   /** Synchronous root-owned recheck after preparation awaits; null means unchanged. */
   parentExecutionCurrent?: (run: ParentRun) => string | null;
   activeThread: Thread | null;
@@ -1836,10 +1836,14 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
           // Stop retires the dispatch synchronously, before its provider cutoff
           // awaits. Never turn that stop into completion or restart its FIFO.
           if (parentRunStopEpoch(failedThreadId) === parentStopEpochBefore) {
-            useTaskStore.getState().updateParentRun(failedThreadId, (run) => run?.dispatchId === coordinationResume.dispatchId
-              ? reason instanceof ParentExecutionChanged ? pausedParentRun(run, "execution_changed", reason.difference)
-                : pausedParentRun(run, "delivery_failed", friendlyError(reason))
-              : run);
+            useTaskStore.getState().updateParentRun(failedThreadId, (run) => {
+              if (run?.dispatchId !== coordinationResume.dispatchId) return run;
+              // The provider did not receive this notice. Its newly claimed
+              // items must still be eligible after the user resumes the run.
+              const refused = { ...run, wokenQuestions: coordinationResume.priorWokenQuestions };
+              return reason instanceof ParentExecutionChanged ? pausedParentRun(refused, "execution_changed", reason.difference)
+                : pausedParentRun(refused, "delivery_failed", friendlyError(reason));
+            });
             useTaskStore.getState().setTaskStatus(failedThreadId, coordinationResume.priorStatus, coordinationResume.priorError);
           } else if (useTaskStore.getState().tasks[failedThreadId]?.status === "starting") {
             useTaskStore.getState().setTaskStatus(failedThreadId, "interrupted");
@@ -2233,7 +2237,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       delivered = await deliverMessage({
         ...withLiveDeliveryReadiness(delivery, contextRef.current),
         ...(remoteDelivery ? { remoteDelivery } : {}),
-        coordinationResume: { dispatchId, priorStatus, priorError: task.error, ...(!explicit ? { execution: run } : {}) },
+        coordinationResume: { dispatchId, priorStatus, priorError: task.error, priorWokenQuestions: run.wokenQuestions, ...(!explicit ? { execution: run } : {}) },
         deliveryGuard: () => useTaskStore.getState().parentRuns[threadId]?.dispatchId === dispatchId,
         setError: (error) => { deliveryError = error; },
       }, notice, "turn");
@@ -2246,7 +2250,8 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     const settled = latest.tasks[threadId];
     const owned = latest.parentRuns[threadId]?.dispatchId === dispatchId && latest.parentRuns[threadId]?.phase === "continuing";
     if (owned && !delivered) {
-      latest.updateParentRun(threadId, (entry) => entry && pausedParentRun(entry, "delivery_failed", deliveryError ?? undefined));
+      latest.updateParentRun(threadId, (entry) => entry?.dispatchId === dispatchId
+        ? pausedParentRun({ ...entry, wokenQuestions: run.wokenQuestions }, "delivery_failed", deliveryError ?? undefined) : entry);
     } else if (owned && settled?.status !== "starting" && settled?.status !== "running" && settled?.lastCompletedTurnId === baseTurnId) {
       latest.updateParentRun(threadId, (entry) => entry && pausedParentRun(entry, "start_uncertain"));
     }

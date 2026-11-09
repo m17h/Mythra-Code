@@ -62,11 +62,12 @@ model.
 
 ## Working together
 
-A child can send a question or an update with `message_parent`. Its parent
-receives messages through `agent_status` and `collect_agent`. A question wakes
-an outstanding collection call, even while the child is still working.
-Reading a question does not mean it has been answered. Unanswered questions
-remain available for the parent to recover after a missed response.
+In V2, a child can use `message_parent` with kind `question` when it needs the
+parent to respond or act on a question, blocker or decision. Kind `update` is
+the default for progress that needs no action. Provider approvals and native
+user-input requests still go to the user. The parent receives child messages
+through `agent_status` and `collect_agent`. Reading a question leaves it open
+for the parent to recover after a missed response.
 
 The parent replies with `send_agent_message`, using `replyTo` for an answer to
 a particular question. A running child receives guidance through its provider's
@@ -99,15 +100,17 @@ payload with that key is refused. An intentional new instruction uses a fresh
 key, even if its wording is identical. This is bounded-history deduplication,
 not a promise of exactly-once provider execution across failures or forever.
 
-A child message starts an idle parent turn only inside a parent run Mythra Code
-is following (see "Following delegated work"). Otherwise it stays visible for
-the parent's next turn and in the sub-agent details, which prevents unexpected
-model usage. Any new question wakes a followed parent once.
+A question can start a turn when Mythra Code is following a waiting parent
+run and its continuation checks pass. Otherwise it stays available for the
+parent's next turn and in the sub-agent details. Updates stay available in the
+same places and never start a turn.
 
-While the parent waits in `collect_agent` for one child, a new question from
-another child ends that wait early, once per question. `agent_status` lists
-children that need a response first, pages long crews with `nextCursor`, and
-gives fresh unread messages priority over reminders of earlier questions.
+While the parent waits in `collect_agent` for one child, an unread question
+from another child can end that wait early, including a question that arrived
+before the call. The response includes the question and its child ID.
+`agent_status` lists children that need a response first and pages long crews
+with `nextCursor`. Unread questions get space before progress updates in a
+bounded response. Earlier open questions remain available in focused status.
 For failed or unconfirmed guidance, focused status responses return a bounded
 page. Pass `childId` and `guidanceNextOffset` as `guidanceOffset` to inspect the
 next page, including outcomes beyond the first eight. This is live ordering,
@@ -145,10 +148,21 @@ turn ends. The model's words are never read, and no timer is involved.
   watchers and other shell work are not part of this and never hold it open.
   The sidebar also shows **Waiting**, or **Needs input** when the run pauses,
   instead of labelling the parent **Done**.
-- **Continuing.** When every assigned child has settled, or one asks a question,
-  one visible continuation turn starts in the same conversation. A generated
-  notice names the children and their states. It never contains child output:
-  results still come through `collect_agent`.
+- **Continuing.** When every assigned child has settled, a visible continuation
+  turn can start in the same conversation. A child can also wake the parent
+  while siblings are still working by asking a question or by finishing,
+  failing or being cancelled with a result the parent has yet to collect.
+  Undelivered guidance can also wake the parent while the child still works.
+  Signals available together share one turn, and each signal can independently
+  wake the parent once. A child held on the user's approval, taken over or
+  stopped by the user, or with an unconfirmed status cannot wake the parent on
+  its own. An unannounced question can still wake it after the approval clears.
+  The generated notice lists child IDs, names and states only. The parent
+  reads questions with `agent_status`,
+  answers with `send_agent_message` using `replyTo`, and reads results through
+  `collect_agent`. A continuation with no progress can return to waiting while
+  a child can still move forward. If the parent still has work to do and its
+  children cannot move it forward, the run pauses.
 - **Finishing.** The run completes when every assigned child is reviewed. V1 work
   needs its exact result collected. Successful V2 work needs that result signed
   off with `accept_agent`. Failed or parent-cancelled V2 work needs its exact

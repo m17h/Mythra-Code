@@ -1002,7 +1002,7 @@ pub(super) fn tool_catalog(
         {
             "name": TOOL_COLLECT,
             "title": "Collect a sub-agent result",
-            "description": "Wait for a child to finish its current turn and return its final message and reviewToken. Returns early, while the child keeps working, when it has sent you messages or has an unanswered question: reply with send_agent_message and replyTo, then collect again. Unanswered questions stay recoverable until answered or explicitly closed. Returns a still-running status if the wait elapses first. A finished child is awaiting_review until you use accept_agent with its collected reviewToken or continue it with send_agent_message.",
+            "description": "Wait for a child to finish its current turn and return its final message and reviewToken. The wait can end early for messages from this child or an unread question from another child. Use send_agent_message with the childId of the agent who asked and its message ID as replyTo, then collect again. Unanswered questions stay recoverable until answered or explicitly closed. Returns a still-running status if the wait elapses first. A finished child is awaiting_review until you use accept_agent with its collected reviewToken or continue it with send_agent_message.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1196,12 +1196,12 @@ fn parent_messaging_tools() -> Vec<Value> {
         json!({
             "name": TOOL_MESSAGE_PARENT,
             "title": "Message your parent agent",
-            "description": "Send a progress update or a question to the parent agent that started you through Mythra Code. The message is stored in the parent's Mythra Code mailbox; the parent reads it with its own tools while it is working, and the user can see it. This does not start a parent turn and is not an instant reply: keep working when you can. If you cannot proceed without an answer, either wait briefly with read_parent_messages or end your turn with a clear statement of what you need — the parent can continue this same conversation.",
+            "description": "Send a question or a progress update to the parent agent that started you through Mythra Code. The parent reads it in its mailbox, and the user can see it. Set kind to \"question\" when the parent needs to reply or act on a question, blocker or decision. A question can bring back a waiting parent when Mythra Code is following the run and its continuation checks pass. Use kind \"update\" (the default) for progress that needs no action. An update never starts a parent turn. Leave provider approvals and native user-input requests to the user. Keep working when you can. If you need a reply before you can proceed, wait briefly with read_parent_messages or end your turn with a clear statement of what you need. The parent can continue this same conversation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "message": { "type": "string", "description": "Self-contained text; the parent does not see your conversation." },
-                    "kind": { "type": "string", "enum": ["question", "update"], "default": "update" },
+                    "kind": { "type": "string", "enum": ["question", "update"], "default": "update", "description": "\"question\" for anything that needs the parent's reply or action; \"update\" for passive progress. Omitted means \"update\"." },
                     "clientRequestId": { "type": "string", "maxLength": 80, "description": "Optional stable identifier for this message. Reuse on retries of the same send; use a new identifier for a new update/question. Deduplication lasts while the message remains in bounded history." },
                 },
                 "required": ["message"],
@@ -1411,12 +1411,12 @@ fn bridge_instructions(catalog: &Value, provider: &str) -> String {
         instructions.push("Use propose_agent_settings for requested crew changes; a proposal is applied only after user approval.".into());
     }
     if has(TOOL_MESSAGE_PARENT) {
-        instructions.push("You are a sub-agent started by a parent agent through Mythra Code. Use message_parent to send the parent a progress update or a question; it lands in the parent's mailbox and is not an instant reply. Parent guidance may arrive in your conversation or through read_parent_messages. Your final message in each turn is returned to the parent, which may continue this same conversation with more work. You cannot start sub-agents.".into());
+        instructions.push("You are a sub-agent started by a parent agent through Mythra Code. Use message_parent to reach the parent's mailbox. Set kind \"question\" when the parent needs to reply or act on a question, blocker or decision. Use kind \"update\" (the default) for progress that needs no action. Leave provider approvals and native user-input requests to the user. Parent guidance may arrive in your conversation or through read_parent_messages. Your final message in each turn is returned to the parent, which may continue this same conversation with more work. You cannot start sub-agents.".into());
     }
     if has(TOOL_SPAWN) {
         instructions.push("spawn_mythra_agent is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool.".into());
         if has(TOOL_MESSAGE_AGENT) && has(TOOL_ACCEPT) {
-            instructions.push("Children can send you questions and updates: agent_status and collect_agent return them, and collect_agent returns early when one arrives. Unanswered questions remain recoverable with a childId status or collect call; reading does not answer them. Reply with send_agent_message and replyTo, or continue the same child. Collect the finished result and sign it off explicitly with accept_agent using its exact reviewToken; a finished child stays awaiting_review until then.".into());
+            instructions.push("Children can send you questions and updates. Read them with agent_status or collect_agent. A collection wait can end early for a message from the child you are collecting or an unread question from another child. Use send_agent_message with the question's childId and message ID as replyTo. Unanswered questions stay available in focused status after reading. Collect the finished result and sign it off explicitly with accept_agent using its exact reviewToken. A finished child stays awaiting_review until then.".into());
         }
     }
     if has(TOOL_SET_RUN) {

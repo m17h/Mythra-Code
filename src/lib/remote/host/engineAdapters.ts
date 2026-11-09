@@ -1,8 +1,8 @@
 import { loadStored } from "../../storage";
 import { reviewedWorkflowSnapshot, workflowChanged, workflowRecipeSnapshot } from "./workflowDigest";
 import { useRemoteDevices } from "../devices";
-import { buildParentNotice, parentRunProgress, wokenParentQuestions } from "../../parentRun";
-import { storedQueuedTurnsForThread, useTaskStore, adoptRemoteParentDismissal } from "../../taskStore";
+import { parentRunAttention } from "../../parentRun";
+import { storedQueuedTurnsForThread, threadsHeldForUser, useTaskStore, adoptRemoteParentDismissal } from "../../taskStore";
 import type { Project } from "../../../types";
 import { analyzeSkillPrompts, readLocalSkill, type LocalSkill } from "../../skills";
 import { sanitizeProjectRunCommand } from "../../projectRun";
@@ -167,8 +167,17 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
         const runner = getRunner?.();
         if (!runner?.continueParentTo || !sources.getParentObligations) throw new HostReadError("unsupported", "The other device's parent continuation source is not attached.");
         const obligations = sources.getParentObligations(run);
-        const result = await runner.continueParentTo({ ...operation.context, remoteDelivery: operation.delivery }, {
-          parentRunId: run.id, notice: buildParentNotice(crypto.randomUUID(), obligations), progress: parentRunProgress(obligations), wokenQuestions: wokenParentQuestions(obligations),
+        // The same snapshot and approval rule as a local Continue: a question
+        // held on the user's approval is neither announced nor consumed.
+        const held = threadsHeldForUser(useTaskStore.getState(), obligations.map((entry) => entry.childId));
+        const result = await runner.continueParentTo({
+          ...operation.context,
+          // A child title in this generated notice cannot invoke an authored skill.
+          resolveSkillMentions: false,
+          resolveSkillPrompt: async (message) => message,
+          remoteDelivery: operation.delivery,
+        }, {
+          parentRunId: run.id, ...parentRunAttention(crypto.randomUUID(), run, obligations, held),
         });
         if (result.state !== "accepted") throw new HostReadError(result.state === "uncertain" ? "uncertain" : "busy", "This parent continuation did not start.");
         return { state: "accepted", threadId: id };

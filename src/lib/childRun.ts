@@ -96,8 +96,10 @@ export interface ChildRunContext {
  * instructions say the same, but not every runtime surfaces those.
  */
 export const CHILD_PARENT_MESSAGING_INSTRUCTIONS = [
-  "You are a sub-agent started by a parent agent through Mythra Code; the parent does not see this conversation.",
-  "Use the mythra_agents tool message_parent to send the parent a progress update or a question; it is stored in the parent's mailbox and is not an instant reply, so keep working when you can.",
+  "You are a sub-agent started by a parent agent through Mythra Code. The parent does not see this conversation.",
+  "Use the mythra_agents tool message_parent to reach the parent's mailbox. Keep working when you can while awaiting a reply.",
+  "Set kind \"question\" when the parent needs to reply or act on a question, blocker or decision. A question can bring back a waiting parent when Mythra Code is following the run and its continuation checks pass. Use kind \"update\" (the default) for progress that needs no action. An update never starts a parent turn.",
+  "Leave provider approvals and native user-input requests to the user.",
   "Parent guidance may arrive in this conversation or through read_parent_messages. Your final message each turn is returned to the parent, which may continue this same conversation with more work.",
   "You cannot start sub-agents of your own.",
 ].join(" ");

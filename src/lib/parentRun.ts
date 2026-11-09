@@ -64,7 +64,13 @@ export interface ParentRun {
   dispatchBaseTurnId?: string;
   /** Progress fingerprint when the last continuation was claimed. */
   progress?: string;
-  /** `childId:messageId` of open questions that already woke the parent once. */
+  /**
+   * Attention signals already announced to the parent, each kept only while
+   * its evidence is current: `childId:messageId` for an open question and
+   * `childId#result:reviewToken` for a result to collect. Undelivered
+   * guidance has its own message key. The original field name keeps saved
+   * runs compatible.
+   */
   wokenQuestions: string[];
   execution: ParentExecution;
   pause?: { reason: ParentRunPauseReason; detail?: string };
@@ -76,7 +82,7 @@ export interface ParentRun {
   autoResume?: true;
 }
 
-export type ParentObligationState = "none" | "working" | "unknown" | "needs_collect" | "needs_signoff" | "needs_wrapup" | "resolved";
+export type ParentObligationState = "none" | "working" | "unknown" | "needs_collect" | "needs_signoff" | "needs_response" | "needs_wrapup" | "resolved";
 
 export interface ParentObligationEvidence {
   childId: string;
@@ -93,6 +99,10 @@ export interface ParentObligationEvidence {
   /** A V2 assignment requires an explicit parent or user sign-off. */
   signoffRequired: boolean;
   openQuestions: string[];
+  /** Open questions with replies already queued or being delivered. */
+  pendingQuestionReplies?: string[];
+  /** Exact unresolved guidance messages, including a marker for trimmed history. */
+  undeliveredGuidance?: string[];
   resultRevision: number;
   followUps: number;
   /** Guidance admission/delivery advances work even before a new turn starts. */
@@ -113,9 +123,9 @@ export interface ParentObligation extends ParentObligationEvidence {
  * What a child still needs from its parent.
  *
  * Successful V2 work needs an explicit sign-off of the exact collected result.
- * Failed or cancelled work is resolved by collecting it: acceptance means the
- * work is good, and this must not force that claim. Only a user stop removes
- * the obligation, and a stopped child is never restarted automatically.
+ * Collecting failed or cancelled work settles the result review. An open
+ * question still needs a response. A user stop clears both obligations, and
+ * a stopped child is never restarted automatically.
  */
 export function classifyParentObligation(evidence: ParentObligationEvidence): ParentObligationState {
   if (evidence.userStopped) return "none";
@@ -128,11 +138,16 @@ export function classifyParentObligation(evidence: ParentObligationEvidence): Pa
   if (evidence.working) return "working";
   if (evidence.lifecycle === "unknown" || !evidence.reviewToken) return "unknown";
   if (evidence.reviewToken !== evidence.collectedToken) return "needs_collect";
-  return evidence.signoffRequired && evidence.lifecycle === "completed" ? "needs_signoff" : "resolved";
+  if (evidence.signoffRequired && evidence.lifecycle === "completed") return "needs_signoff";
+  return evidence.openQuestions.length ? "needs_response" : "resolved";
 }
 
 function isBlocking(obligation: ParentObligation): boolean {
   return obligation.state !== "none" && obligation.state !== "resolved" && obligation.state !== "needs_wrapup";
+}
+
+function owesTurn(entry: ParentObligation): boolean {
+  return isBlocking(entry) || entry.state === "needs_wrapup";
 }
 
 /** A child still needs something. Nothing here can be settled by the user alone. */
@@ -146,7 +161,7 @@ export function parentRunBlocked(obligations: readonly ParentObligation[]): bool
  * open, because automatic work has already ended by then.
  */
 function parentRunOwesTurn(obligations: readonly ParentObligation[]): boolean {
-  return obligations.some((entry) => isBlocking(entry) || entry.state === "needs_wrapup");
+  return obligations.some(owesTurn);
 }
 
 /**
@@ -157,18 +172,105 @@ export function parentRunProgress(obligations: readonly ParentObligation[]): str
   return JSON.stringify([...obligations]
     .sort((left, right) => left.childId.localeCompare(right.childId))
     .map((entry) => [entry.childId, entry.lifecycle, entry.resultRevision, entry.followUps,
-      entry.collectedToken ?? "", entry.accepted, entry.userStopped, [...entry.openQuestions].sort(),
-      entry.guidanceProgress ?? []]));
+      entry.reviewToken ?? "", entry.collectedToken ?? "", entry.accepted, entry.userStopped, [...entry.openQuestions].sort(),
+      entry.guidanceProgress ?? [], entry.undeliveredGuidance ?? []]));
 }
 
-function questionKeys(obligations: readonly ParentObligation[]): string[] {
-  return obligations.flatMap((entry) => !isBlocking(entry) ? []
-    : entry.openQuestions.map((message) => `${entry.childId}:${message}`));
+function questionKey(entry: ParentObligation, message: string): string {
+  return `${entry.childId}:${message}`;
 }
 
-/** Open questions stay recorded while open, so each wakes the parent once. */
-export function wokenParentQuestions(obligations: readonly ParentObligation[]): string[] {
-  return questionKeys(obligations);
+function resultKey(entry: ParentObligation): string | undefined {
+  return entry.reviewToken ? `${entry.childId}#result:${entry.reviewToken}` : undefined;
+}
+
+function guidanceKey(entry: ParentObligation, message: string): string {
+  return `${entry.childId}#guidance:${message}`;
+}
+
+/** Only the user can unblock this child right now. */
+function heldForUser(entry: ParentObligation, approvalChildren: readonly string[]): boolean {
+  return approvalChildren.includes(entry.childId);
+}
+
+function canActOn(entry: ParentObligation, approvalChildren: readonly string[]): boolean {
+  return owesTurn(entry) && !entry.manualTakeover && !entry.pendingStart && !entry.unconfirmedStart && entry.lifecycle !== "unknown"
+    && !heldForUser(entry, approvalChildren);
+}
+
+function questionsNeedingReply(entry: ParentObligation): string[] {
+  return isBlocking(entry) ? entry.openQuestions.filter((id) => !entry.pendingQuestionReplies?.includes(id)) : [];
+}
+
+function isSettled(entry: ParentObligation): boolean {
+  return entry.state === "needs_collect" || entry.state === "needs_signoff" || entry.state === "needs_response" || entry.state === "needs_wrapup";
+}
+
+function guidanceNeedingReview(entry: ParentObligation): readonly string[] {
+  return entry.state === "working" || entry.state === "needs_collect" ? entry.undeliveredGuidance ?? [] : [];
+}
+
+/**
+ * Signals that each need the parent on their own, even while siblings work:
+ * an open question needing a reply, undelivered guidance while the child is
+ * still working, and a result it has not collected. A collected result already
+ * binds to its undelivered guidance, and sign-off on it waits for the settled
+ * check instead.
+ */
+function attentionKeys(obligations: readonly ParentObligation[], approvalChildren: readonly string[]): string[] {
+  return obligations.flatMap((entry) => {
+    if (!canActOn(entry, approvalChildren)) return [];
+    const result = entry.state === "needs_collect" ? resultKey(entry) : undefined;
+    return [
+      ...questionsNeedingReply(entry).map((message) => questionKey(entry, message)),
+      ...guidanceNeedingReview(entry).map((message) => guidanceKey(entry, message)),
+      ...(result ? [result] : []),
+    ];
+  });
+}
+
+function hasNewAttention(run: ParentRun, keys: readonly string[]): boolean {
+  return keys.some((key) => !run.wokenQuestions.includes(key));
+}
+
+/** Every key whose evidence is still current, whether or not it can wake now. */
+function currentAttentionKeys(obligations: readonly ParentObligation[]): Set<string> {
+  return new Set(obligations.flatMap((entry) => {
+    if (entry.state === "none") return [];
+    const result = resultKey(entry);
+    return [
+      ...entry.openQuestions.map((message) => questionKey(entry, message)),
+      ...(entry.undeliveredGuidance ?? []).map((message) => guidanceKey(entry, message)),
+      ...(result ? [result] : []),
+    ];
+  }));
+}
+
+/**
+ * What one continuation announces and consumes: the signals it can act on
+ * now, plus earlier announcements whose evidence is unchanged. A signal held
+ * on the user's approval is neither announced nor consumed, so it can still
+ * wake the parent once the approval clears. Retired evidence drops out, which
+ * keeps this list bounded.
+ */
+export function wokenParentQuestions(obligations: readonly ParentObligation[], approvalChildren: readonly string[] = [], previous: readonly string[] = []): string[] {
+  const current = currentAttentionKeys(obligations);
+  return [...new Set([...previous.filter((key) => current.has(key)), ...attentionKeys(obligations, approvalChildren)])];
+}
+
+export interface ParentAttention {
+  notice: string;
+  progress: string;
+  wokenQuestions: string[];
+}
+
+/** One snapshot decides the notice, the progress digest and what is consumed. */
+export function parentRunAttention(noticeId: string, run: ParentRun, obligations: readonly ParentObligation[], approvalChildren: readonly string[]): ParentAttention {
+  return {
+    notice: buildParentNotice(noticeId, obligations, approvalChildren),
+    progress: parentRunProgress(obligations),
+    wokenQuestions: wokenParentQuestions(obligations, approvalChildren, run.wokenQuestions),
+  };
 }
 
 function pausedRun(run: ParentRun, reason: ParentRunPauseReason, detail?: string): ParentRun {
@@ -210,6 +312,7 @@ export interface ParentTurnEnd {
   completedTurnId?: string;
   agentRunId?: string;
   obligations: readonly ParentObligation[];
+  approvalChildren: readonly string[];
 }
 
 /** Runs inside the same store transaction that completes the turn. */
@@ -231,7 +334,17 @@ export function parentRunAtTurnEnd(run: ParentRun, end: ParentTurnEnd): ParentRu
   if (!run.autoResume) return pausedRun(settled, "restart");
   if (end.status !== "completed") return pausedRun(settled, "parent_failed");
   if ((run.phase === "continuing" || confirmedStart) && parentRunProgress(end.obligations) === run.progress) {
-    return pausedRun(settled, "no_progress");
+    // A running child can keep this run waiting if it can move forward on its
+    // own, including when an answer is already on its way. An unanswered
+    // question on that same child can otherwise leave both sides waiting.
+    const canProgress = end.obligations.some((entry) => entry.state === "working"
+      && !entry.manualTakeover && !entry.unconfirmedStart && entry.lifecycle !== "unknown"
+      && !heldForUser(entry, end.approvalChildren) && !questionsNeedingReply(entry).length && !guidanceNeedingReview(entry).length);
+    const attention = attentionKeys(end.obligations, end.approvalChildren);
+    const needsParent = attention.length > 0 || end.obligations.some((entry) => canActOn(entry, end.approvalChildren) && isSettled(entry));
+    if (needsParent && !canProgress && !hasNewAttention(run, attention)) {
+      return pausedRun(settled, "no_progress");
+    }
   }
   return { ...settled, phase: "waiting" };
 }
@@ -291,10 +404,10 @@ export type ParentRunDecision =
   | { kind: "resume" };
 
 function shouldWake(run: ParentRun, obligations: readonly ParentObligation[], approvalChildren: readonly string[]): boolean {
-  const answerable = obligations.filter((entry) => !approvalChildren.includes(entry.childId));
-  if (questionKeys(answerable).some((key) => !run.wokenQuestions.includes(key))) return true;
-  const open = obligations.filter((entry) => isBlocking(entry) || entry.state === "needs_wrapup");
-  return open.length > 0 && open.every((entry) => entry.state === "needs_collect" || entry.state === "needs_signoff" || entry.state === "needs_wrapup");
+  if (hasNewAttention(run, attentionKeys(obligations, approvalChildren))) return true;
+  const open = obligations.filter(owesTurn);
+  return open.length > 0 && open.every(isSettled)
+    && open.some((entry) => canActOn(entry, approvalChildren));
 }
 
 /** What this run should do now. Holds return "none" and re-evaluate on events. */
@@ -415,12 +528,18 @@ export function parentExecutionDifference(captured: ParentExecution, live: Paren
 const NOTICE_TAG = "mythra_coordination_notice";
 const NOTICE_INTRO = "Automatic Mythra Code notice, not a message from the user.";
 const NOTICE_HEADING = "Sub-agent work you assigned needs your attention:";
-const NOTICE_REQUEST = "Use collect_agent and agent_status to read results, review them, and continue the user's original request. Give your final response only after the delegated work is reviewed. If you still need an answer from the user, do not guess or decide for them: state what you need and end your turn.";
+const NOTICE_REQUEST = "Use agent_status with the childId to read a child's status and messages. For a question listed here, reply with send_agent_message using replyTo. If you are satisfied with the exact result, explicitly accepting it also closes the question. Read results with collect_agent, review them, and continue the user's original request. If other sub-agents are still working and nothing else needs you now, you may end your turn. Mythra Code can continue this conversation when they need you while this run stays open. Give your final response only after the delegated work is reviewed. If you need an answer from the user, ask them and end your turn.";
 // Earlier notices used the same v1 envelope. Keep recognizing only their exact
-// generated request line when provider history no longer carries provenance.
-const LEGACY_NOTICE_REQUEST = "Use collect_agent and agent_status to read results, review them, and continue the user's original request. Give your final response only after the delegated work is reviewed.";
+// generated request lines when provider history no longer carries provenance.
+const LEGACY_NOTICE_REQUESTS: readonly string[] = [
+  "Read a child's questions and status with agent_status and its childId, answer each question with send_agent_message using replyTo, and read results with collect_agent. Review them and continue the user's original request. If other sub-agents are still working and nothing else needs you now, you may end your turn: Mythra Code can continue this conversation when they need you, while this run stays open. Give your final response only after the delegated work is reviewed. If you still need an answer from the user, do not guess or decide for them: state what you need and end your turn.",
+  "Use collect_agent and agent_status to read results, review them, and continue the user's original request. Give your final response only after the delegated work is reviewed. If you still need an answer from the user, do not guess or decide for them: state what you need and end your turn.",
+  "Use collect_agent and agent_status to read results, review them, and continue the user's original request. Give your final response only after the delegated work is reviewed.",
+];
 const NOTICE_LINE_STATES: Record<string, string> = {
   question: "asked a question; answer it with send_agent_message",
+  approval: "waiting for the user's approval; do not answer it for the user",
+  guidance: "has guidance whose delivery failed or could not be confirmed. Check it with agent_status before deciding whether to resend",
   needs_collect: "finished; collect its result",
   needs_signoff: "collected; accept it with accept_agent if you are satisfied, otherwise continue it or tell the user why not",
   needs_wrapup: "accepted by the user; collect its result before your final response",
@@ -444,6 +563,7 @@ function noticeTitle(title: string): string {
 const FOLLOW_UP_NOTES: Partial<Record<ParentObligationState, string>> = {
   working: "Mythra Code is currently following this child. It can continue automatically when the followed work is ready for review or a new question arrives, provided the run stays open and its continuation checks pass.",
   unknown: "Mythra Code is currently following this child. Its status must be confirmed before automatic continuation, and the run must stay open and pass its continuation checks.",
+  needs_response: "The result was collected and a question still needs your response. Use agent_status to read it and send_agent_message with replyTo to answer it.",
 };
 const FOLLOW_UP_REVIEW_NOTE = "Review this result now. If you end your turn first, Mythra Code can continue to review it while this run stays open and its continuation checks pass.";
 const NO_FOLLOW_UP_NOTE = "Mythra Code is not following this child, so nothing continues this conversation for it automatically. Never promise that it will. Keep collecting or reviewing it yourself, or tell the user it is still unreviewed.";
@@ -465,14 +585,19 @@ export function parentFollowUpReport(state: ParentObligationState, followed: boo
  * Identities and states only. Child output must never gain this notice's
  * authority, so results still reach the parent through collect_agent.
  */
-export function buildParentNotice(id: string, obligations: readonly ParentObligation[]): string {
+export function buildParentNotice(id: string, obligations: readonly ParentObligation[], approvalChildren: readonly string[] = []): string {
   const lines = obligations.flatMap((entry) => {
-    // Temporary reservations block completion but are not collectable IDs.
-    if (entry.pendingStart) return [];
-    const state = entry.userStopped ? "user_stopped"
-      : isBlocking(entry) && entry.openQuestions.length ? "question"
-        : entry.state === "none" || entry.state === "resolved" ? undefined : entry.state;
-    return state ? [`- ${entry.childId} (${noticeTitle(entry.title)}): ${NOTICE_LINE_STATES[state]}`] : [];
+    if (entry.pendingStart || entry.manualTakeover) return [];
+    const child = `- ${entry.childId} (${noticeTitle(entry.title)}): `;
+    if (entry.userStopped) return [child + NOTICE_LINE_STATES.user_stopped];
+    if (!owesTurn(entry)) return [];
+    if (heldForUser(entry, approvalChildren)) return [child + NOTICE_LINE_STATES.approval];
+    if (!canActOn(entry, approvalChildren)) return [child + NOTICE_LINE_STATES.unknown];
+    const states: string[] = [];
+    if (questionsNeedingReply(entry).length) states.push("question");
+    if (guidanceNeedingReview(entry).length) states.push("guidance");
+    if (entry.state !== "needs_response" && (isSettled(entry) || !states.length)) states.push(entry.state);
+    return states.map((state) => child + NOTICE_LINE_STATES[state]);
   });
   return [`<${NOTICE_TAG} v="1" id="${id}">`, NOTICE_INTRO, NOTICE_HEADING, ...lines, NOTICE_REQUEST, `</${NOTICE_TAG}>`].join("\n");
 }
@@ -485,7 +610,7 @@ export function isParentNoticeText(text: string): boolean {
   if (!text.startsWith(`<${NOTICE_TAG} v="1" id="`)) return false;
   const lines = text.split("\n");
   if (lines.length < 5 || !NOTICE_OPENING.test(lines[0]) || lines[1] !== NOTICE_INTRO || lines[2] !== NOTICE_HEADING
-    || (lines.at(-2) !== NOTICE_REQUEST && lines.at(-2) !== LEGACY_NOTICE_REQUEST)
+    || (lines.at(-2) !== NOTICE_REQUEST && !LEGACY_NOTICE_REQUESTS.includes(lines.at(-2) ?? ""))
     || lines.at(-1) !== `</${NOTICE_TAG}>`) return false;
   return lines.slice(3, -2).every((line) => NOTICE_LINE.test(line));
 }
