@@ -1235,6 +1235,23 @@ pub(super) async fn viewer_request(inner: &Arc<Inner>, device: String, op: Strin
                 Ok(value)
             }
         });
+    if op == "work.inspect" {
+        let core = inner.lock();
+        if current_link(&core, &device, Role::Viewer).is_none_or(|current| current.id != link.id) {
+            return Err(unavailable());
+        }
+        return response.map_err(|mut error| {
+            // 1.32.0 first requires View and then uses this manifest refusal
+            // only when Work is off. Match the exact reply on this peer link.
+            if link.peer_version == "1.32.0"
+                && error.code == "forbidden"
+                && error.message == "This device doesn't have that access. To change it, open Settings → Connections → Devices on the other device."
+            {
+                error.code = "work_disabled".into();
+            }
+            error
+        });
+    }
     if let (Some(thread), Some(id)) = (thread, subscription_id) {
         let key = (device.clone(), thread.clone());
         let mut core = inner.lock();
@@ -1425,7 +1442,7 @@ pub(super) async fn request_value(inner:&Arc<Inner>,link:&Arc<Link>,op:&str,args
     let context_target = (op == "host.context" && args["workspaceId"] != "openkiwi-normal-chats").then(|| args.clone());
     let (id,generation,receiver)={let mut core=inner.lock();let grant=authorize(&core,link)?;super::manifest::access(op,&grant)?;
         if !core.bridge.ready || !core.bridge.attached {return Err(unavailable());}
-        if (super::work::is_mutation(op)||op=="work.inspect")&&!grant.work {return Err(WireError::new("forbidden","Work is off for this device. To turn it on, open Settings → Connections → Devices on the other device."));}
+        if super::work::is_mutation(op)&&!grant.work {return Err(WireError::new("forbidden","Work is off for this device. To turn it on, open Settings → Connections → Devices on the other device."));}
         if core.bridge.pending.len()>=MAX_HOST_REQUESTS{return Err(WireError::new("busy","Too many requests are waiting."));}
         let id=uuid::Uuid::new_v4().to_string();let generation=core.bridge.generation;let(sender,receiver)=oneshot::channel();
         core.bridge.pending.insert(id.clone(),PendingRequest{link_id:link.id,device:link.peer_fingerprint.clone(),grant:grant.clone(),op:op.to_owned(),args:args.clone(),reply:Some(sender)});
