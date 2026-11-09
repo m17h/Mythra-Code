@@ -522,6 +522,16 @@ function isBlockingApproval(approval: PendingApproval): boolean {
   return !(approval.method === "item/tool/requestUserInput" && approval.params.isBlocking === false);
 }
 
+/**
+ * Threads among `threadIds` that only the user can unblock right now. An
+ * explicitly nonblocking request does not hold a child, so it never hides a
+ * separate mailbox question from the parent. Parent follow-up scheduling, its
+ * notice and its waiting view all read this one rule.
+ */
+export function threadsHeldForUser(state: Pick<TaskStoreState, "tasks">, threadIds: readonly string[]): string[] {
+  return threadIds.filter((id) => state.tasks[id]?.approvals.some(isBlockingApproval));
+}
+
 function isInlineApproval(approval: PendingApproval): boolean {
   return !(approval.method === "claude/can_use_tool" && approval.params.tool_name === "AskUserQuestion")
     && approval.method !== "item/tool/requestUserInput"

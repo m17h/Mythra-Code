@@ -113,7 +113,7 @@ import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMess
 import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
-import { captureHistoryReadBoundary, selectInlineApproval, selectPendingApproval, selectPendingApprovalCount, storedPendingTimedTurns, useTaskStore, type QueuedTurn } from "./lib/taskStore";
+import { captureHistoryReadBoundary, selectInlineApproval, selectPendingApproval, selectPendingApprovalCount, storedPendingTimedTurns, threadsHeldForUser, useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { countScheduledPrompts, scheduledCountsLabel } from "./lib/scheduledPromptCounts";
 import { eligibleQueueHead, hasEligibleQueuedTurns } from "./lib/timedPrompts";
 import { parentAuthKey, parentExecutionDifference, parentRunBlocked, parentRunView, type ParentExecution, type ParentRun } from "./lib/parentRun";
@@ -6747,8 +6747,10 @@ export default function App() {
   const activeParentRun = useTaskStore((state) => activeThreadId ? state.parentRuns[activeThreadId] : undefined);
   const parentRunApprovalChild = useTaskStore((state) => {
     if (!activeParentRun) return undefined;
-    return Object.values(childAgentLinks).find((link) => link.reviewRunId === activeParentRun.id
-      && state.tasks[link.childThreadId]?.approvals.length)?.childThreadId;
+    // The scheduler's rule: a nonblocking request does not hold the child.
+    return threadsHeldForUser(state, Object.values(childAgentLinks)
+      .filter((link) => link.rootThreadId === activeParentRun.rootThreadId && link.reviewRunId === activeParentRun.id && link.stopOrigin !== "user")
+      .map((link) => link.childThreadId))[0];
   });
   const parentRunHead = eligibleQueueHead(queuedTurns);
   const parentRunQueueHeld = parentRunHead?.status === "failed" || Boolean(parentRunHead?.editing);

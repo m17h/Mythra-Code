@@ -463,40 +463,46 @@ export function unreadForParent(childThreadId: string): ChildMailMessage[] {
   return getChildMailbox(childThreadId)?.messages.filter((message) => message.direction === "toParent" && message.state === "unread") ?? [];
 }
 
-/** Return unread child messages oldest-first and mark exactly those read. */
-export function takeUnreadForParent(childThreadId: string, limit = 8): { messages: ChildMailMessage[]; remaining: number } {
-  return takeUnreadForParentMany([{ childThreadId, limit }])[childThreadId] ?? { messages: [], remaining: 0 };
+export function isOpenChildQuestion(message: ChildMailMessage): boolean {
+  return message.direction === "toParent" && message.kind === "question" && !message.answeredAt && !message.closedAt;
+}
+
+/** Return open questions and unread mail for this child, questions first. */
+export function takeChildMailForParent(childThreadId: string, limit = 8): { messages: ChildMailMessage[]; remaining: number } {
+  const unread = unreadForParent(childThreadId);
+  const reminders = (getChildMailbox(childThreadId)?.messages ?? [])
+    .filter((message) => message.state === "read" && isOpenChildQuestion(message));
+  const count = Math.max(0, Math.min(MAX_UNREAD_FOR_PARENT, finiteCount(limit, 8)));
+  const messages = [...unread.filter(isOpenChildQuestion), ...reminders, ...unread.filter((message) => !isOpenChildQuestion(message))].slice(0, count);
+  markParentMessagesRead([{ childThreadId, messages }]);
+  return { messages, remaining: unread.length - messages.filter((message) => message.state === "unread").length };
 }
 
 /**
- * Several children's unread messages in one atomic store commit, so a
- * status read serializes and notifies once rather than once per child.
+ * Mark only the unread messages selected for the response in one store commit.
+ * An open question stays in the mailbox after it has been read.
  */
-export function takeUnreadForParentMany(
-  requests: ReadonlyArray<{ childThreadId: string; limit: number }>,
-): Record<string, { messages: ChildMailMessage[]; remaining: number }> {
+export function markParentMessagesRead(
+  requests: ReadonlyArray<{ childThreadId: string; messages: readonly ChildMailMessage[] }>,
+): void {
   const all = current();
-  const result: Record<string, { messages: ChildMailMessage[]; remaining: number }> = {};
   const now = Date.now();
   let next: MailboxState | undefined;
-  for (const { childThreadId, limit } of requests) {
-    const mailbox = all[childThreadId];
-    const unread = mailbox?.messages.filter((message) => message.direction === "toParent" && message.state === "unread") ?? [];
-    const taken = unread.slice(0, Math.max(0, Math.min(MAX_UNREAD_FOR_PARENT, finiteCount(limit, 8))));
-    result[childThreadId] = { messages: taken, remaining: unread.length - taken.length };
-    if (!mailbox || !taken.length) continue;
-    const ids = new Set(taken.map((message) => message.id));
+  for (const { childThreadId, messages } of requests) {
+    const mailbox = (next ?? all)[childThreadId];
+    if (!mailbox) continue;
+    const selected = new Set(messages.filter((message) => message.direction === "toParent" && message.state === "unread"));
+    if (!selected.size) continue;
     next ??= { ...all };
     next[childThreadId] = {
       ...mailbox,
-      messages: mailbox.messages.map((message) => message.direction === "toParent" && ids.has(message.id)
+      messages: mailbox.messages.map((message) => selected.has(message)
         ? { ...message, state: "read" as const, ...(message.kind === "update" ? { settledAt: now } : {}) } : message),
     };
   }
   // Read metadata (settledAt) can grow serialized size slightly; trim
   // settled history once (never pending truth, never refusing the read).
   if (next) commit(trimStoreHistory(next));
-  return result;
 }
 
 /** Queue guidance; keyed retries reuse retained history, unkeyed content only pending delivery. */
@@ -780,7 +786,7 @@ export interface ChildMailboxSummary {
 export function summarizeChildMailbox(mailbox: ChildMailbox | undefined): ChildMailboxSummary {
   const summary: ChildMailboxSummary = { unreadQuestions: 0, unansweredQuestions: 0, unreadUpdates: 0, queuedForChild: 0 };
   for (const message of mailbox?.messages ?? []) {
-    if (message.direction === "toParent" && message.kind === "question" && !message.answeredAt && !message.closedAt) {
+    if (isOpenChildQuestion(message)) {
       summary.unansweredQuestions += 1;
       summary.latestQuestion = message;
     }
