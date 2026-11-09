@@ -15,7 +15,6 @@ import type { PermissionMode, Provider, SubagentEngine } from "../types";
  * record for no change, or null to delete the run.
  */
 
-export const MAX_AUTOMATIC_PARENT_RESUMES = 8;
 export const PARENT_RUN_CHECKPOINT_LABEL = "Review sub-agent results";
 export const PARENT_NOTICE_PROVENANCE = "mythra-notice" as const;
 
@@ -255,9 +254,15 @@ export function claimParentRun(run: ParentRun, claim: ParentRunClaim): ParentRun
     ...(claim.dispatchBaseTurnId ? { dispatchBaseTurnId: claim.dispatchBaseTurnId } : {}),
     progress: claim.progress,
     wokenQuestions: claim.wokenQuestions,
-    resumesUsed: claim.explicit ? 0 : run.resumesUsed + 1,
+    // Unlimited runs still count, bounded so the count stays an exact integer.
+    resumesUsed: claim.explicit ? 0 : Math.min(run.resumesUsed + 1, Number.MAX_SAFE_INTEGER),
     ...(claim.explicit ? { autoResume: true as const } : {}),
   };
+}
+
+/** Whether another automatic continuation fits the current host limit. */
+export function parentResumesRemain(run: ParentRun, limit: number | null): boolean {
+  return limit === null || run.resumesUsed < limit;
 }
 
 export interface ParentRunEnvironment {
@@ -275,6 +280,8 @@ export interface ParentRunEnvironment {
   queue: "none" | "pending" | "held";
   hasDelivery: boolean;
   hydrated: boolean;
+  /** The saved app-wide follow-up limit now; null is unlimited. */
+  resumeLimit: number | null;
 }
 
 export type ParentRunDecision =
@@ -306,7 +313,7 @@ export function decideParentRun(run: ParentRun, environment: ParentRunEnvironmen
   if (environment.rootStopped) return { kind: "pause", reason: "parent_failed" };
   if (environment.queue !== "none" || environment.folderBusy || !shouldWake(run, environment.obligations, environment.approvalChildren)) return { kind: "none" };
   if (!run.autoResume) return { kind: "pause", reason: "restart" };
-  if (run.resumesUsed >= MAX_AUTOMATIC_PARENT_RESUMES) return { kind: "pause", reason: "budget" };
+  if (!parentResumesRemain(run, environment.resumeLimit)) return { kind: "pause", reason: "budget" };
   if (!environment.hasDelivery || !environment.hydrated) return { kind: "pause", reason: "execution_changed" };
   return { kind: "resume" };
 }
@@ -340,7 +347,7 @@ export function sanitizeStoredParentRuns(stored: unknown): Record<string, Parent
       sessionId: entry.sessionId,
       phase: "active",
       ...(typeof entry.yieldedTurnId === "string" ? { yieldedTurnId: entry.yieldedTurnId } : {}),
-      resumesUsed: Number.isFinite(entry.resumesUsed) ? Number(entry.resumesUsed) : 0,
+      resumesUsed: typeof entry.resumesUsed === "number" && Number.isSafeInteger(entry.resumesUsed) && entry.resumesUsed >= 0 ? entry.resumesUsed : 0,
       wokenQuestions: Array.isArray(entry.wokenQuestions) ? entry.wokenQuestions.filter((key) => typeof key === "string") : [],
       execution,
     };

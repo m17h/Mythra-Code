@@ -157,12 +157,25 @@ turn ends. The model's words are never read, and no timer is involved.
   crew panel is settled: if the parent already read that result nothing further
   runs, and if it never did, it is continued so its answer reflects the result.
 
-Automatic continuation is bounded to eight per user request, and a user turn
-during the wait does not reset that. It pauses, naming the reason, if a
-continuation ends with no progress, the parent turn fails, a provider refuses the
-start, or the limit is reached. **Continue with** uses the current model and
-account and grants a fresh limit; **Dismiss** leaves the children in the crew
-panel.
+In **Settings → Sub-agents → Automatic parent follow-ups**, choose a whole number
+from 1 to 1,000 or **Unlimited**. The default is eight, including for settings
+saved before this option. Each authorization has its own count, which carries
+over if the user sends a message while the parent is waiting. The run pauses
+when it runs out of automatic follow-ups, a continuation ends with no progress,
+the parent turn fails, or a provider refuses the start. **Continue with** uses
+the current model and account and starts the automatic count at zero.
+**Dismiss** ends the run and leaves the children in the crew panel. Unlimited
+lifts the count limit. Progress, execution identity, queue and recovery rules
+still apply, and each follow-up is a normal model turn with normal usage.
+
+The limit is an app-wide setting on the machine running the conversation,
+including conversations started from another device on the local network. Each
+automatic decision reads the saved value, including for runs already waiting
+and when rechecking after an in-flight identity check. A follow-up that has
+already started can finish. If a waiting run has used at least as many
+follow-ups as the saved limit, it pauses when it would next continue. To
+resume a paused run after changing the limit, use
+**Continue with** or the typed-message behavior below when it applies.
 
 **Typing into a paused conversation.** A message the user types into the
 conversation while one of the run's children is genuinely still working keeps
@@ -185,13 +198,13 @@ not bring it back, and reading a child never does either. A child is followed
 again only if the parent gives it more work in a later turn with
 `send_agent_message`.
 
-What the parent is told matches this. `spawn_mythra_agent`, `agent_status` and
-`collect_agent` report `automaticFollowUp` for each child that still needs review,
-true only when a live run owns that exact child and has continuations left. A child
-that is paused, opted out, unowned or created before this feature reports false,
-and the model is told not to promise automatic follow-up for it. These reads
-change nothing about who reviews a child. This keeps tool results truthful, but it
-remains an instruction: a model can still end its turn or say something else.
+`spawn_mythra_agent`, `agent_status` and `collect_agent` report `automaticFollowUp`
+for children with outstanding work. The field is true only when a live,
+unpaused run owns that exact child and the saved limit allows another
+continuation at the time of the report. Unlimited satisfies the count check.
+The tools read the child's existing review ownership and tell the model to
+avoid promising automatic follow-up when the field is false. A model can still
+end its turn or say something else.
 
 **Stop** ends the run and stops the children. **Don't auto-continue** ends the run
 and leaves the children working. While a run can still continue by itself, the line
@@ -223,7 +236,7 @@ its ownership rather than guessing that nothing started.
 This follows Mythra crew work only. Provider-native sub-agents and workflow-owned
 conversations are outside it. A shell `sleep` or other waiting in a parent's live
 turn is discouraged by its instructions but not intercepted. A child that hangs
-without any event keeps the run waiting, with no timeout. The limit of eight counts
+without any event keeps the run waiting, with no timeout. The follow-up limit counts
 turns, not tokens. The model can still mention a time, which the app neither honors
 nor enforces. Actual provider behavior, including how models respond to these
 instructions, has not been exercised at runtime.
@@ -232,7 +245,8 @@ instructions, has not been exercised at runtime.
 
 Each meaningful transition appends one `parentRun.transition` row to the app's
 local audit log, which keeps its newest 20,000 rows. These records have no automatic upload.
-A row holds the run ID, previous and new phase, resumes used and the limit, plus
+A row holds the run ID, previous and new phase, resumes used and the saved limit
+at that transition in `budget` (a number or `"unlimited"`). It can also include
 the follow-up ID, automatic or explicit trigger, and finite categories for the
 pause cause and outcome when applicable (resolved, retired, failed, uncertain or
 unknown), including whether Stop, **Don't auto-continue**, **Dismiss**, a new turn or removing the

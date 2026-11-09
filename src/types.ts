@@ -576,6 +576,11 @@ export interface AppSettings {
   autoCompactTokens?: number;
   /** Move settled child conversations to Archived after their parent ends. */
   autoArchiveSubagentThreads: boolean;
+  /**
+   * App-wide automatic parent follow-ups per authorization; null means no count
+   * limit. Absent in older settings, which keep the default of eight.
+   */
+  parentFollowUpLimit?: number | null;
   /** Cross-provider delegation. Absent in settings written before 1.5. */
   childAgents: ChildAgentSettings;
   /** Reusable crew configurations. Absent in settings written before presets existed. */
