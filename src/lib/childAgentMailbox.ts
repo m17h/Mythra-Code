@@ -467,15 +467,32 @@ export function isOpenChildQuestion(message: ChildMailMessage): boolean {
   return message.direction === "toParent" && message.kind === "question" && !message.answeredAt && !message.closedAt;
 }
 
-/** Return open questions and unread mail for this child, questions first. */
-export function takeChildMailForParent(childThreadId: string, limit = 8): { messages: ChildMailMessage[]; remaining: number } {
+/** IDs of child messages whose reply is queued or being delivered. */
+export function pendingQuestionReplies(messages: readonly ChildMailMessage[]): string[] {
+  return messages.flatMap((message) => message.direction === "toChild" && message.replyTo
+    && (message.state === "queued" || message.state === "delivering") ? [message.replyTo] : []);
+}
+
+/**
+ * Return this child's mail for the parent: unread questions needing a reply
+ * first, then other unread mail, then reminders of earlier open questions.
+ * A question whose reply is already on its way is only returned while unread.
+ * `replyPending` names returned questions in that state.
+ */
+export function takeChildMailForParent(childThreadId: string, limit = 8): { messages: ChildMailMessage[]; remaining: number; replyPending: Set<string> } {
+  const all = getChildMailbox(childThreadId)?.messages ?? [];
   const unread = unreadForParent(childThreadId);
-  const reminders = (getChildMailbox(childThreadId)?.messages ?? [])
-    .filter((message) => message.state === "read" && isOpenChildQuestion(message));
+  const pending = new Set(pendingQuestionReplies(all));
+  const needsReply = (message: ChildMailMessage) => isOpenChildQuestion(message) && !pending.has(message.id);
+  const reminders = all.filter((message) => message.state === "read" && needsReply(message));
   const count = Math.max(0, Math.min(MAX_UNREAD_FOR_PARENT, finiteCount(limit, 8)));
-  const messages = [...unread.filter(isOpenChildQuestion), ...reminders, ...unread.filter((message) => !isOpenChildQuestion(message))].slice(0, count);
+  const messages = [...unread.filter(needsReply), ...unread.filter((message) => !needsReply(message)), ...reminders].slice(0, count);
   markParentMessagesRead([{ childThreadId, messages }]);
-  return { messages, remaining: unread.length - messages.filter((message) => message.state === "unread").length };
+  return {
+    messages,
+    remaining: unread.length - messages.filter((message) => message.state === "unread").length,
+    replyPending: new Set(messages.filter((message) => isOpenChildQuestion(message) && pending.has(message.id)).map((message) => message.id)),
+  };
 }
 
 /**
@@ -811,6 +828,12 @@ export function mailMessageForModel(message: ChildMailMessage): Record<string, u
     ...(message.replyTo ? { replyTo: message.replyTo } : {}),
     ...(message.textTruncated ? { textTruncated: true } : {}),
   };
+}
+
+/** Child mail for the parent, marking open questions whose reply is queued or being delivered. */
+export function childMailForModel(messages: readonly ChildMailMessage[], replyPending: ReadonlySet<string>): Record<string, unknown>[] {
+  return messages.map((message) => replyPending.has(message.id) && isOpenChildQuestion(message)
+    ? { ...mailMessageForModel(message), replyPending: true } : mailMessageForModel(message));
 }
 
 /** Test seam. */

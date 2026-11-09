@@ -1,7 +1,7 @@
 import { hostAttachmentMetadata } from "../hostSources";
 import type { Activity, ChatMessage, PendingApproval } from "../../../types";
 import { savedQuestionAnswers } from "../../agentQuestionRecords";
-import type { ThreadTaskState } from "../../taskStore";
+import { isAssistantOutputActive, type ThreadTaskState } from "../../taskStore";
 import type { WireActivity, WireApproval, WireMessage, WireQueuedTurn, WireThreadState, WireAvailability, WireTurnStatus } from "../wire";
 
 export function boundedText(value: unknown, limit = 2048): string {
@@ -114,6 +114,7 @@ export function projectState(task: ThreadTaskState | undefined, availability: Wi
   return {
     status: task?.status ?? "idle", availability: task ? availability : "recovering",
     activeTurnId: task?.activeTurnId ? boundedText(task.activeTurnId, 256) : null,
+    assistantOutputActive: isAssistantOutputActive(task),
     workingStartedAt: finite(startedAt) ? startedAt : null,
     // Exceptions can contain credentials or local paths. Do not forward them.
     error: task?.error ? "This conversation reported an error. Inspect it on the other device." : null,

@@ -3,7 +3,7 @@ import { listenViewer, viewerErrorCode, viewerRequest } from "./viewerBridge";
 import type {
   ThreadSnapshot, ThreadFrame, TimelineSubscribeResult, ThreadReadResult,
   RemoteViewerFrame, RemoteViewerState, WireMessage, WireActivity, WireHistory,
-  WireApproval, WireQueuedTurn, WireWorkspace, WireThread, WireProvider, WireTaskStatus,
+  WireApproval, WireQueuedTurn, WireWorkspace, WireThread, WireProvider, WireTaskStatus, WireThreadState,
 } from "./wire";
 import { REMOTE_MAX_ROWS, REMOTE_DEFAULT_ROWS } from "./wire";
 
@@ -168,10 +168,11 @@ function queued(value: unknown): WireQueuedTurn {
   return { id: id(v.id), text: text(v.text), status: v.status as WireQueuedTurn["status"], createdAt: measure(v.createdAt),
     attachmentNames: rows(v.attachmentNames, (entry) => text(entry, 512), 100), ...(v.truncated === true ? { truncated: true } : {}) };
 }
-function stateFields(value: Record<string, unknown>): Pick<ThreadSnapshot, "status" | "availability" | "activeTurnId" | "workingStartedAt" | "error"> {
+function stateFields(value: Record<string, unknown>): WireThreadState {
   if (typeof value.status !== "string" || !STATUSES.has(value.status) || !["ready", "recovering"].includes(String(value.availability))) throw new Error("Invalid thread state");
   return { status: value.status as WireTaskStatus, availability: value.availability as ThreadSnapshot["availability"],
     activeTurnId: value.activeTurnId === null ? null : id(value.activeTurnId),
+    assistantOutputActive: value.assistantOutputActive === undefined ? undefined : bool(value.assistantOutputActive),
     workingStartedAt: value.workingStartedAt === null ? null : measure(value.workingStartedAt), error: value.error === null ? null : text(value.error, 16000) };
 }
 function snapshot(value: unknown): ThreadSnapshot {
@@ -430,8 +431,10 @@ class ViewerSession {
         if (this.buffered.some((event) => event.epoch !== epoch)) throw new Error("Epoch changed during subscribe");
         if (raw.snapshot !== undefined) {
           const data = snapshot(raw.snapshot); bounded(data);
+          // Keep Work inspection behind the same replay boundary as the view.
+          // Store subscribers can observe this snapshot before buffered frames apply.
           changeTimeline(this.device, threadId, () => ({ ...data, epoch, seq: targetSeq, baseline: true, replayable: true, reading: false, historyLimited: false,
-            state: data.availability === "recovering" ? "recovering" : "live" }));
+            state: data.availability === "recovering" ? "recovering" : "stale" }));
         } else if (!baseline?.baseline || !baseline.replayable || baseline.epoch !== epoch || baseline.seq > targetSeq) throw new Error("Replay has no baseline");
         // Rust may include replay frames in the reply; live events can also beat
         // the invoke response. Both enter the same deduplicating sequence path.

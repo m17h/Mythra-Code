@@ -106,11 +106,15 @@ parent's next turn and in the sub-agent details. Updates stay available in the
 same places and never start a turn.
 
 While the parent waits in `collect_agent` for one child, an unread question
-from another child can end that wait early, including a question that arrived
-before the call. The response includes the question and its child ID.
+from a sibling can end that wait early, even if it arrived before the call.
+The response includes the question and its child ID. If it says
+`collectBeforeReply`, collect that sibling to confirm its current work first.
 `agent_status` lists children that need a response first and pages long crews
-with `nextCursor`. Unread questions get space before progress updates in a
-bounded response. Earlier open questions remain available in focused status.
+with `nextCursor`. Reading mail leaves that order intact. Status gives unread
+actionable questions space first, then other unread mail, then reminders of
+earlier open questions. When shown, a question with a reply already queued or
+being delivered is marked `replyPending`. Collection skips reminders of those
+questions. Focused status can show them after questions still awaiting a reply.
 For failed or unconfirmed guidance, focused status responses return a bounded
 page. Pass `childId` and `guidanceNextOffset` as `guidanceOffset` to inspect the
 next page, including outcomes beyond the first eight. This is live ordering,
@@ -153,31 +157,37 @@ turn ends. The model's words are never read, and no timer is involved.
   while siblings are still working by asking a question or by finishing,
   failing or being cancelled with a result the parent has yet to collect.
   Undelivered guidance can also wake the parent while the child still works.
-  Signals available together share one turn, and each signal can independently
-  wake the parent once. A child held on the user's approval, taken over or
-  stopped by the user, or with an unconfirmed status cannot wake the parent on
-  its own. An unannounced question can still wake it after the approval clears.
+  After the parent cancels a child, its guidance history stays available in
+  status. The cancelled result can wake the parent for review.
+  Signals available together share one turn. A child held on the user's
+  approval, taken over or stopped by the user, or with an unconfirmed status
+  cannot wake the parent on its own. An unannounced question can still wake it
+  after the approval clears.
   The generated notice lists child IDs, names and states only. The parent
-  reads questions with `agent_status`,
-  answers with `send_agent_message` using `replyTo`, and reads results through
-  `collect_agent`. A continuation with no progress can return to waiting while
-  a child can still move forward. If the parent still has work to do and its
-  children cannot move it forward, the run pauses.
+  reads questions with `agent_status`, answers with `send_agent_message` using
+  `replyTo`, and reads results through `collect_agent`. An already-announced
+  question can wake the parent once more if its child is actively waiting in
+  `read_parent_messages` and the remaining work is settled or waiting for
+  replies too. A child can keep working after asking a question. A continuation
+  that leaves actionable work unchanged can return to waiting while a child
+  can still move it forward. Once the children cannot advance the work, a
+  continuation that still leaves it unchanged pauses the run.
 - **Finishing.** The run completes when every assigned child is reviewed. V1 work
   needs its exact result collected. Successful V2 work needs that result signed
   off with `accept_agent`. Failed or parent-cancelled V2 work needs its exact
-  result collected, not accepted. A child the user stopped no longer holds the
-  run and is never restarted automatically. A child the user accepted in the
-  crew panel is settled: if the parent already read that result nothing further
-  runs, and if it never did, it is continued so its answer reflects the result.
+  result collected. Its old questions stay readable for context. An explicit
+  request for more work can continue that child. A child the user stopped
+  no longer holds the run and is never restarted automatically. A child the
+  user accepted in the crew panel is settled. If the parent has yet to read
+  the result, the run can continue so its answer reflects it.
 
 In **Settings → Sub-agents → Automatic parent follow-ups**, choose a whole number
 from 1 to 1,000 or **Unlimited**. The default is eight, including for settings
 saved before this option. Each authorization has its own count, which carries
-over if the user sends a message while the parent is waiting. The run pauses
-when it runs out of automatic follow-ups, a continuation ends with no progress,
-the parent turn fails, or a provider refuses the start. **Continue with** uses
-the current model and account and starts the automatic count at zero.
+over if the user sends a message while the parent is waiting. The run can pause
+when it reaches the follow-up limit, the work stalls, the parent turn fails, or
+a provider refuses the start. **Continue with** uses the current model and
+account and starts the automatic count at zero.
 **Dismiss** ends the run and leaves the children in the crew panel. Unlimited
 lifts the count limit. Progress, execution identity, queue and recovery rules
 still apply, and each follow-up is a normal model turn with normal usage.
@@ -187,9 +197,9 @@ including conversations started from another device on the local network. Each
 automatic decision reads the saved value, including for runs already waiting
 and when rechecking after an in-flight identity check. A follow-up that has
 already started can finish. If a waiting run has used at least as many
-follow-ups as the saved limit, it pauses when it would next continue. To
-resume a paused run after changing the limit, use
-**Continue with** or the typed-message behavior below when it applies.
+follow-ups as the saved limit, its waiting status says so, and it pauses when
+it would next continue. To resume a paused run after changing the limit, use
+**Continue with** or send a message if the run qualifies as described below.
 
 **Typing into a paused conversation.** A message the user types into the
 conversation while one of the run's children is genuinely still working keeps
@@ -297,10 +307,9 @@ provider's own spawn-time checks, including Claude's billing confirmation, still
 apply to the continuation.
 
 The notice also tells the parent that if it still needs an answer from the user,
-it should not guess, but state what it needs and end its turn. If that leaves no
-progress, the run pauses for the user. This is an instruction to the model, not a
-check: Mythra Code does not read the model's words or detect that a question is
-open, so a model can still continue without the answer.
+it should state what it needs and end its turn. Mythra Code checks progress on
+the delegated work. The parent's text can ask the user a question without
+changing the run's state.
 
 Notices are stored as user-role messages because that is the timeline's turn
 boundary, and are shown as one quiet line. They are excluded from previews, edit,

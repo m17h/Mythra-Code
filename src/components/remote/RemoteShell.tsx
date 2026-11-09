@@ -699,9 +699,9 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     : LINK_DOWN.has(machine.state) ? "stale"
     : timeline?.state ?? remote?.state ?? "loading";
   const inspectingThread = connected && !leaving && state !== "removed" ? threadId : undefined;
-  const inspection = useRemoteWork((state) => {
-    const result = state.capabilities[device];
-    return inspectingThread && result?.threadId === inspectingThread ? result : undefined;
+  const inspection = useRemoteWork((work) => {
+    const result = work.capabilities[device];
+    return state === "live" && inspectingThread && result?.threadId === inspectingThread ? result : undefined;
   });
   const workStatus = inspectingThread ? inspection?.status ?? "pending" : undefined;
   const capabilities = inspection?.status === "ready" ? inspection.capabilities : undefined;
@@ -724,8 +724,8 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   const outlasted = useOutlasted(settling, SETTLE_MS);
   const stillSettling = settling && !outlasted;
   const banner = !machine && snapshot ? `${name} isn't paired with this device anymore. Choose another device from the switcher.` : help ?? (stillSettling ? null : connectionLabel(state, name));
-  const scope = useMemo<RemoteThreadScope | null>(() => threadId ? { device, name, threadId, connected: Boolean(inspectingThread), ...(workspaceId ? { workspaceId } : {}) } : null,
-    [device, inspectingThread, name, threadId, workspaceId]);
+  const scope = useMemo<RemoteThreadScope | null>(() => threadId ? { device, name, threadId, connected: state === "live" && Boolean(inspectingThread), ...(workspaceId ? { workspaceId } : {}) } : null,
+    [device, inspectingThread, name, state, threadId, workspaceId]);
   const timelineQuestions = useMemo(() => new Set(timeline?.messages.flatMap((message) => message.questions?.map((question) => question.id) ?? [])),
     [timeline?.messages]);
   const context = useHostContext(device, workspaceId, threadId);
@@ -816,15 +816,9 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     await exportTextFile(path, buildTranscriptMarkdown(`${label} (${name})`, whole.messages.map(messageForTimeline), whole.activities.map(activityForTimeline)));
     if (!whole.complete) setNotice(`That conversation is very long, or part of it couldn't be read, so the saved file has only its most recent part.`);
   }, [device, name, thread?.preview, thread?.title, threadId]);
-  // Handles belong to one moment on the host. Ask again whenever that moment
-  // changes, and hold no controls for a thread or link that has gone.
-  const approvalsKey = timeline?.approvals.map((entry) => entry.id).join(",");
   useEffect(() => {
     if (inspectingThread) return watchRemoteCapabilities(device, inspectingThread);
   }, [device, inspectingThread]);
-  useEffect(() => {
-    if (inspectingThread) void refreshRemoteCapabilities(device, inspectingThread);
-  }, [approvalsKey, device, inspectingThread, timeline?.activeTurnId, timeline?.availability, timeline?.epoch, timeline?.status]);
   useEffect(() => {
     if (!connected) return;
     void reconcileRemoteOutbox(device, name);
@@ -1118,7 +1112,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   }).map((note) => note.id), [notes, projectedMessages]);
   const paletteWorkflows = useMemo(() => (context?.workflows ?? []).map((workflow) => ({ id: workflow.id, name: workflow.name, description: workflow.description, enabled: true, steps: [],
     paletteDetail: `On ${name}${workflow.description ? ` · ${workflow.description}` : ""}` })) as unknown as WorkflowDefinition[], [context?.workflows, name]);
-  const steerHandle = running && capabilities?.canSteer ? capabilities.steer?.handle : undefined;
+  const steerHandle = running && timeline?.assistantOutputActive !== true && capabilities?.canSteer ? capabilities.steer?.handle : undefined;
   const search = useCallback((query: string) => workspaceId ? searchRemoteFiles(device, workspaceId, threadId, query) : Promise.resolve([]), [device, threadId, workspaceId]);
   const skills = useMemo(() => context?.skills.filter((skill) => skill.enabled).map((skill) => ({ name: skill.name, description: skill.description })), [context?.skills]);
   // A skill named in a message opens the host's copy, as a mention opens Settings → Skills here.
@@ -1283,11 +1277,11 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
       {!compose && scope && <RemoteRequests scope={scope} summaries={timeline?.approvals ?? NO_APPROVALS} capabilities={capabilities} questionsInTimeline={timelineQuestions} />}
       {!compose && thread && guide && (guide.kind === "noProviders" || guide.kind === "viewOnly") && <div className="remote-banner" role="status"><strong>{guide.title}.</strong> {guide.body}
         <button type="button" className="secondary-button" onClick={checkAgain}>Check again</button></div>}
-      {inspectingThread && guide?.kind !== "noProviders" && workStatus === "unavailable" && <div className="remote-banner" role="status">
+      {inspectingThread && !stale && guide?.kind !== "noProviders" && workStatus === "unavailable" && <div className="remote-banner" role="status">
         <span>Couldn't check work access for this conversation on {name}.</span>
         <button type="button" className="secondary-button" onClick={checkAgain}>Check again</button>
       </div>}
-      {inspectingThread && guide?.kind !== "noProviders" && workStatus === "pending" && workCheckTakingTime && <div className="remote-banner" role="status">
+      {inspectingThread && !stale && guide?.kind !== "noProviders" && workStatus === "pending" && workCheckTakingTime && <div className="remote-banner" role="status">
         Checking work access on {name}…
       </div>}
       {findOpen && threadId && <ConversationSearchBar inputRef={findInput} query={findQuery} index={findIndex} count={findCount}

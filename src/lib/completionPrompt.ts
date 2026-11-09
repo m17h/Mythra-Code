@@ -58,8 +58,8 @@ export const MYTHRA_CODE_DELEGATION_INSTRUCTIONS = [
 /** Added only when this captured bridge exposes the V2 conversation tools. */
 export const MYTHRA_CODE_COLLABORATION_INSTRUCTIONS = [
   "This Mythra Code crew also exposes send_agent_message and accept_agent for V2 sub-agent conversations.",
-  "V2 children can message you: agent_status and collect_agent return their questions and updates, and collect_agent returns early when one arrives. Unanswered questions remain recoverable through a single-child status or collect call; reading is not answering. Answer with send_agent_message and replyTo, or give more work on the child's own conversation, and report its real delivery state.",
-  "A finished V2 child awaits your review: collect its result first, then sign off with accept_agent using the exact reviewToken from that result. A stale token is refused if newer work intervened. Finishing your own turn is not sign-off.",
+  "Use agent_status and collect_agent to read V2 children's questions and updates. A collection can return early for the selected child's messages or another child's unread question. Use focused status to revisit open questions. When a child needs your answer, call send_agent_message with its childId and question id as replyTo, and report the actual delivery state. For collectBeforeReply or an unknown phase, collect that child to confirm its current work before replying. A question marked replyPending already has your reply on its way.",
+  "Collect each child's result. If you are satisfied with a successful V2 result, sign off with accept_agent using its exact reviewToken. A stale token is refused if newer work intervened. For failed or cancelled work, review its result and send more guidance only when the child should continue working.",
   "Existing V1 assignments keep their one-shot workflow: collect their results, and spawn a new sub-agent for additional work. They do not receive parent messaging or require accept_agent.",
 ].join(" ");
 
