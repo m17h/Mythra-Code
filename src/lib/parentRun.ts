@@ -68,8 +68,8 @@ export interface ParentRun {
    * Attention signals already announced to the parent, each kept only while
    * its evidence is current: `childId:messageId` for an open question and
    * `childId#result:reviewToken` for a result to collect. Undelivered
-   * guidance has its own message key. The original field name keeps saved
-   * runs compatible.
+   * guidance and a child waiting for an announced question have their own
+   * keys. The original field name keeps saved runs compatible.
    */
   wokenQuestions: string[];
   execution: ParentExecution;
@@ -82,7 +82,7 @@ export interface ParentRun {
   autoResume?: true;
 }
 
-export type ParentObligationState = "none" | "working" | "unknown" | "needs_collect" | "needs_signoff" | "needs_response" | "needs_wrapup" | "resolved";
+export type ParentObligationState = "none" | "working" | "unknown" | "needs_collect" | "needs_signoff" | "needs_wrapup" | "resolved";
 
 export interface ParentObligationEvidence {
   childId: string;
@@ -101,6 +101,8 @@ export interface ParentObligationEvidence {
   openQuestions: string[];
   /** Open questions with replies already queued or being delivered. */
   pendingQuestionReplies?: string[];
+  /** The current child turn is in a live mailbox wait with no guidance in flight. */
+  waitingForParent?: true;
   /** Exact unresolved guidance messages, including a marker for trimmed history. */
   undeliveredGuidance?: string[];
   resultRevision: number;
@@ -123,9 +125,10 @@ export interface ParentObligation extends ParentObligationEvidence {
  * What a child still needs from its parent.
  *
  * Successful V2 work needs an explicit sign-off of the exact collected result.
- * Collecting failed or cancelled work settles the result review. An open
- * question still needs a response. A user stop clears both obligations, and
- * a stopped child is never restarted automatically.
+ * Failed or cancelled work is resolved by collecting it: acceptance means the
+ * work is good, and answering an old question would restart it, so neither is
+ * forced. Only a user stop removes the obligation, and a stopped child is
+ * never restarted automatically.
  */
 export function classifyParentObligation(evidence: ParentObligationEvidence): ParentObligationState {
   if (evidence.userStopped) return "none";
@@ -138,8 +141,7 @@ export function classifyParentObligation(evidence: ParentObligationEvidence): Pa
   if (evidence.working) return "working";
   if (evidence.lifecycle === "unknown" || !evidence.reviewToken) return "unknown";
   if (evidence.reviewToken !== evidence.collectedToken) return "needs_collect";
-  if (evidence.signoffRequired && evidence.lifecycle === "completed") return "needs_signoff";
-  return evidence.openQuestions.length ? "needs_response" : "resolved";
+  return evidence.signoffRequired && evidence.lifecycle === "completed" ? "needs_signoff" : "resolved";
 }
 
 function isBlocking(obligation: ParentObligation): boolean {
@@ -180,6 +182,10 @@ function questionKey(entry: ParentObligation, message: string): string {
   return `${entry.childId}:${message}`;
 }
 
+function waitingQuestionKey(entry: ParentObligation, message: string): string {
+  return `${entry.childId}#waiting:${message}`;
+}
+
 function resultKey(entry: ParentObligation): string | undefined {
   return entry.reviewToken ? `${entry.childId}#result:${entry.reviewToken}` : undefined;
 }
@@ -199,15 +205,30 @@ function canActOn(entry: ParentObligation, approvalChildren: readonly string[]):
 }
 
 function questionsNeedingReply(entry: ParentObligation): string[] {
+  // Collect a failed or cancelled result first. Answering its old question
+  // would start more work and requires a separate decision by the parent.
+  if (entry.lifecycle === "failed" || entry.lifecycle === "cancelled") return [];
   return isBlocking(entry) ? entry.openQuestions.filter((id) => !entry.pendingQuestionReplies?.includes(id)) : [];
 }
 
 function isSettled(entry: ParentObligation): boolean {
-  return entry.state === "needs_collect" || entry.state === "needs_signoff" || entry.state === "needs_response" || entry.state === "needs_wrapup";
+  return entry.state === "needs_collect" || entry.state === "needs_signoff" || entry.state === "needs_wrapup";
 }
 
 function guidanceNeedingReview(entry: ParentObligation): readonly string[] {
   return entry.state === "working" || entry.state === "needs_collect" ? entry.undeliveredGuidance ?? [] : [];
+}
+
+function isWaitingForQuestionReply(entry: ParentObligation): boolean {
+  return entry.state === "working" && Boolean(entry.waitingForParent) && questionsNeedingReply(entry).length > 0;
+}
+
+/** An announced question can wake again once the remaining work depends on the parent. */
+function waitingQuestionKeys(obligations: readonly ParentObligation[], approvalChildren: readonly string[]): string[] {
+  const open = obligations.filter(owesTurn);
+  if (open.some((entry) => !canActOn(entry, approvalChildren) || !isSettled(entry) && !isWaitingForQuestionReply(entry))) return [];
+  return open.flatMap((entry) => isWaitingForQuestionReply(entry)
+    ? questionsNeedingReply(entry).map((message) => waitingQuestionKey(entry, message)) : []);
 }
 
 /**
@@ -218,7 +239,7 @@ function guidanceNeedingReview(entry: ParentObligation): readonly string[] {
  * check instead.
  */
 function attentionKeys(obligations: readonly ParentObligation[], approvalChildren: readonly string[]): string[] {
-  return obligations.flatMap((entry) => {
+  const direct = obligations.flatMap((entry) => {
     if (!canActOn(entry, approvalChildren)) return [];
     const result = entry.state === "needs_collect" ? resultKey(entry) : undefined;
     return [
@@ -227,6 +248,7 @@ function attentionKeys(obligations: readonly ParentObligation[], approvalChildre
       ...(result ? [result] : []),
     ];
   });
+  return [...direct, ...waitingQuestionKeys(obligations, approvalChildren)];
 }
 
 function hasNewAttention(run: ParentRun, keys: readonly string[]): boolean {
@@ -239,7 +261,7 @@ function currentAttentionKeys(obligations: readonly ParentObligation[]): Set<str
     if (entry.state === "none") return [];
     const result = resultKey(entry);
     return [
-      ...entry.openQuestions.map((message) => questionKey(entry, message)),
+      ...entry.openQuestions.flatMap((message) => [questionKey(entry, message), waitingQuestionKey(entry, message)]),
       ...(entry.undeliveredGuidance ?? []).map((message) => guidanceKey(entry, message)),
       ...(result ? [result] : []),
     ];
@@ -334,12 +356,12 @@ export function parentRunAtTurnEnd(run: ParentRun, end: ParentTurnEnd): ParentRu
   if (!run.autoResume) return pausedRun(settled, "restart");
   if (end.status !== "completed") return pausedRun(settled, "parent_failed");
   if ((run.phase === "continuing" || confirmedStart) && parentRunProgress(end.obligations) === run.progress) {
-    // A running child can keep this run waiting if it can move forward on its
-    // own, including when an answer is already on its way. An unanswered
-    // question on that same child can otherwise leave both sides waiting.
-    const canProgress = end.obligations.some((entry) => entry.state === "working"
+    // An open question alone does not prevent a child from making progress.
+    // A live mailbox wait only blocks when no other child could move the run.
+    const waitingQuestions = waitingQuestionKeys(end.obligations, end.approvalChildren);
+    const canProgress = !waitingQuestions.length && end.obligations.some((entry) => entry.state === "working"
       && !entry.manualTakeover && !entry.unconfirmedStart && entry.lifecycle !== "unknown"
-      && !heldForUser(entry, end.approvalChildren) && !questionsNeedingReply(entry).length && !guidanceNeedingReview(entry).length);
+      && !heldForUser(entry, end.approvalChildren));
     const attention = attentionKeys(end.obligations, end.approvalChildren);
     const needsParent = attention.length > 0 || end.obligations.some((entry) => canActOn(entry, end.approvalChildren) && isSettled(entry));
     if (needsParent && !canProgress && !hasNewAttention(run, attention)) {
@@ -563,7 +585,6 @@ function noticeTitle(title: string): string {
 const FOLLOW_UP_NOTES: Partial<Record<ParentObligationState, string>> = {
   working: "Mythra Code is currently following this child. It can continue automatically when the followed work is ready for review or a new question arrives, provided the run stays open and its continuation checks pass.",
   unknown: "Mythra Code is currently following this child. Its status must be confirmed before automatic continuation, and the run must stay open and pass its continuation checks.",
-  needs_response: "The result was collected and a question still needs your response. Use agent_status to read it and send_agent_message with replyTo to answer it.",
 };
 const FOLLOW_UP_REVIEW_NOTE = "Review this result now. If you end your turn first, Mythra Code can continue to review it while this run stays open and its continuation checks pass.";
 const NO_FOLLOW_UP_NOTE = "Mythra Code is not following this child, so nothing continues this conversation for it automatically. Never promise that it will. Keep collecting or reviewing it yourself, or tell the user it is still unreviewed.";
@@ -596,7 +617,7 @@ export function buildParentNotice(id: string, obligations: readonly ParentObliga
     const states: string[] = [];
     if (questionsNeedingReply(entry).length) states.push("question");
     if (guidanceNeedingReview(entry).length) states.push("guidance");
-    if (entry.state !== "needs_response" && (isSettled(entry) || !states.length)) states.push(entry.state);
+    if (isSettled(entry) || !states.length) states.push(entry.state);
     return states.map((state) => child + NOTICE_LINE_STATES[state]);
   });
   return [`<${NOTICE_TAG} v="1" id="${id}">`, NOTICE_INTRO, NOTICE_HEADING, ...lines, NOTICE_REQUEST, `</${NOTICE_TAG}>`].join("\n");
@@ -626,11 +647,21 @@ export interface ParentRunView {
   turnId?: string;
   /** An unacknowledged provider start must settle or be stopped before retry. */
   continueBlocked?: true;
-  /** Waiting on the user or on evidence, rather than on work in progress. */
+  /** Display a pause indicator for a hold that needs attention. */
   attention?: boolean;
+  followUpLimitReached?: true;
 }
 
-function waitingTitle(obligations: readonly ParentObligation[], input: { approvalChild?: string; queueHeld: boolean; queuePending: boolean; folderBusy: boolean }): string {
+interface ParentRunWaitingState {
+  approvalChild?: string;
+  queueHeld: boolean;
+  queuePending: boolean;
+  folderBusy: boolean;
+  /** Whether the saved limit allows another automatic follow-up. */
+  resumesLeft: boolean;
+}
+
+function waitingTitle(obligations: readonly ParentObligation[], input: ParentRunWaitingState): string {
   if (input.approvalChild) return `${input.approvalChild} needs your approval`;
   if (input.queueHeld) return "A queued message needs attention";
   const working = obligations.filter((entry) => entry.state === "working");
@@ -639,7 +670,8 @@ function waitingTitle(obligations: readonly ParentObligation[], input: { approva
   const unknown = obligations.find((entry) => entry.state === "unknown");
   if (unknown) return `${unknown.title}'s status can't be confirmed`;
   if (input.folderBusy) return "Waiting for another conversation in this folder";
-  return input.queuePending ? "Queued messages run first" : "Preparing the parent's follow-up";
+  if (input.queuePending) return "Queued messages run first";
+  return input.resumesLeft ? "Preparing the parent's follow-up" : "Automatic follow-up limit reached";
 }
 
 export type ParentExecutionChange = "model" | "permission" | "crew" | "folder" | "account" | "unconfirmed";
@@ -668,7 +700,8 @@ const EXECUTION_CHANGE_TITLES: Record<ParentExecutionChange, string> = {
 const FOLLOWS_AUTOMATICALLY = "Parent continues automatically when results or questions need attention.";
 
 /** What happens next, in the same order `waitingTitle` chooses what to name. */
-function waitingDetail(obligations: readonly ParentObligation[], input: { approvalChild?: string; queueHeld: boolean; queuePending: boolean; folderBusy: boolean }): string {
+function waitingDetail(obligations: readonly ParentObligation[], input: ParentRunWaitingState): string {
+  if (!input.resumesLeft) return "The run has used all its automatic follow-ups. It pauses when the parent needs another turn.";
   if (input.approvalChild) return `After you respond: ${FOLLOWS_AUTOMATICALLY.charAt(0).toLowerCase()}${FOLLOWS_AUTOMATICALLY.slice(1)}`;
   if (input.queueHeld) return "Resolve it, and the parent can continue automatically.";
   if (obligations.some((entry) => entry.state === "working")) return FOLLOWS_AUTOMATICALLY;
@@ -688,7 +721,7 @@ function pausedTitle(run: ParentRun, obligations: readonly ParentObligation[]): 
     default: break;
   }
   const open = obligations.find((entry) => entry.state === "needs_collect" || entry.state === "needs_signoff")
-    ?? obligations.find((entry) => entry.state !== "none" && entry.openQuestions.length);
+    ?? obligations.find((entry) => questionsNeedingReply(entry).length);
   if (!open) return "The parent ended without finishing its review";
   if (open.state === "needs_signoff") return `The parent ended without signing off ${open.title}`;
   if (open.state === "needs_collect") return `The parent ended without reviewing ${open.title}`;
@@ -699,7 +732,7 @@ function pausedTitle(run: ParentRun, obligations: readonly ParentObligation[]): 
 export function parentRunView(
   run: ParentRun | undefined,
   obligations: readonly ParentObligation[],
-  input: { rootRunning: boolean; rootStarting: boolean; approvalChild?: string; queueHeld: boolean; queuePending: boolean; folderBusy: boolean },
+  input: ParentRunWaitingState & { rootRunning: boolean; rootStarting: boolean },
 ): ParentRunView | null {
   if (!run) return null;
   const uncertainStart = input.rootStarting && run.phase === "paused" && run.pause?.reason === "start_uncertain";
@@ -720,13 +753,14 @@ export function parentRunView(
   const working = obligations.some((entry) => entry.state === "working");
   const blocked = Boolean(input.approvalChild) || input.queueHeld
     || !working && (input.queuePending || input.folderBusy || obligations.some((entry) => entry.state === "unknown"));
-  // Nothing is left to wait on: the identity check before the follow-up is running.
-  const status = working || blocked ? "Waiting for sub-agents" : "Preparing the follow-up";
+  const followUpLimitReached = !input.resumesLeft;
+  const status = working || blocked ? "Waiting for sub-agents" : followUpLimitReached ? "Follow-up limit reached" : "Preparing the follow-up";
   return {
     kind: "waiting",
     title: waitingTitle(obligations, input),
     detail: waitingDetail(obligations, input),
-    ...(blocked ? { attention: true } : {}),
+    ...(blocked || followUpLimitReached && !working ? { attention: true } : {}),
+    ...(followUpLimitReached ? { followUpLimitReached: true as const } : {}),
     status,
     turnLabel: status,
     ...(run.yieldedTurnId ? { turnId: run.yieldedTurnId } : {}),

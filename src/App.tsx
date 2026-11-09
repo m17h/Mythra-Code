@@ -116,7 +116,7 @@ import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { captureHistoryReadBoundary, selectInlineApproval, selectPendingApproval, selectPendingApprovalCount, storedPendingTimedTurns, threadsHeldForUser, useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { countScheduledPrompts, scheduledCountsLabel } from "./lib/scheduledPromptCounts";
 import { eligibleQueueHead, hasEligibleQueuedTurns } from "./lib/timedPrompts";
-import { parentAuthKey, parentExecutionDifference, parentRunBlocked, parentRunView, type ParentExecution, type ParentRun } from "./lib/parentRun";
+import { parentAuthKey, parentExecutionDifference, parentResumesRemain, parentRunBlocked, parentRunView, type ParentExecution, type ParentRun } from "./lib/parentRun";
 import { recordParentRunTransitions } from "./lib/parentRunDiagnostics";
 import { newThreadPromptsForWorkspace, useNewThreadTimedPrompts, type NewThreadTimedPrompt } from "./lib/newThreadTimedPrompts";
 import { isMythraNoticeMessage } from "./lib/userMessageEcho";
@@ -6763,8 +6763,9 @@ export default function App() {
       rootRunning: running, rootStarting: taskStatus === "starting", queueHeld: parentRunQueueHeld, queuePending: hasQueuedWork,
       approvalChild: obligations.find((entry) => entry.childId === parentRunApprovalChild)?.title,
       folderBusy: parentRunFolderBusy(activeParentRun.rootThreadId),
+      resumesLeft: parentResumesRemain(activeParentRun, parentFollowUpLimit),
     });
-  }, [activeParentRun, childAgentLinks, childMailboxes, hasQueuedWork, parentRunApprovalChild, parentRunFolderBusy, parentRunObligations, parentRunQueueHeld, running, taskStatus, threadTaskStatuses]);
+  }, [activeParentRun, childAgentLinks, childMailboxes, hasQueuedWork, parentFollowUpLimit, parentRunApprovalChild, parentRunFolderBusy, parentRunObligations, parentRunQueueHeld, running, taskStatus, threadTaskStatuses]);
   const parentRunTurn = useMemo(() => parentRunStatus?.turnId
     ? { turnId: parentRunStatus.turnId, label: parentRunStatus.turnLabel, state: parentRunStatus.kind === "paused" ? "partial" as const : "unknown" as const } : null,
   [parentRunStatus]);

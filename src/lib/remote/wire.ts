@@ -65,6 +65,8 @@ export interface WireThreadState {
   status: WireTaskStatus;
   availability: WireAvailability;
   activeTurnId: string | null;
+  /** Host runtime phase used to refresh Steer controls within the same turn. */
+  assistantOutputActive?: boolean;
   workingStartedAt: number | null;
   error: string | null;
 }

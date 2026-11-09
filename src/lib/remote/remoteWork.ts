@@ -3,7 +3,7 @@ import { forgetPanels } from "./panelCache";
 import { create } from "zustand";
 import { useActiveMachine } from "./activeMachine";
 import { useRemoteDevices } from "./devices";
-import { keepRemoteSessions, openRemoteThread, refreshRemoteDevice, useRemoteStore } from "./remoteStore";
+import { keepRemoteSessions, openRemoteThread, refreshRemoteDevice, useRemoteStore, type RemoteTimeline } from "./remoteStore";
 import {
   admitToOutbox, markPromptRejected, MAX_PROMPT_CHARS, newThreadDraftKey, nextOperationSequence, outboxIsFull, removeOutboxEntry, removeRemoteEcho,
   setNewThreadTarget, settleRemoteEcho, updateOutboxEntry, useRemoteOutbox, type OutboxEntry, type OutboxOperation,
@@ -52,6 +52,13 @@ function publishInspection(device: string, result: RemoteWorkInspection) {
 function cancelInspection(thread: WatchedThread | undefined) {
   const timer = thread?.request?.timer;
   if (timer !== undefined) clearTimeout(timer);
+  if (thread) thread.request = undefined;
+}
+function inspectionTimeline(device: string, threadId: string): RemoteTimeline | undefined {
+  const view = useRemoteStore.getState().devices[device];
+  if (view?.threadId !== threadId || useActiveMachine.getState().machine !== device || useRemoteOutbox.getState().compose[device]) return;
+  const machine = useRemoteDevices.getState().snapshot?.devices.find((entry) => entry.fingerprint === device);
+  if (machine?.state === "connected" && machine.canView) return view.timelines.get(threadId);
 }
 /** Only the visible conversation can start or retire an inspection scope. */
 export function watchRemoteCapabilities(device: string, threadId: string): () => void {
@@ -59,7 +66,33 @@ export function watchRemoteCapabilities(device: string, threadId: string): () =>
   const thread: WatchedThread = { threadId };
   watchedThreads.set(device, thread);
   publishInspection(device, { threadId, status: "pending" });
+  let previous: RemoteTimeline | undefined;
+  const update = () => {
+    if (watchedThreads.get(device) !== thread) return;
+    const next = inspectionTimeline(device, threadId);
+    if (next === previous) return;
+    const before = previous;
+    previous = next;
+    if (next?.state !== "live") {
+      if (before?.state === "live") {
+        // Recovery can replay an identical timeline in the same React batch.
+        // Retire old replies and handles as soon as the store sees the change.
+        cancelInspection(thread);
+        if (useRemoteWork.getState().capabilities[device]?.status !== "pending") publishInspection(device, { threadId, status: "pending" });
+      }
+      return;
+    }
+    if (before?.state !== "live" || before.epoch !== next.epoch || before.status !== next.status
+      || before.activeTurnId !== next.activeTurnId || before.assistantOutputActive !== next.assistantOutputActive
+      || (before.approvals !== next.approvals && (before.approvals.length !== next.approvals.length
+        || next.approvals.some((entry, index) => entry.id !== before.approvals[index]?.id)))) {
+      void refreshRemoteCapabilities(device, threadId);
+    }
+  };
+  const unwatch = [useRemoteStore.subscribe(update), useRemoteDevices.subscribe(update), useActiveMachine.subscribe(update), useRemoteOutbox.subscribe(update)];
+  update();
   return () => {
+    for (const unsubscribe of unwatch) unsubscribe();
     if (watchedThreads.get(device) !== thread) return;
     cancelInspection(thread);
     watchedThreads.delete(device);
@@ -74,15 +107,12 @@ export function watchRemoteCapabilities(device: string, threadId: string): () =>
 /** Only an explicit host Work refusal proves the viewer is view-only. */
 export async function refreshRemoteCapabilities(device: string, threadId: string): Promise<void> {
   const thread = watchedThreads.get(device);
-  const selected = () => useActiveMachine.getState().machine === device
-    && useRemoteStore.getState().devices[device]?.threadId === threadId
-    && !useRemoteOutbox.getState().compose[device]
-    && useRemoteDevices.getState().snapshot?.devices.some((entry) => entry.fingerprint === device && entry.state === "connected");
-  if (!thread || thread.threadId !== threadId || !selected()) return;
+  const live = () => inspectionTimeline(device, threadId)?.state === "live";
+  if (!thread || thread.threadId !== threadId || !live()) return;
   cancelInspection(thread);
   const request: InspectionRequest = {};
   thread.request = request;
-  const current = () => watchedThreads.get(device) === thread && thread.request === request && selected();
+  const current = () => watchedThreads.get(device) === thread && thread.request === request && live();
   if (useRemoteWork.getState().capabilities[device]?.status === "unavailable") {
     publishInspection(device, { threadId, status: "pending" });
   }

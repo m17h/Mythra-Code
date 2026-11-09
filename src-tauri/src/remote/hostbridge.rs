@@ -286,10 +286,15 @@ pub(super) fn retire_device_locked(inner: &Inner, core: &mut Core, device: &str)
     for id in requests {
         if let Some(pending) = core.bridge.pending.remove(&id) {
             if let Some(reply) = pending.reply {
-                let _ = reply.send(Err(WireError::new(
-                    "forbidden",
-                    "The access settings changed. Open the conversation again.",
-                )));
+                let error = if state == "recovering" && pending.op == "timeline.subscribe" {
+                    unavailable()
+                } else {
+                    WireError::new(
+                        "forbidden",
+                        "The access settings changed. Open the conversation again.",
+                    )
+                };
+                let _ = reply.send(Err(error));
             }
         }
     }
@@ -763,6 +768,11 @@ async fn request_host(
             return Err(WireError::new("busy", "Too many requests are waiting."));
         }
         if op == "timeline.subscribe" {
+            // A grant edit uses the intersection of old and new access until
+            // it is saved. Wait before establishing a fresh view and its Work check.
+            if core.unpublished_device_saves.contains_key(&link.peer_fingerprint) {
+                return Err(unavailable());
+            }
             let thread = thread_id(&args)?;
             let existing = core
                 .bridge

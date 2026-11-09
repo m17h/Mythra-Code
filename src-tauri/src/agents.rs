@@ -961,7 +961,7 @@ pub(super) fn tool_catalog(
                  The child runs in the same workspace with the same permission policy, reports into the \
                  same conversation, and returns immediately with an id — use `{TOOL_COLLECT}` to wait for its result. \
                  A child can message you while it works; `{TOOL_STATUS}` and `{TOOL_COLLECT}` return its unread messages. \
-                 Continue the same child with `{TOOL_MESSAGE_AGENT}` and sign off finished work with `{TOOL_ACCEPT}`.\n\nDestinations:\n{roster}"
+                 Continue the same child with `{TOOL_MESSAGE_AGENT}` and sign off successful work with `{TOOL_ACCEPT}`.\n\nDestinations:\n{roster}"
             ),
             "inputSchema": {
                 "type": "object",
@@ -988,7 +988,7 @@ pub(super) fn tool_catalog(
         {
             "name": TOOL_STATUS,
             "title": "Read sub-agent status",
-            "description": "List a bounded page of children spawned from this thread with their lifecycle status and review phase (running, awaiting_review, accepted, failed, cancelled, unknown). Pass the returned nextCursor to discover the next page; do not combine cursor with childId. New child messages are returned and marked read. Unanswered questions remain recoverable: pass childId to re-read bounded unresolved questions after a lost response or forgotten context. Reading is not answering; reply with send_agent_message and replyTo. needsResponse means answer rather than repeatedly polling.",
+            "description": "List a bounded page of children spawned from this thread with their lifecycle status and review phase (running, awaiting_review, accepted, failed, cancelled, unknown). Pass the returned nextCursor to discover the next page, or pass childId to focus on one child. New messages are returned and marked read. Focused status also shows earlier open questions. When needsResponse is true, answer with send_agent_message and replyTo. A question marked replyPending already has your reply on its way.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1002,7 +1002,7 @@ pub(super) fn tool_catalog(
         {
             "name": TOOL_COLLECT,
             "title": "Collect a sub-agent result",
-            "description": "Wait for a child to finish its current turn and return its final message and reviewToken. The wait can end early for messages from this child or an unread question from another child. Use send_agent_message with the childId of the agent who asked and its message ID as replyTo, then collect again. Unanswered questions stay recoverable until answered or explicitly closed. Returns a still-running status if the wait elapses first. A finished child is awaiting_review until you use accept_agent with its collected reviewToken or continue it with send_agent_message.",
+            "description": "Wait for a child to finish its current turn and return its final message and reviewToken. The wait can end early for messages from this child or an unread question from another child. When a child needs your answer, call send_agent_message with its childId and question id as replyTo. For collectBeforeReply or an unknown phase, collect that child to confirm its work first. Returns a still-running status if the wait elapses. Successful work is awaiting_review until you sign it off with accept_agent or continue it with send_agent_message. Review failed or cancelled work by collecting its result.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1416,7 +1416,7 @@ fn bridge_instructions(catalog: &Value, provider: &str) -> String {
     if has(TOOL_SPAWN) {
         instructions.push("spawn_mythra_agent is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool.".into());
         if has(TOOL_MESSAGE_AGENT) && has(TOOL_ACCEPT) {
-            instructions.push("Children can send you questions and updates. Read them with agent_status or collect_agent. A collection wait can end early for a message from the child you are collecting or an unread question from another child. Use send_agent_message with the question's childId and message ID as replyTo. Unanswered questions stay available in focused status after reading. Collect the finished result and sign it off explicitly with accept_agent using its exact reviewToken. A finished child stays awaiting_review until then.".into());
+            instructions.push("Read child questions and updates with agent_status or collect_agent. A collection can also return an unread question from another child. When a child needs your answer, use send_agent_message with its childId and question id as replyTo. For collectBeforeReply or an unknown phase, collect that child to confirm its work before replying. A question marked replyPending already has your reply on its way. Collect each result. Sign off successful work you are satisfied with using accept_agent and the exact reviewToken. For failed or cancelled work, review its result and send more guidance only when the child should continue working.".into());
         }
     }
     if has(TOOL_SET_RUN) {

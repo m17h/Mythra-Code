@@ -35,6 +35,7 @@ import { ChildAgentStartUncertainError, continueChildAgentTurn, definitelyNotDis
 import {
   cancelQueuedForChild,
   cancelQueuedForRoot,
+  childMailForModel,
   closeChildMailboxQuestions,
   deliverableGuidance,
   getChildMailbox,
@@ -45,6 +46,7 @@ import {
   mailMessageForModel,
   markParentMessagesRead,
   MAX_QUEUED_FOR_CHILD,
+  pendingQuestionReplies,
   postMessageToParent,
   queueMessageToChild,
   queuedForChild,
@@ -124,6 +126,9 @@ const MAX_MESSAGES_PER_CHILD_RESPONSE = 4;
 const MAX_MESSAGES_PER_STATUS = 12;
 const MAX_STATUS_CHILDREN = 40;
 const MAX_READ_WAIT_SECONDS = 30;
+/** Model-facing: an answered question stays open until its reply reaches the child. */
+const REPLY_PENDING_NOTE = "A question marked replyPending already has your reply queued or being delivered; do not answer it again.";
+const PARENT_CANCEL_GUIDANCE_REASON = "The parent cancelled this sub-agent.";
 /** Renderer-side slot held by a same-child follow-up while it starts. */
 const FOLLOW_UP_RESERVATION = "pending-followup-";
 
@@ -273,11 +278,6 @@ function parentResumeTracked(rootThreadId: string, reviewRunId: string | undefin
 /** Children holding on the user's approval, read with the same rule everywhere. */
 function parentRunHeldChildren(obligations: readonly ParentObligation[], state = useTaskStore.getState()): string[] {
   return threadsHeldForUser(state, obligations.map((entry) => entry.childId));
-}
-
-function pendingChildQuestionReplies(messages: readonly ChildMailMessage[]): string[] {
-  return messages.flatMap((message) => message.direction === "toChild" && message.replyTo
-    && (message.state === "queued" || message.state === "delivering") ? [message.replyTo] : []);
 }
 
 // Re-exported from the policy module, where the UI can reach them without
@@ -1010,8 +1010,8 @@ export function useChildAgents(context: ChildAgentContext): {
   const followUpsInFlightRef = useRef(new Set<string>());
   const remoteAcceptancesRef = useRef(new Set<string>());
   const remoteStopsRef = useRef(new Set<string>());
-  /** Children currently blocked in read_parent_messages. */
-  const childReadersRef = useRef(new Map<string, number>());
+  /** Active mailbox waits and their current-turn guards, by child. */
+  const childReadersRef = useRef(new Map<string, Set<() => boolean>>());
   /** Wake outstanding collection/read waits when ownership or Stop changes. */
   const childWaitersRef = useRef(new Set<() => void>());
   const notifyChildWaiters = useCallback(() => {
@@ -1425,20 +1425,27 @@ export function useChildAgents(context: ChildAgentContext): {
     const mailbox = getChildMailbox(id);
     const messages = mailbox?.messages ?? [];
     const guidance = messages.filter((message) => message.direction === "toChild");
-    const pendingQuestionReplies = pendingChildQuestionReplies(guidance);
-    const undelivered = unresolvedGuidanceOutcomes(id, messages.length);
-    const undeliveredGuidance = [...undelivered.ids, ...(undelivered.trimmed ? [`trimmed:${mailbox?.undeliveredSeq}`] : [])];
+    const pendingReplies = pendingQuestionReplies(guidance);
+    // Guidance the parent's own cancel withdrew is not a delivery failure to
+    // review; announcing it could invite a resend that restarts the child.
+    const undelivered = link.stopOrigin === "parent" ? undefined : unresolvedGuidanceOutcomes(id, messages.length);
+    const undeliveredGuidance = undelivered?.messages.filter((message) => message.state !== "cancelled"
+      || message.reason !== PARENT_CANCEL_GUIDANCE_REASON).map((message) => message.id) ?? [];
+    if (undelivered?.trimmed) undeliveredGuidance.push(`trimmed:${mailbox?.undeliveredSeq}`);
     const manualTakeover = explicitStartsRef.current.has(id);
     const preparingInitialStart = initialStartPending(link);
     const unconfirmedStart = Boolean(pendingActivationsRef.current.get(id)?.uncertain
       || link.activationPending && !followUpsInFlightRef.current.has(id) && !preparingInitialStart);
+    const guidancePending = followUpPending(id);
+    const readers = childReadersRef.current.get(id);
+    const waitingForParent = status === "running" && !guidancePending && readers && [...readers].some((isWaiting) => isWaiting());
     const evidence = {
       childId: id,
       title: decodeHtmlEntities(link.title || "Sub-agent"),
       accepted: Boolean(link.acceptedAt),
       acceptedByUser: link.acceptedBy === "user",
       userStopped: link.stopOrigin === "user",
-      working: manualTakeover || isChildActive(status) || followUpPending(id) || preparingInitialStart,
+      working: manualTakeover || isChildActive(status) || guidancePending || preparingInitialStart,
       lifecycle: childLifecycleForLink(link, status),
       reviewToken: childReviewToken(link),
       collectedToken: link.collectedReviewToken,
@@ -1447,7 +1454,8 @@ export function useChildAgents(context: ChildAgentContext): {
       resultRevision: link.resultRevision ?? 0,
       followUps: link.followUps ?? 0,
       guidanceProgress: guidance.map((message) => `${message.id}:${message.state}`),
-      ...(pendingQuestionReplies.length ? { pendingQuestionReplies } : {}),
+      ...(pendingReplies.length ? { pendingQuestionReplies: pendingReplies } : {}),
+      ...(waitingForParent ? { waitingForParent: true as const } : {}),
       ...(undeliveredGuidance.length ? { undeliveredGuidance } : {}),
       ...(manualTakeover ? { manualTakeover: true as const } : {}),
       ...(preparingInitialStart ? { pendingStart: true as const } : {}),
@@ -1901,21 +1909,44 @@ export function useChildAgents(context: ChildAgentContext): {
         || supersededUncertainRef.current.has(id)));
   }, []);
 
+  const childPhaseForModel = useCallback((link: ChildAgentLink) => {
+    const id = link.childThreadId;
+    const uncertain = pendingActivationsRef.current.get(id)?.uncertain
+      || link.activationPending && !followUpsInFlightRef.current.has(id) && !initialStartPending(link);
+    return uncertain ? "unknown" : childReviewPhase(link, taskStatusOf(id));
+  }, [initialStartPending]);
+
+  const canAnswerChildQuestions = useCallback((link: ChildAgentLink): boolean => {
+    const ctx = contextRef.current;
+    const policy = childAgentPolicyForSession(ctx.policies, link.sessionId);
+    const id = link.childThreadId;
+    const phase = childPhaseForModel(link);
+    return policy?.collaborationV2 === true && policy.targets.length > 0 && policy.rootThreadId === link.rootThreadId
+      && link.signoff === "required" && !link.acceptedAt && link.stopOrigin !== "user"
+      && phase !== "failed" && phase !== "cancelled"
+      && !link.manualAttemptId && !explicitStartsRef.current.has(id)
+      && !ctx.threadUnavailable?.(id) && !ctx.threadUnavailable?.(link.rootThreadId)
+      && !ctx.threadBusy?.(id) && !ctx.threadBusy?.(link.rootThreadId)
+      && !threadsHeldForUser(useTaskStore.getState(), [id]).length;
+  }, [childPhaseForModel]);
+
   /**
    * Model-facing summary of one child, including its review phase. Pure: it
    * repeats unresolved undelivered guidance on every read (until later
    * guidance is delivered or the work is accepted), so a lost response can
    * never hide that a collected result lacks a correction.
    */
-  const describeChild = useCallback((link: ChildAgentLink, focused = false, guidanceOffset = 0): Record<string, unknown> => {
+  const describeChild = useCallback((link: ChildAgentLink, focused = false, guidanceOffset = 0, recoveredPhase?: "running" | "unknown"): Record<string, unknown> => {
     const childId = link.childThreadId;
     const taskStatus = taskStatusOf(childId);
-    const uncertain = pendingActivationsRef.current.get(childId)?.uncertain
-      || link.activationPending && !followUpsInFlightRef.current.has(childId) && !initialStartPending(link);
-    const status = uncertain ? "unknown" : childLifecycleForLink(link, taskStatus);
-    const phase = uncertain ? "unknown" : childReviewPhase(link, taskStatus);
+    const phase = recoveredPhase ?? childPhaseForModel(link);
+    const status = recoveredPhase ?? (phase === "unknown" ? phase : childLifecycleForLink(link, taskStatus));
     const error = useTaskStore.getState().tasks[childId]?.error;
-    const summary = summarizeChildMailbox(getChildMailbox(childId));
+    const mailbox = getChildMailbox(childId);
+    const summary = summarizeChildMailbox(mailbox);
+    const pending = new Set(pendingQuestionReplies(mailbox?.messages ?? []));
+    const repliesPending = mailbox?.messages.filter((message) => isOpenChildQuestion(message) && pending.has(message.id)).length ?? 0;
+    const unanswered = summary.unansweredQuestions - repliesPending;
     const waiting = !isChildActive(taskStatus) && followUpPending(childId);
     const waitReason = followUpWaitReasonRef.current.get(childId);
     const releaseFailure = [...releaseFailuresRef.current].find(([key]) => key.startsWith(`${childId}\u0000`))?.[1];
@@ -1930,12 +1961,14 @@ export function useChildAgents(context: ChildAgentContext): {
       title: link.title,
       status,
       phase,
-      ...(link.signoff === "required" && !link.acceptedAt ? { awaitsSignoff: true } : {}),
+      ...(phase === "awaiting_review" ? { awaitsSignoff: true } : {}),
       ...(link.followUps ? { followUps: link.followUps } : {}),
       ...(link.acceptedAt ? { acceptedBy: link.acceptedBy ?? "parent", ...(link.acceptNote ? { acceptNote: link.acceptNote } : {}) } : {}),
       ...(summary.queuedForChild ? { undeliveredMessagesToChild: summary.queuedForChild } : {}),
-      ...(summary.unansweredQuestions ? { unansweredQuestions: summary.unansweredQuestions, needsResponse: true } : {}),
-      ...(uncertain ? { note: "The provider did not confirm this activation. It may still be working; its slot remains reserved until confirmed terminal evidence or Stop." } : {}),
+      ...(unanswered ? { unansweredQuestions: unanswered } : {}),
+      ...(unanswered && phase !== "unknown" && canAnswerChildQuestions(link) ? { needsResponse: true } : {}),
+      ...(repliesPending ? { repliesPending } : {}),
+      ...(phase === "unknown" ? { note: "Collect this child to confirm its current activation." } : {}),
       ...(waiting ? { followUpPending: true, ...(waitReason ? { followUpWaiting: waitReason } : {}) } : {}),
       ...(releaseFailure ? { slotReleasePending: `Mythra Code could not yet release this child's concurrency slot (${releaseFailure}); it keeps retrying, and the slot may count against the limit until it succeeds.` } : {}),
       ...(supersededUncertainRef.current.has(childId) ? { earlierFollowUpUncertain: "An earlier follow-up request was never confirmed and may still be running alongside newer work. Its slot stays reserved until the child is stopped." } : {}),
@@ -1944,9 +1977,11 @@ export function useChildAgents(context: ChildAgentContext): {
         guidanceNotDeliveredTotal: outcomes.total,
         ...(outcomes.remaining ? { guidanceNotDeliveredRemaining: outcomes.remaining, guidanceNotDeliveredIds: outcomes.ids } : {}),
         ...(outcomes.nextOffset !== undefined ? { guidanceNextOffset: outcomes.nextOffset } : {}),
-        guidanceNote: outcomes.trimmed
-          ? "Guidance you sent later failed or was cancelled, and its entry was trimmed from bounded history. The child's result may not reflect it; resend anything still needed."
-          : "Guidance you sent failed or was cancelled. \"not_delivered\" entries never reached the child; \"uncertain\" ones may or may not have. Do not assume the child's result reflects them. They stay listed until you accept the work or a resend of the same text is delivered; the reviewToken already accounts for them. Use agent_status with childId and guidanceNextOffset as guidanceOffset to inspect later outcome pages.",
+        guidanceNote: link.stopOrigin === "parent"
+          ? "You cancelled this child. Review its guidance outcomes and result before deciding whether more work is needed."
+          : outcomes.trimmed
+            ? "Guidance you sent later failed or was cancelled, and its entry was trimmed from bounded history. The child's result may not reflect it; resend anything still needed."
+            : "Guidance you sent failed or was cancelled. \"not_delivered\" entries never reached the child; \"uncertain\" ones may or may not have. Do not assume the child's result reflects them. They stay listed until you accept the work or a resend of the same text is delivered; the reviewToken already accounts for them. Use agent_status with childId and guidanceNextOffset as guidanceOffset to inspect later outcome pages.",
       } : {}),
       ...(error ? { error } : {}),
       ...parentFollowUpFor(link, focused),
@@ -1957,19 +1992,7 @@ export function useChildAgents(context: ChildAgentContext): {
           : "Inspect the error, then spawn a replacement with a corrected self-contained prompt or another approved destination. Collect it before finishing.",
       } : {}),
     };
-  }, [followUpPending, initialStartPending, parentFollowUpFor]);
-
-  const canAnswerChildQuestions = useCallback((link: ChildAgentLink): boolean => {
-    const ctx = contextRef.current;
-    const policy = childAgentPolicyForSession(ctx.policies, link.sessionId);
-    const id = link.childThreadId;
-    return policy?.collaborationV2 === true && policy.targets.length > 0 && policy.rootThreadId === link.rootThreadId
-      && link.signoff === "required" && !link.acceptedAt && link.stopOrigin !== "user"
-      && !link.manualAttemptId && !explicitStartsRef.current.has(id)
-      && !ctx.threadUnavailable?.(id) && !ctx.threadUnavailable?.(link.rootThreadId)
-      && !ctx.threadBusy?.(id) && !ctx.threadBusy?.(link.rootThreadId)
-      && !threadsHeldForUser(useTaskStore.getState(), [id]).length;
-  }, []);
+  }, [canAnswerChildQuestions, childPhaseForModel, followUpPending, parentFollowUpFor]);
 
   const reportStatus = useCallback((request: ChildAgentRequest): Record<string, unknown> => {
     const ctx = contextRef.current;
@@ -1979,20 +2002,24 @@ export function useChildAgents(context: ChildAgentContext): {
       throw new Error("`cursor` must be the exact nextCursor value from an earlier agent_status result.");
     }
     const offset = typeof rawCursor === "string" ? Number(rawCursor.slice(3)) : 0;
-    // Prioritize questions the parent can act on across the entire page.
+    // Children with open questions the parent can act on come first. The rank
+    // never depends on read state: this response marks mail read, and a child
+    // moving between pages would make the next numeric cursor skip or repeat.
+    // Freshness only decides which messages fill the bounded response.
     const phaseRank: Record<string, number> = { unknown: 3, running: 4, awaiting_review: 5, failed: 6, cancelled: 7, accepted: 8 };
     const ranked = Object.values(linksIncludingPending(ctx.links))
       .filter((link) => link.sessionId === request.sessionId && (!childId || link.childThreadId === childId))
       .map((link) => {
         const mailbox = getChildMailbox(link.childThreadId);
         const messages = mailbox?.messages ?? [];
-        const questions = messages.filter(isOpenChildQuestion);
+        const pending = new Set(pendingQuestionReplies(messages));
+        const questions = messages.filter((message) => isOpenChildQuestion(message) && !pending.has(message.id));
         const unread = messages.filter((message) => message.direction === "toParent" && message.state === "unread");
-        const prioritize = Boolean(childId) || canAnswerChildQuestions(link);
-        const rank = prioritize && questions.some((message) => message.state === "unread") ? 0
-          : prioritize && questions.length ? 1 : unread.length || questions.length ? 2
-            : phaseRank[childReviewPhase(link, taskStatusOf(link.childThreadId))] ?? 9;
-        return { link, rank, questions, unread, prioritize };
+        const phase = childPhaseForModel(link);
+        const prioritize = Boolean(childId) || phase !== "unknown" && canAnswerChildQuestions(link);
+        const rank = questions.length && prioritize ? 0 : phaseRank[phase] ?? 9;
+        const pendingQuestions = childId ? messages.filter((message) => isOpenChildQuestion(message) && pending.has(message.id)) : [];
+        return { link, phase, rank, questions, pendingQuestions, pending, unread, prioritize };
       })
       .sort((left, right) => left.rank - right.rank || right.link.createdAt - left.link.createdAt
         || left.link.childThreadId.localeCompare(right.link.childThreadId));
@@ -2006,31 +2033,36 @@ export function useChildAgents(context: ChildAgentContext): {
       plan.messages.push(...selected);
       budget -= selected.length;
     };
+    // Unread actionable questions, then all other unread mail, then reminders
+    // of earlier open questions: a reminder never crowds out unread mail.
     for (const plan of plans) {
       if (plan.prioritize) include(plan, plan.questions.filter((message) => message.state === "unread"));
     }
+    for (const plan of plans) include(plan, plan.unread);
     for (const plan of plans) {
       if (plan.prioritize) include(plan, plan.questions);
     }
-    for (const plan of plans) include(plan, plan.unread);
     for (const plan of plans) include(plan, plan.questions);
+    if (childId) for (const plan of plans) include(plan, plan.pendingQuestions);
     markParentMessagesRead(plans);
     let delivered = 0;
-    const children = plans.map(({ link, questions, unread, messages }) => {
+    let replyPendingShown = false;
+    const children = plans.map(({ link, questions, unread, messages, pending }) => {
       const entry = describeChild(link, Boolean(childId), Number(request.arguments.guidanceOffset ?? 0));
       delivered += messages.length;
-      if (messages.length) entry.messages = messages.map(mailMessageForModel);
+      if (messages.some((message) => pending.has(message.id) && isOpenChildQuestion(message))) replyPendingShown = true;
+      if (messages.length) entry.messages = childMailForModel(messages, pending);
       const unreadLeft = unread.length - messages.filter((message) => message.state === "unread").length;
       if (unreadLeft > 0) entry.unreadRemaining = unreadLeft;
-      const shownQuestions = messages.filter(isOpenChildQuestion).length;
+      const shownQuestions = messages.filter((message) => isOpenChildQuestion(message) && !pending.has(message.id)).length;
       if (questions.length > shownQuestions) entry.unansweredRemaining = questions.length - shownQuestions;
       return entry;
     });
     const rest = ranked.slice(offset + page.length);
     const omittedByPhase: Record<string, number> = {};
-    for (const { link, questions } of rest) {
-      const phase = questions.length ? "needs_response" : childReviewPhase(link, taskStatusOf(link.childThreadId));
-      omittedByPhase[phase] = (omittedByPhase[phase] ?? 0) + 1;
+    for (const { phase, questions, prioritize } of rest) {
+      const bucket = questions.length && prioritize ? "needs_response" : phase;
+      omittedByPhase[bucket] = (omittedByPhase[bucket] ?? 0) + 1;
     }
     return {
       children,
@@ -2038,33 +2070,35 @@ export function useChildAgents(context: ChildAgentContext): {
       ...(rest.length ? { omittedChildren: rest.length, omittedByPhase, nextCursor: `p1:${offset + page.length}`,
         omittedNote: "More children follow. Pass nextCursor to agent_status for the next page, or childId to inspect one." } : {}),
       ...(offset ? { pageOffset: offset, pageNote: "Paging is by current attention order; children can move between pages as their state changes." } : {}),
-      ...(delivered ? { messagesNote: "Unanswered questions remain available until an answer is delivered or the work is accepted. Answer with send_agent_message using replyTo; repeatedly polling is not an answer." } : {}),
+      ...(delivered ? { messagesNote: `Use send_agent_message with replyTo when a child needs your answer. For failed or cancelled work, collect its result and reply only if the child should do more work.${replyPendingShown ? ` ${REPLY_PENDING_NOTE}` : ""}` } : {}),
     };
-  }, [canAnswerChildQuestions, describeChild, linksIncludingPending]);
+  }, [canAnswerChildQuestions, childPhaseForModel, describeChild, linksIncludingPending]);
 
   /**
-   * Actionable questions from this parent's other V2 children. A wait ends
-   * only for unread questions it can return in the bounded response.
+   * Questions from this parent's other V2 children that it can answer or
+   * collect to confirm first. A wait ends only for unread questions it can
+   * return in the bounded response.
    */
   const siblingQuestionPlans = useCallback((link: ChildAgentLink, unreadOnly: boolean) => {
-    const siblings: Array<{ childThreadId: string; title: string; unansweredQuestions: number; messages: ChildMailMessage[] }> = [];
+    const siblings: Array<{ childThreadId: string; title: string; unansweredQuestions: number; messages: ChildMailMessage[]; collectBeforeReply?: true }> = [];
     if (link.signoff !== "required") return siblings;
     let budget = unreadOnly ? MAX_MESSAGES_PER_CHILD_RESPONSE : MAX_MESSAGES_PER_STATUS;
     for (const sibling of Object.values(linksIncludingPending(contextRef.current.links))) {
       if (sibling.sessionId !== link.sessionId || sibling.rootThreadId !== link.rootThreadId
         || sibling.childThreadId === link.childThreadId || !canAnswerChildQuestions(sibling)) continue;
       const mail = getChildMailbox(sibling.childThreadId)?.messages ?? [];
-      const pendingReplies = pendingChildQuestionReplies(mail);
+      const pendingReplies = pendingQuestionReplies(mail);
       const open = mail.filter((message) => isOpenChildQuestion(message) && !pendingReplies.includes(message.id));
       if (!open.length) continue;
       const messages = unreadOnly ? open.filter((message) => message.state === "unread").slice(0, budget) : [];
       if (unreadOnly && !messages.length) continue;
-      siblings.push({ childThreadId: sibling.childThreadId, title: sibling.title, unansweredQuestions: open.length, messages });
+      siblings.push({ childThreadId: sibling.childThreadId, title: sibling.title, unansweredQuestions: open.length, messages,
+        ...(childPhaseForModel(sibling) === "unknown" ? { collectBeforeReply: true as const } : {}) });
       budget -= unreadOnly ? messages.length : 1;
       if (!budget) break;
     }
     return siblings;
-  }, [canAnswerChildQuestions, linksIncludingPending]);
+  }, [canAnswerChildQuestions, childPhaseForModel, linksIncludingPending]);
 
   const siblingQuestionsForModel = useCallback((link: ChildAgentLink, unreadOnly = false) => {
     const plans = siblingQuestionPlans(link, unreadOnly);
@@ -2104,31 +2138,36 @@ export function useChildAgents(context: ChildAgentContext): {
     assertCollectionCurrent();
     const readSiblingQuestions = (current: ChildAgentLink): Record<string, unknown> | null => {
       // Let the requested child's own new question take precedence. A read
-      // reminder or progress update cannot obscure a new question elsewhere.
-      if (canAnswerChildQuestions(current) && getChildMailbox(childId)?.messages
-        .some((message) => message.state === "unread" && isOpenChildQuestion(message))) return null;
+      // reminder, a pending reply or a progress update cannot obscure a new
+      // question elsewhere.
+      const mail = getChildMailbox(childId)?.messages ?? [];
+      const pending = new Set(pendingQuestionReplies(mail));
+      if (canAnswerChildQuestions(current) && mail.some((message) => message.state === "unread"
+        && isOpenChildQuestion(message) && !pending.has(message.id))) return null;
       const siblings = siblingQuestionsForModel(current, true);
       return siblings.length ? {
         ...describeChild(current, true),
         result: "",
         siblingsNeedingResponse: siblings,
-        note: "Another sub-agent has an unread question. Answer it with send_agent_message using the sibling childId and the question id as replyTo, then collect this child again.",
+        note: "Another sub-agent has an unread question. If marked collectBeforeReply, collect that sibling first to confirm its current work. To answer, call send_agent_message with the sibling childId and question id as replyTo, then collect this child again.",
       } : null;
     };
     if (recovery) {
       const current = linksIncludingPending(contextRef.current.links)[childId] ?? link;
       const siblingResponse = recovery === "running" ? readSiblingQuestions(current) : null;
       if (siblingResponse) return { ...siblingResponse, status: recovery, phase: recovery };
-      const { messages, remaining } = takeChildMailForParent(childId, MAX_MESSAGES_PER_CHILD_RESPONSE);
+      const { messages, remaining, replyPending } = takeChildMailForParent(childId, MAX_MESSAGES_PER_CHILD_RESPONSE);
       return {
-        ...describeChild(current, true),
-        childId, status: recovery, phase: recovery, result: "",
-        ...(messages.length ? { messages: messages.map(mailMessageForModel) } : {}),
+        ...describeChild(current, true, 0, recovery),
+        result: "",
+        ...(messages.length ? { messages: childMailForModel(messages, replyPending) } : {}),
         ...(remaining ? { unreadRemaining: remaining } : {}),
-        note: messages.some(isOpenChildQuestion)
-          ? "The child needs a response to its unanswered question. Answer with send_agent_message using replyTo; repeatedly collecting is not an answer."
-          : recovery === "running" ? "The runtime confirms this child is still working. Collect again to wait for its result."
-            : "The runtime cannot confirm this child's current activation. Its slot remains reserved; collect later or Stop it.",
+        ...(replyPending.size ? { replyPendingNote: REPLY_PENDING_NOTE } : {}),
+        note: recovery === "unknown"
+          ? "The runtime cannot confirm this child's current activation. Its slot remains reserved. Collect it later and confirm its current work before replying."
+          : canAnswerChildQuestions(current) && messages.some((message) => isOpenChildQuestion(message) && !replyPending.has(message.id))
+            ? "The child needs a response to its unanswered question. Answer with send_agent_message using replyTo."
+            : "The runtime confirms this child is still working. Collect again to wait for its result.",
       };
     }
     const requested = Number(request.arguments.timeoutSeconds);
@@ -2154,16 +2193,19 @@ export function useChildAgents(context: ChildAgentContext): {
           const siblingResponse = readSiblingQuestions(current);
           if (siblingResponse) return siblingResponse;
         }
-        const { messages, remaining: unreadRemaining } = takeChildMailForParent(childId, MAX_MESSAGES_PER_CHILD_RESPONSE);
+        const { messages, remaining: unreadRemaining, replyPending } = takeChildMailForParent(childId, MAX_MESSAGES_PER_CHILD_RESPONSE);
         if (messages.length) {
           return {
             ...describeChild(current, true),
             result: "",
-            messages: messages.map(mailMessageForModel),
+            messages: childMailForModel(messages, replyPending),
             ...(unreadRemaining ? { unreadRemaining } : {}),
-            note: messages.some(isOpenChildQuestion)
-              ? "The sub-agent needs your response. Answer with send_agent_message using the question id as replyTo, then collect again. Unresolved questions remain available."
-              : "The sub-agent sent a mailbox message. Collect again to wait for its result.",
+            ...(replyPending.size ? { replyPendingNote: REPLY_PENDING_NOTE } : {}),
+            note: childPhaseForModel(current) === "unknown"
+              ? "The child's current activation is unconfirmed. Collect it to confirm its work before replying."
+              : canAnswerChildQuestions(current) && messages.some((message) => isOpenChildQuestion(message) && !replyPending.has(message.id))
+                ? "The sub-agent needs your response. Answer with send_agent_message using the question id as replyTo, then collect again. Unresolved questions remain available."
+                : "The sub-agent sent a mailbox message. Collect again to wait for its result.",
           };
         }
         if (!working) break;
@@ -2280,21 +2322,29 @@ export function useChildAgents(context: ChildAgentContext): {
     const siblings = siblingQuestionsForModel(current);
     // Read after transcript recovery and the revision check. The result and
     // its current questions then return together without consuming stale mail.
-    const { messages: settledMessages, remaining: settledUnreadRemaining } = takeChildMailForParent(childId, MAX_MESSAGES_PER_CHILD_RESPONSE);
+    const { messages: settledMessages, remaining: settledUnreadRemaining, replyPending } = takeChildMailForParent(childId, MAX_MESSAGES_PER_CHILD_RESPONSE);
     return {
       // Report what remains after this read, not what it just satisfied.
       ...describeChild(reviewedToken ? { ...current, collectedReviewToken: reviewedToken } : current, true),
       result: text,
       ...(siblings.length ? { siblingsNeedingResponse: siblings } : {}),
-      ...(settledMessages.length ? { messages: settledMessages.map(mailMessageForModel) } : {}),
+      ...(settledMessages.length ? { messages: childMailForModel(settledMessages, replyPending) } : {}),
       ...(settledUnreadRemaining ? { unreadRemaining: settledUnreadRemaining } : {}),
-      ...(settledMessages.some(isOpenChildQuestion) ? {
-        questionsNote: "Unanswered questions accompany this finished result. Answer with send_agent_message using replyTo if more work is needed, or accept this exact result to explicitly close them.",
+      ...(replyPending.size ? { replyPendingNote: REPLY_PENDING_NOTE } : {}),
+      // Failed or cancelled work is resolved by collecting it, never by acceptance.
+      ...(settledMessages.some((message) => isOpenChildQuestion(message) && !replyPending.has(message.id)) ? {
+        questionsNote: phase === "awaiting_review"
+          ? "Unanswered questions accompany this finished result. Answer with send_agent_message using replyTo if more work is needed, or accept this exact result to explicitly close them."
+          : current.stopOrigin === "user" ? "The user stopped this child. Its questions are available for context."
+            : "Unanswered questions accompany this result. Answer with send_agent_message using replyTo only if this child should do more work; that continues it.",
       } : {}),
-      ...(current.signoff !== "required" ? {} : reviewedToken ? { reviewToken: reviewedToken } : {
-        acceptanceNote: "A stable identity for this settled result is not yet available. Collect again once runtime evidence is available; do not accept an older result.",
-      }),
-      ...(attemptWithoutTurn ? { note: current.signoff === "required"
+      ...(current.signoff === "required" && reviewedToken ? { reviewToken: reviewedToken } : {}),
+      ...(current.signoff === "required" && !reviewedToken ? {
+        ...(phase === "awaiting_review" ? {
+          acceptanceNote: "A stable identity for this settled result is not yet available. Collect again once runtime evidence is available before accepting it.",
+        } : { reviewNote: "Collect again once runtime evidence confirms this settled result." }),
+      } : {}),
+      ...(attemptWithoutTurn ? { note: phase === "awaiting_review"
         ? "The latest attempt ended without producing a turn of its own; earlier output is not its result. Inspect the error, then continue or accept knowingly."
         : "The latest attempt ended without producing a turn of its own; earlier output is not its result. Inspect the error and spawn a replacement if more work is needed." }
         : !text ? { note: "No final text was returned. Inspect the sub-agent task for tool activity or errors." } : {}),
@@ -2303,7 +2353,7 @@ export function useChildAgents(context: ChildAgentContext): {
         nextStep: "This turn is finished and awaiting your review. Accept it with accept_agent when satisfied, or continue the same child with send_agent_message.",
       } : {}),
     };
-  }, [canAnswerChildQuestions, childObservationGuard, describeChild, followUpPending, linksIncludingPending, parentFollowUpFor,
+  }, [canAnswerChildQuestions, childObservationGuard, childPhaseForModel, describeChild, followUpPending, linksIncludingPending, parentFollowUpFor,
     recoverCurrentChild, siblingQuestionPlans, siblingQuestionsForModel, updateLink]);
 
   /**
@@ -2328,7 +2378,7 @@ export function useChildAgents(context: ChildAgentContext): {
       // never be followed by an automatic follow-up turn, and an in-flight
       // follow-up start sees this generation change and aborts.
       childStopGenerationRef.current.set(childThreadId, (childStopGenerationRef.current.get(childThreadId) ?? 0) + 1);
-      cancelQueuedForChild(childThreadId, origin === "user" ? "The user stopped this sub-agent." : "The parent cancelled this sub-agent.");
+      cancelQueuedForChild(childThreadId, origin === "user" ? "The user stopped this sub-agent." : PARENT_CANCEL_GUIDANCE_REASON);
       updateLink(childThreadId, (current) => ({ ...current, stopOrigin: origin }));
       // A follow-up still preparing aborts on the generation change above and
       // restores its previous outcome itself; its link is transiently pending.
@@ -2427,7 +2477,7 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     // An unconfirmed activation may still be running; it needs a real cutoff.
     if (!childNeedsCutoff(link)) {
-      const cancelled = cancelQueuedForChild(childId, "The parent cancelled this sub-agent.");
+      const cancelled = cancelQueuedForChild(childId, PARENT_CANCEL_GUIDANCE_REASON);
       if (followUpsInFlightRef.current.has(childId)) {
         await stopChildAgent(link.rootThreadId, childId, "parent", request);
         return { childId, status: "cancelled", note: "The follow-up that was starting was cancelled." };
@@ -3087,7 +3137,7 @@ export function useChildAgents(context: ChildAgentContext): {
     recordParentActivity(current.rootThreadId, `child-guidance-${childId}-${message.id}`, `Message to sub-agent: ${current.title}`, message.text, childId, "sendInput", "agent", message.createdAt);
     const running = isChildActive(taskStatusOf(childId)) || recovery === "running";
     if (running) {
-      if ((childReadersRef.current.get(childId) ?? 0) > 0) {
+      if (childReadersRef.current.get(childId)?.size) {
         // The child is blocked in read_parent_messages and pulls it now.
         const pulled = await waitForMailbox(() => getChildMailbox(childId)?.messages.find((entry) => entry.id === message.id)?.state !== "queued", 2_000);
         // A read superseded before consuming it must not strand live guidance.
@@ -3359,18 +3409,26 @@ export function useChildAgents(context: ChildAgentContext): {
         || currentTask?.activeTurnId !== previousTask?.activeTurnId
         || currentTask?.lastCompletedTurnId !== previousTask?.lastCompletedTurnId) cancelSupersededRead();
     });
-    readers.set(owner.childId, (readers.get(owner.childId) ?? 0) + 1);
+    const readReady = () => !readStillCurrent() || deliverableGuidance(owner.childId).messages.length > 0
+      || replayKey !== undefined && hasChildReadReplay(owner.childId, replayKey);
     try {
-      if (!deliverableGuidance(owner.childId).messages.length && seconds > 0) {
-        await waitForMailbox(() => !readStillCurrent() || deliverableGuidance(owner.childId).messages.length > 0
-          || replayKey !== undefined && hasChildReadReplay(owner.childId, replayKey), seconds * 1000, abort.signal);
+      if (seconds > 0 && !readReady()) {
+        const waits = readers.get(owner.childId) ?? new Set<() => boolean>();
+        const isWaiting = () => !abort.signal.aborted && !readReady();
+        waits.add(isWaiting);
+        readers.set(owner.childId, waits);
+        parentEvidenceChangedRef.current();
+        try {
+          await waitForMailbox(readReady, seconds * 1000, abort.signal);
+        } finally {
+          waits.delete(isWaiting);
+          if (!waits.size) readers.delete(owner.childId);
+          parentEvidenceChangedRef.current();
+        }
       }
     } finally {
       childWaitersRef.current.delete(cancelSupersededRead);
       unsubscribeTask();
-      const remaining = (readers.get(owner.childId) ?? 1) - 1;
-      if (remaining > 0) readers.set(owner.childId, remaining);
-      else readers.delete(owner.childId);
     }
     if (!await isChildAgentRequestActive(request)) throw new Error("This mailbox read belongs to a retired bridge registration.");
     const current = childOwnerForSession(request.sessionId);

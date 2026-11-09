@@ -73,7 +73,7 @@ export class HostPublishers {
       publisher.seq = 1;
       this.bridge.publish({ generation: this.bridge.generation, threadId, epoch: publisher.epoch, frames: [{ seq: 1, frame: {
         status: snapshot.status, availability: snapshot.availability, activeTurnId: snapshot.activeTurnId,
-        workingStartedAt: snapshot.workingStartedAt, error: snapshot.error,
+        assistantOutputActive: snapshot.assistantOutputActive, workingStartedAt: snapshot.workingStartedAt, error: snapshot.error,
         reset: { messages: snapshot.messages, activities: snapshot.activities }, approvals: snapshot.approvals,
         queuedTurns: snapshot.queuedTurns, history: snapshot.history,
       } }] });

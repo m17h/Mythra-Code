@@ -6,7 +6,8 @@ const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.str
 export function diffProjection(previous: ThreadSnapshot, next: ThreadSnapshot): ThreadFrame | null {
   if (same(previous, next)) return null;
   const frame: ThreadFrame = { status: next.status, availability: next.availability,
-    activeTurnId: next.activeTurnId, workingStartedAt: next.workingStartedAt, error: next.error };
+    activeTurnId: next.activeTurnId, assistantOutputActive: next.assistantOutputActive,
+    workingStartedAt: next.workingStartedAt, error: next.error };
   const oldMessages = new Map(previous.messages.map((message) => [message.id, message]));
   const oldActivities = new Map(previous.activities.map((activity) => [activity.id, activity]));
   const reset = previous.messages.some((message) => !next.messages.some((row) => row.id === message.id))

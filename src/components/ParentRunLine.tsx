@@ -22,12 +22,13 @@ export function ParentRunLine({ view, continueLabel, onContinue, onDismiss }: {
   onDismiss: () => void;
 }) {
   const paused = view.kind === "paused";
+  const showUsage = !paused && !view.followUpLimitReached;
   return (
     <div className={`parent-run-line ${view.kind}`}>
       {paused || view.attention ? <CirclePause size={12} aria-hidden="true" /> : <LoaderCircle className="spin" size={12} aria-hidden="true" />}
-      <div className="parent-run-line-copy" role="status" title={[view.title, view.detail, !paused && USAGE_NOTE].filter(Boolean).join(" ")}>
+      <div className="parent-run-line-copy" role="status" title={[view.title, view.detail, showUsage && USAGE_NOTE].filter(Boolean).join(" ")}>
         <span>{view.title}</span>
-        {view.detail && <small>{view.detail}{!paused && <span className="parent-run-line-usage"> {USAGE_NOTE}</span>}</small>}
+        {view.detail && <small>{view.detail}{showUsage && <span className="parent-run-line-usage"> {USAGE_NOTE}</span>}</small>}
       </div>
       <div className="parent-run-line-actions">
         {paused && <button type="button" className="primary" disabled={view.continueBlocked} onClick={onContinue}
