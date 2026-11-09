@@ -4,6 +4,10 @@ export type GuideAction = "addProject" | "openChats" | "checkAgain";
 export interface RemoteGuide { kind: "opening" | "nothingShared" | "noProjects" | "noProviders" | "viewOnly" | "chooseProject"; title: string; body: string; actions: GuideAction[] }
 const DEVICES = "Settings → Connections → Devices";
 
+export function remoteWorkAccessHint(name: string): string {
+  return `On ${name}, open ${DEVICES}. Under Connected computers, open More next to this device and turn on its Work switch.`;
+}
+
 export function remoteGuide({ name, loading, workspaces, chosenWorkspace, providers, canWork, canAddProjects }: {
   name: string; loading: boolean;
   /** Null until the host has answered. */
@@ -25,6 +29,6 @@ export function remoteGuide({ name, loading, workspaces, chosenWorkspace, provid
   if (providers && !providers.some((provider) => provider.ready)) return { kind: "noProviders", title: `${name} isn't signed in to an AI service yet`,
     body: `Work runs on ${name}, with its own accounts, so nothing can start until one is connected there. On ${name}, open Settings → Accounts & connections and sign in. Then check again here.`, actions: ["checkAgain"] };
   if (!canWork) return { kind: "viewOnly", title: `This device can look at ${name}, but not work on it`,
-    body: `To send messages from here, on ${name} turn on Work for this device in ${DEVICES}.`, actions: ["checkAgain"] };
+    body: remoteWorkAccessHint(name), actions: ["checkAgain"] };
   return null;
 }

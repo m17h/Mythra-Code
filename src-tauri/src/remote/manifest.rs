@@ -584,6 +584,12 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
     })
 }
 pub(super) fn access(op: &str, grant: &DeviceGrant) -> Result<(), WireError> {
+    if op == "work.inspect" && grant.view && !grant.work {
+        return Err(WireError::new(
+            "work_disabled",
+            "Work is off for this device. To turn it on, open Settings → Connections → Devices on the other device.",
+        ));
+    }
     // Refuse even an old journal's native dispatch; these are host-only, not
     // merely absent from the renderer's menu or its accepted field table.
     if matches!(op, "git.autoPublish.set" | "git.autoPublish.retry") {
@@ -626,7 +632,6 @@ pub(super) fn access(op: &str, grant: &DeviceGrant) -> Result<(), WireError> {
             || manage
             || shell && !matches!(op,"terminal.list"|"terminal.read"|"terminal.status"|"terminal.attach")
             || op == "steer.deliver"
-            || op == "work.inspect"
             || op == "preview.links"
             || super::work::MUTATIONS.contains(&op))
             && !grant.work

@@ -228,30 +228,46 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
     await runner.waitForThreadStopTarget?.(threadId);
     assertTarget({ threadId }, request.device, ctx);
     const task = useTaskStore.getState().tasks[threadId], stop = runner.getThreadStopTarget(threadId);
-    const register = (kind: "turn" | "start" | "parent" | "approval" | "question", extra: { stop?: RemoteStopSnapshot; approval?: NonNullable<typeof task>["approvals"][number] }) =>
-      targets.register({ device: request.device, workspaceId: ctx.activeWorkspace!.id, provider: ctx.effectiveSettings.provider, ...extra }, kind);
-    const approvals: WireWorkApproval[] = [];
+    const register = async (kind: "turn" | "start" | "parent" | "approval" | "question", extra: { stop?: RemoteStopSnapshot; approval?: NonNullable<typeof task>["approvals"][number] }) => {
+      try {
+        return await targets.register({ device: request.device, workspaceId: ctx.activeWorkspace!.id, provider: ctx.effectiveSettings.provider, ...extra }, kind);
+      } catch (reason) {
+        const code = reason && typeof reason === "object" && "code" in reason ? reason.code : undefined;
+        // Native ownership can end or be unavailable independently of Work access.
+        if (code === "stale_target" || code === "unsupported") return undefined;
+        if (code === "busy") throw new HostReadError("busy", "Too many requests are waiting. Try again shortly.");
+        throw reason;
+      }
+    };
+    const approvals: { approval: NonNullable<typeof task>["approvals"][number]; wire: WireWorkApproval }[] = [];
     for (const approval of (task?.approvals ?? []).slice(0, 32)) {
       if (isQuestion(approval)) {
         let questions;
         try { questions = requestQuestions(approval); } catch { continue; }
         const target = await register("question", { approval });
-        approvals.push({ target, summary: "The agent needs your input.", canAllowOnce: false, canDeny: true, questions });
+        if (target) approvals.push({ approval, wire: { target, summary: "The agent needs your input.", canAllowOnce: false, canDeny: true, questions } });
       } else {
         const policy = approvalPolicy(approval);
-        if (policy && (policy.canAllowOnce || policy.canDeny)) approvals.push({ target: await register("approval", { approval }), ...policy });
+        if (policy && (policy.canAllowOnce || policy.canDeny)) {
+          const target = await register("approval", { approval });
+          if (target) approvals.push({ approval, wire: { target, ...policy } });
+        }
       }
       assertTarget({ threadId }, request.device, ctx);
     }
     const liveParent = useTaskStore.getState().parentRuns[threadId];
     const stoppable = task?.status === "running" || task?.status === "starting" || stop.workflowRunId || liveParent;
     const stopTarget = stoppable ? await register(stop.ownerHandle ? "parent" : stop.turnId ? "turn" : stop.workflowRunId || liveParent ? "parent" : "start", { stop }) : undefined;
-    const canSteer = task?.status === "running" && Boolean(stop.turnId) && !isAssistantOutputActive(task) && !stop.workflowRunId;
-    const steerTarget = canSteer ? await register("turn", { stop }) : undefined;
     assertTarget({ threadId }, request.device, ctx);
-    if (stopTarget && !sameStop(stop, runner.getThreadStopTarget(threadId))) throw stale();
+    const steerTarget = task?.status === "running" && stop.turnId && !isAssistantOutputActive(task) && !stop.workflowRunId
+      ? await register("turn", { stop }) : undefined;
+    assertTarget({ threadId }, request.device, ctx);
+    const sameTurn = (stopTarget || steerTarget) && sameStop(stop, runner.getThreadStopTarget(threadId));
+    const liveTask = useTaskStore.getState().tasks[threadId];
+    const canSteer = Boolean(sameTurn && steerTarget) && liveTask?.status === "running" && !isAssistantOutputActive(liveTask);
     return { threadId, provider: ctx.effectiveSettings.provider, canSend: !ctx.worktreeBusy, canQueue: true,
-      canSteer, ...(stopTarget ? { stop: stopTarget } : {}), ...(steerTarget ? { steer: steerTarget } : {}), approvals };
+      canSteer, ...(sameTurn && stopTarget ? { stop: stopTarget } : {}), ...(canSteer && steerTarget ? { steer: steerTarget } : {}),
+      approvals: approvals.flatMap(({ approval, wire }) => liveTask?.approvals.includes(approval) ? [wire] : []) };
   }
   async function mutate(request: HostRequest, args: Record<string, unknown>, id: RemoteOperationIdentity): Promise<RemoteWorkResult> {
     await refresh(id.device);

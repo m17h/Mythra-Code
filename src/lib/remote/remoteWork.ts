@@ -1,6 +1,8 @@
 import { endRemoteTerminals } from "./remoteTerminal";
 import { forgetPanels } from "./panelCache";
 import { create } from "zustand";
+import { useActiveMachine } from "./activeMachine";
+import { useRemoteDevices } from "./devices";
 import { keepRemoteSessions, openRemoteThread, refreshRemoteDevice, useRemoteStore } from "./remoteStore";
 import {
   admitToOutbox, markPromptRejected, MAX_PROMPT_CHARS, newThreadDraftKey, nextOperationSequence, outboxIsFull, removeOutboxEntry, removeRemoteEcho,
@@ -33,27 +35,80 @@ export function refusalText(code: string, name: string): string {
   }
 }
 
-interface RemoteWorkStore {
-  /** What the host currently allows for the thread on screen, per device. */
-  capabilities: Record<string, WireWorkCapabilities | null | undefined>;
-}
+type RemoteWorkInspection = { threadId: string } & (
+  | { status: "pending" | "unavailable" | "denied" }
+  | { status: "ready"; capabilities: WireWorkCapabilities }
+);
+interface RemoteWorkStore { capabilities: Record<string, RemoteWorkInspection | undefined> }
 export const useRemoteWork = create<RemoteWorkStore>(() => ({ capabilities: {} }));
 
-let inspection = 0;
-/** Bound to the host's current grant and targets. Nothing is inferred locally,
- * and when the host can't say, this device gets no controls. */
-export async function refreshRemoteCapabilities(device: string, threadId: string): Promise<void> {
-  const request = ++inspection;
-  let result: WireWorkCapabilities | null = null;
-  try {
-    const value = await viewerRequest<WireWorkCapabilities>(device, "work.inspect", { threadId });
-    result = value?.threadId === threadId ? value : null;
-  } catch { result = null; }
-  if (request === inspection) useRemoteWork.setState((state) => ({ capabilities: { ...state.capabilities, [device]: result } }));
+const INSPECT_RETRY_MS = [1500, 5000];
+interface InspectionRequest { timer?: ReturnType<typeof setTimeout> }
+interface WatchedThread { threadId: string; request?: InspectionRequest }
+const watchedThreads = new Map<string, WatchedThread>();
+function publishInspection(device: string, result: RemoteWorkInspection) {
+  useRemoteWork.setState((state) => ({ capabilities: { ...state.capabilities, [device]: result } }));
 }
-export function clearRemoteCapabilities(device: string): void {
-  inspection += 1;
-  useRemoteWork.setState((state) => ({ capabilities: { ...state.capabilities, [device]: undefined } }));
+function cancelInspection(thread: WatchedThread | undefined) {
+  const timer = thread?.request?.timer;
+  if (timer !== undefined) clearTimeout(timer);
+}
+/** Only the visible conversation can start or retire an inspection scope. */
+export function watchRemoteCapabilities(device: string, threadId: string): () => void {
+  cancelInspection(watchedThreads.get(device));
+  const thread: WatchedThread = { threadId };
+  watchedThreads.set(device, thread);
+  publishInspection(device, { threadId, status: "pending" });
+  return () => {
+    if (watchedThreads.get(device) !== thread) return;
+    cancelInspection(thread);
+    watchedThreads.delete(device);
+    useRemoteWork.setState((state) => {
+      const capabilities = { ...state.capabilities };
+      delete capabilities[device];
+      return { capabilities };
+    });
+  };
+}
+
+/** Only an explicit host Work refusal proves the viewer is view-only. */
+export async function refreshRemoteCapabilities(device: string, threadId: string): Promise<void> {
+  const thread = watchedThreads.get(device);
+  const selected = () => useActiveMachine.getState().machine === device
+    && useRemoteStore.getState().devices[device]?.threadId === threadId
+    && !useRemoteOutbox.getState().compose[device]
+    && useRemoteDevices.getState().snapshot?.devices.some((entry) => entry.fingerprint === device && entry.state === "connected");
+  if (!thread || thread.threadId !== threadId || !selected()) return;
+  cancelInspection(thread);
+  const request: InspectionRequest = {};
+  thread.request = request;
+  const current = () => watchedThreads.get(device) === thread && thread.request === request && selected();
+  if (useRemoteWork.getState().capabilities[device]?.status === "unavailable") {
+    publishInspection(device, { threadId, status: "pending" });
+  }
+
+  const inspect = async (attempt: number) => {
+    if (!current()) return;
+    let result: RemoteWorkInspection = { threadId, status: "unavailable" };
+    try {
+      const value = await viewerRequest<WireWorkCapabilities>(device, "work.inspect", { threadId });
+      if (value?.threadId === threadId && typeof value.canSend === "boolean" && typeof value.canQueue === "boolean"
+        && typeof value.canSteer === "boolean" && Array.isArray(value.approvals)) {
+        result = { threadId, status: "ready", capabilities: value };
+      }
+    } catch (reason) {
+      if (viewerErrorCode(reason) === "work_disabled") result = { threadId, status: "denied" };
+    }
+    if (!current()) return;
+    publishInspection(device, result);
+    if (result.status === "unavailable" && attempt < INSPECT_RETRY_MS.length && current()) {
+      request.timer = setTimeout(() => {
+        request.timer = undefined;
+        void inspect(attempt + 1);
+      }, INSPECT_RETRY_MS[attempt]);
+    }
+  };
+  await inspect(0);
 }
 
 /** Once per session, resume above whatever the host has seen from this device. */

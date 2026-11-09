@@ -119,6 +119,7 @@ fn outcome(value: &str) -> &'static str {
         "hosting_off" => "hosting_off",
         "refused" => "refused",
         "forbidden" => "forbidden",
+        "work_disabled" => "work_disabled",
         "not_paired" => "not_paired",
         "invalid" => "invalid",
         "unsupported" => "unsupported",

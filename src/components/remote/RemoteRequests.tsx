@@ -17,7 +17,7 @@ function formQuestions(questions: WireQuestion[]): FormQuestion[] {
 const hasQuestions = (approval: WireWorkApproval) => Boolean(approval.questions?.length);
 
 /** The request a message's questions belong to, if this device may answer it. */
-function approvalFor(capabilities: WireWorkCapabilities | null | undefined, questions: WireQuestion[]): WireWorkApproval | undefined {
+function approvalFor(capabilities: WireWorkCapabilities | undefined, questions: WireQuestion[]): WireWorkApproval | undefined {
   const ids = new Set(questions.map((question) => question.id));
   return capabilities?.approvals.find((approval) => approval.questions?.some((question) => ids.has(question.id)));
 }
@@ -41,7 +41,10 @@ function QuestionAnswer({ scope, approval }: { scope: RemoteThreadScope; approva
  * without one, this says where to answer instead. */
 export function RemoteMessageQuestions({ message, questions }: { message: ChatMessage; questions: WireQuestion[] }) {
   const scope = useContext(RemoteThreadContext);
-  const capabilities = useRemoteWork((state) => scope ? state.capabilities[scope.device] : undefined);
+  const capabilities = useRemoteWork((state) => {
+    const result = scope?.connected ? state.capabilities[scope.device] : undefined;
+    return result?.status === "ready" && result.threadId === scope?.threadId ? result.capabilities : undefined;
+  });
   const name = scope?.name ?? "the other device";
   const approval = approvalFor(capabilities, questions);
   return <section className="agent-questions remote-question" aria-label={`Questions on ${name}`} data-message={message.id}>
@@ -82,19 +85,22 @@ function ApprovalRow({ scope, approval }: { scope: RemoteThreadScope; approval: 
 export function RemoteRequests({ scope, summaries, capabilities, questionsInTimeline }: {
   scope: RemoteThreadScope;
   summaries: WireApproval[];
-  capabilities: WireWorkCapabilities | null | undefined;
+  capabilities: WireWorkCapabilities | undefined;
   questionsInTimeline: ReadonlySet<string>;
 }) {
   const actionable = capabilities?.approvals ?? [];
   const decisions = actionable.filter((approval) => !hasQuestions(approval));
   const looseQuestions = actionable.filter((approval) => hasQuestions(approval)
     && !approval.questions?.some((question) => questionsInTimeline.has(question.id)));
-  const hostOnly = summaries.slice(actionable.length);
-  if (!decisions.length && !looseQuestions.length && !hostOnly.length) return null;
+  // Timeline summaries and actionable requests have no shared identity.
+  const hasHostOnly = summaries.length > actionable.length;
+  if (!decisions.length && !looseQuestions.length && !hasHostOnly) return null;
   return <div className="remote-banner remote-requests" role="status">
     <strong>Waiting on you</strong>
     {decisions.map((approval) => <ApprovalRow key={approval.target.handle} scope={scope} approval={approval} />)}
     {looseQuestions.map((approval) => <QuestionAnswer key={approval.target.handle} scope={scope} approval={approval} />)}
-    {hostOnly.map((entry) => <p key={entry.id}>{namingDevice(entry.summary, scope.name)}{entry.summary.includes("Continue on") ? "" : ` Continue on ${scope.name} to answer this request.`}</p>)}
+    {hasHostOnly && (actionable.length
+      ? <p>Check {scope.name} for other requests.</p>
+      : summaries.map((entry) => <p key={entry.id}>{namingDevice(entry.summary, scope.name)}{entry.summary.includes("Continue on") ? "" : ` Continue on ${scope.name} to answer this request.`}</p>))}
   </div>;
 }
