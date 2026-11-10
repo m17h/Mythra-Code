@@ -456,8 +456,9 @@ interface TaskStoreState {
   /** Open managed parent runs by root thread. Absent for almost every thread. */
   parentRuns: Record<string, ParentRun>;
   updateParentRun: (threadId: string, update: (run: ParentRun | undefined) => ParentRun | null | undefined) => void;
-  /** The user ended this run: nothing may start for it afterwards. */
-  stopParentRun: (threadId: string, retirement: ParentRunRetirement) => void;
+  /** The user ended this run: nothing may start for it afterwards. A disarmed
+   * cutoff record can retain removal ownership until Stop is confirmed. */
+  stopParentRun: (threadId: string, retirement: ParentRunRetirement, pendingCutoff?: ParentRun) => void;
   setActiveThread: (threadId: string | null) => void;
   ensureTask: (threadId: string, workspacePath?: string) => void;
   hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string, history?: ThreadHistoryState, readBoundary?: HistoryReadBoundary, options?: HistoryHydrationOptions) => void;
@@ -1019,12 +1020,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const parentRuns = withParentRun(state.parentRuns, threadId, update(state.parentRuns[threadId]));
     return parentRuns === state.parentRuns ? state : { parentRuns };
   }),
-  stopParentRun: (threadId, retirement) => {
+  stopParentRun: (threadId, retirement, pendingCutoff) => {
     parentRunStopEpochs.set(threadId, parentRunStopEpoch(threadId) + 1);
     parentRunRetirements.set(threadId, retirement);
     try {
       set((state) => {
-        const parentRuns = withParentRun(state.parentRuns, threadId, null);
+        // Never publish a transient absent run while Stop still awaits its
+        // cutoff: synchronous subscribers can auto-archive on that absence.
+        const parentRuns = withParentRun(state.parentRuns, threadId, pendingCutoff ?? null);
         return parentRuns === state.parentRuns ? state : { parentRuns };
       });
     } finally {

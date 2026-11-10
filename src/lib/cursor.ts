@@ -138,6 +138,12 @@ export function isCursorTurnActive(threadId: string): Promise<boolean> {
   return invoke<boolean>("cursor_turn_active", { threadId });
 }
 
+/** Native proof that this thread has no Cursor start settling and no live or
+ * cutoff-uncertain turn process. Read-only recovery evidence. */
+export function isCursorTurnSettled(threadId: string): Promise<boolean> {
+  return invoke<boolean>("cursor_turn_settled", { threadId });
+}
+
 /** Exact native identity of a thread's latest Cursor start/turn, if any. */
 export interface CursorTurnState {
   turnId: string;

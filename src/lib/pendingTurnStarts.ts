@@ -2,6 +2,19 @@ export interface PendingTurnStart {
   cancelRequested: boolean;
 }
 
+// Shared evidence survives view navigation, but intentionally not renderer
+// replacement. A restored UI 'starting' flag is not a live JS preparation.
+const activeStarts = new Map<string, Set<PendingTurnStart>>();
+const startRevisions = new Map<string, number>();
+
+export function hasPendingTurnStart(threadId: string): boolean {
+  return Boolean(activeStarts.get(threadId)?.size);
+}
+
+export function pendingTurnStartRevision(threadId: string): number {
+  return startRevisions.get(threadId) ?? 0;
+}
+
 /**
  * Registry of turn-start RPCs that are still in flight, keyed by thread id.
  *
@@ -19,6 +32,10 @@ export class PendingTurnStarts {
   begin(threadId: string): PendingTurnStart {
     const pending: PendingTurnStart = { cancelRequested: false };
     this.starts.set(threadId, pending);
+    const active = activeStarts.get(threadId) ?? new Set<PendingTurnStart>();
+    active.add(pending);
+    activeStarts.set(threadId, active);
+    startRevisions.set(threadId, pendingTurnStartRevision(threadId) + 1);
     return pending;
   }
 
@@ -41,6 +58,11 @@ export class PendingTurnStarts {
    */
   finish(threadId: string, pending: PendingTurnStart): boolean {
     if (this.starts.get(threadId) === pending) this.starts.delete(threadId);
+    const active = activeStarts.get(threadId);
+    if (active?.delete(pending)) {
+      if (!active.size) activeStarts.delete(threadId);
+      startRevisions.set(threadId, pendingTurnStartRevision(threadId) + 1);
+    }
     return pending.cancelRequested;
   }
 }

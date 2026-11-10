@@ -353,6 +353,10 @@ function RemoteThreadRow({ device, name, thread, workspaceName, timeline, select
     });
   };
   const blocked = canWork ? undefined : remoteWorkAccessHint(name);
+  // Only the selected row has a current subscription. Another row's cached
+  // timeline stops updating once it is left, so the polled list is fresher.
+  const liveStatus = selected && timeline?.state === "live" ? timeline.status : thread.status;
+  const working = liveStatus === "starting" || liveStatus === "running";
   return <div className={`thread-row-wrap ${selected ? "active" : ""}`}>
     {renaming ? <div className="thread-rename-row">
       <MessageSquare size={14} />
@@ -365,8 +369,8 @@ function RemoteThreadRow({ device, name, thread, workspaceName, timeline, select
       { label: "Rename", icon: <Pencil size={13} />, disabledReason: blocked, onSelect: () => setRenaming(true) },
       { label: "Copy path", icon: <Copy size={13} />, onSelect: () => onCopyPath() },
       { label: "Fork", icon: <GitFork size={13} />, disabledReason: blocked, onSelect: () => run("thread.fork") },
-      { label: "Archive", icon: <Archive size={13} />, disabledReason: blocked, onSelect: () => run("thread.archive") },
-      { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, disabledReason: blocked, onSelect: () => {
+      { label: "Archive", icon: <Archive size={13} />, disabledReason: blocked ?? (working ? "Stop this thread before archiving it." : undefined), onSelect: () => run("thread.archive") },
+      { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, disabledReason: blocked ?? (working ? "Stop this thread before deleting it." : undefined), onSelect: () => {
         void confirmDialog(`Delete “${title}” from ${name}?\n\nThis can't be undone.`).then((confirmed) => { if (confirmed) run("thread.delete", { confirmed: true }); });
       } },
     ]} />
@@ -817,7 +821,23 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     if (!whole.complete) setNotice(`That conversation is very long, or part of it couldn't be read, so the saved file has only its most recent part.`);
   }, [device, name, thread?.preview, thread?.title, threadId]);
   useEffect(() => {
-    if (inspectingThread) return watchRemoteCapabilities(device, inspectingThread);
+    if (!inspectingThread) return;
+    const unwatch = watchRemoteCapabilities(device, inspectingThread);
+    // Parent ownership can start or retire between provider turns without
+    // changing the task timeline. Keep the visible Stop handle current then,
+    // including quiet conversations whose previous handle has expired.
+    let current = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      if (!current) return;
+      timer = setTimeout(() => {
+        // Refresh checks the currently selected live scope too. Schedule the
+        // next poll after it settles so slow inspections never overlap here.
+        void refreshRemoteCapabilities(device, inspectingThread, { ifIdle: true }).then(schedule, schedule);
+      }, 5_000);
+    };
+    schedule();
+    return () => { current = false; if (timer !== undefined) clearTimeout(timer); unwatch(); };
   }, [device, inspectingThread]);
   useEffect(() => {
     if (!connected) return;
@@ -885,6 +905,9 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     }
     void stopRemoteTurn(device, name, threadId, handle).then((message) => setNotice(message ?? ""));
   }, [capabilities?.stop?.handle, device, name, startTarget, starting, threadId, viewOnly, workStatus, workspaceId]);
+  // Between turns the host offers Stop only while its parent run can still
+  // continue by itself. Sending, queueing and steering keep following `running`.
+  const parentStoppable = !compose && !running && !starting && Boolean(threadId && capabilities?.stop?.handle);
   const dropFiles = useCallback((paths: readonly string[]) => {
     if (!canWork) { setNotice(remoteWorkAccessHint(name)); return; }
     void Promise.all(paths.map((path) => readDroppedFile(path).catch((reason: unknown) => { setNotice(typeof reason === "string" ? reason : "Mythra Code couldn't read that file."); return null; })))
@@ -897,7 +920,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     if (leaving) return;
     setMachineActions({
       dropFiles,
-      stopTurn: () => { if (running || starting) stop(); },
+      stopTurn: () => { if (running || starting || parentStoppable) stop(); },
       newThread: () => { if (workspaceId) setNewThreadTarget(device, newThreadTargetFor(workspaceId)); },
       forkThread: () => {
         // Opens the new conversation, as a local fork does.
@@ -935,9 +958,9 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
       openProject: (id) => { setNewThreadTarget(device, undefined); selectRemoteWorkspace(device, id); },
       openThread: (id) => { setNewThreadTarget(device, undefined); selectRemoteThread(device, id); },
     });
-    useActiveMachine.setState({ remoteRunning: running || starting, remoteThreadOpen: Boolean(threadId), remoteApprovals: timeline?.approvals.length ?? 0 });
+    useActiveMachine.setState({ remoteRunning: running || starting || parentStoppable, remoteThreadOpen: Boolean(threadId), remoteApprovals: timeline?.approvals.length ?? 0 });
     return () => { setMachineActions(null); useActiveMachine.setState({ remoteRunning: false, remoteThreadOpen: false, remoteApprovals: 0 }); };
-  }, [canWork, device, draftKey, dropFiles, exportTranscript, leaving, name, parityTarget, report, reviewWorkflow, revision, running, starting, stop, threadId, timeline?.approvals.length, workspaceId]);
+  }, [canWork, device, draftKey, dropFiles, exportTranscript, leaving, name, parentStoppable, parityTarget, report, reviewWorkflow, revision, running, starting, stop, threadId, timeline?.approvals.length, workspaceId]);
   const storeDraftToken = useCallback((key: string, token: DraftToken | null) => {
     const { [key]: _previous, ...rest } = draftTokenRef.current;
     draftTokenRef.current = token ? { ...rest, [key]: token } : rest;
@@ -1336,6 +1359,8 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
           threadKey={draftKey}
           chatFont={chatFont}
           running={running || starting}
+          childrenRunning={parentStoppable}
+          stopLabel={parentStoppable ? "Stop this thread’s automatic follow-up and its sub-agents" : undefined}
           queueing={running && Boolean(capabilities?.canQueue)}
           canSteer={Boolean(steerHandle)}
           dropActive={dropHover}

@@ -73,7 +73,9 @@ export interface ParentRun {
    */
   wokenQuestions: string[];
   execution: ParentExecution;
-  pause?: { reason: ParentRunPauseReason; detail?: string };
+  /** `stop`: the user pressed Stop and this `start_uncertain` record is its
+   * disarmed cutoff latch, released once the work is confirmed ended. */
+  pause?: { reason: ParentRunPauseReason; detail?: string; stop?: true };
   /**
    * True only in the renderer session that captured this run's delivery
    * context. It is never read back from storage, so a loaded run can never
@@ -302,6 +304,39 @@ function pausedRun(run: ParentRun, reason: ParentRunPauseReason, detail?: string
 
 export { pausedRun as pausedParentRun };
 
+/** Stop's disarmed latch: nothing can resume it, and it holds the thread until
+ * the cutoff (or later native proof) confirms the owned work ended. */
+export function stoppingParentRun(run: ParentRun, detail: string): ParentRun {
+  const paused = pausedRun({ ...run, autoResume: undefined }, "start_uncertain", detail);
+  return { ...paused, pause: { ...paused.pause!, stop: true } };
+}
+
+/**
+ * The run that replaces an uncertainty latch once native evidence proves the
+ * thread's work ended. A Stop latch ends, as a confirmed Stop would. Any other
+ * uncertain dispatch becomes an ordinary dormant pause with no automatic
+ * authority: it holds nothing, still shows owed work, and Continue or Dismiss
+ * remain the user's decision.
+ */
+export function parentRunAfterSettledProof(run: ParentRun): ParentRun | null {
+  if (run.phase !== "paused" || run.pause?.reason !== "start_uncertain") return run;
+  if (run.pause.stop) return null;
+  return pausedRun({ ...run, autoResume: undefined }, "restart",
+    "The provider confirmed this work is no longer running. Review the conversation before continuing it.");
+}
+
+/**
+ * This run either owns a possible provider dispatch or can start another turn
+ * automatically. Uncertain dispatches retain that boundary after reload, and
+ * when native completion could not be confirmed, even without automatic-resume
+ * authority. Other loaded/paused runs are dormant and hold nothing.
+ */
+export function parentRunHoldsThread(run: Pick<ParentRun, "phase" | "autoResume" | "pause"> | undefined): boolean {
+  if (!run) return false;
+  if (run.phase === "continuing" || run.phase === "paused" && run.pause?.reason === "start_uncertain") return true;
+  return Boolean(run.autoResume) && run.phase === "waiting";
+}
+
 /**
  * Whether the user's typed message keeps following this paused run instead of
  * retiring it. Typing is the user acting in this conversation, so automatic
@@ -441,7 +476,7 @@ export function decideParentRun(run: ParentRun, environment: ParentRunEnvironmen
   }
   // Keep an unresolved provider dispatch visible until its ownership settles,
   // even if the user signed off the last child while it was being sent.
-  if (run.phase === "paused" && run.pause?.reason === "start_uncertain" && environment.rootActive) return { kind: "none" };
+  if (run.phase === "paused" && run.pause?.reason === "start_uncertain") return { kind: "none" };
   if (run.phase === "paused") return blocked ? { kind: "none" } : { kind: "clear" };
   if (!parentRunOwesTurn(environment.obligations)) return { kind: "clear" };
   if (environment.rootActive || environment.workflowOwned || environment.unavailable) return { kind: "none" };
@@ -713,7 +748,9 @@ function waitingDetail(obligations: readonly ParentObligation[], input: ParentRu
 function pausedTitle(run: ParentRun, obligations: readonly ParentObligation[]): string {
   switch (run.pause?.reason) {
     case "restart": return "Automatic follow-up paused after Mythra Code restarted";
-    case "start_uncertain": return "Mythra Code couldn't confirm the parent received this";
+    case "start_uncertain": return run.pause.stop
+      ? "Mythra Code couldn't confirm this work stopped"
+      : "Mythra Code couldn't confirm the parent received this";
     case "parent_failed": return "The parent stopped with an error";
     case "delivery_failed": return "The parent couldn't continue";
     case "budget": return "Automatic follow-ups reached their limit";
@@ -735,14 +772,16 @@ export function parentRunView(
   input: ParentRunWaitingState & { rootRunning: boolean; rootStarting: boolean },
 ): ParentRunView | null {
   if (!run) return null;
-  const uncertainStart = input.rootStarting && run.phase === "paused" && run.pause?.reason === "start_uncertain";
+  const uncertainStart = run.phase === "paused" && run.pause?.reason === "start_uncertain";
   if (input.rootRunning && !uncertainStart) return null;
   if (run.phase === "paused") {
     if (!parentRunBlocked(obligations) && !uncertainStart) return null;
     return {
       kind: "paused",
       title: pausedTitle(run, obligations),
-      ...(uncertainStart ? { detail: "Waiting for the provider to confirm whether the prompt started.", continueBlocked: true as const }
+      ...(uncertainStart ? { detail: run.pause?.detail ?? (input.rootStarting
+        ? "Waiting for the provider to confirm whether the prompt started."
+        : "The provider has not confirmed this work stopped. Use Stop: it cuts off work that is still running, or confirms with the provider that it already ended."), continueBlocked: true as const }
         : run.pause?.reason === "delivery_failed" && run.pause.detail ? { detail: run.pause.detail } : {}),
       status: uncertainStart ? "Status unknown" : "Needs your input",
       turnLabel: "Paused",

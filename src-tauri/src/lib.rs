@@ -83,7 +83,7 @@ use agents::{
 use close_guard::{close_guard_claim, close_guard_finish, CloseGuardState};
 use cursor::{
     cursor_login, cursor_models, cursor_permission_respond, cursor_runtime_status,
-    cursor_turn_active, cursor_turn_interrupt, cursor_turn_kill, cursor_turn_start,
+    cursor_turn_active, cursor_turn_interrupt, cursor_turn_kill, cursor_turn_settled, cursor_turn_start,
     cursor_turn_steer, cursor_turn_state, shutdown_cursor_on_exit, CursorState,
 };
 use git_inspection::{
@@ -327,6 +327,9 @@ struct RuntimeLifecycle {
 struct RuntimeLifecycleState {
     thread_changes: HashMap<String,(u64,usize)>,
     instance: Option<String>,
+    /// Exact process-tree cutoff receipts survive replacement while old
+    /// native engine owners can still retain children from that instance.
+    confirmed_cutoffs: HashSet<String>,
     restart_reservation: Option<RuntimeRestartReservationState>,
     active_turns: HashSet<String>,
     remote_turn_owners: HashMap<String,String>,
@@ -1203,9 +1206,13 @@ fn kill_process_tree(pid: u32) -> Result<(), String> {
         // SAFETY: kill(2) only sends a signal; a negative pid names the group.
         let killed_group = unsafe { libc::kill(-pid, libc::SIGKILL) } == 0;
         if !killed_group {
+            let group_error = std::io::Error::last_os_error();
             // SAFETY: as above, for the single process.
             if unsafe { libc::kill(pid, libc::SIGKILL) } != 0 {
                 return Err("Could not confirm the provider process tree was killed.".into());
+            }
+            if group_error.raw_os_error() != Some(libc::ESRCH) {
+                return Err("The provider process was signalled, but its descendant process-group cutoff could not be confirmed.".into());
             }
         }
     }
@@ -1217,6 +1224,21 @@ fn kill_process_tree(pid: u32) -> Result<(), String> {
         if !status.success() { return Err("Could not confirm the provider process tree was killed.".into()); }
     }
     Ok(())
+}
+
+/// Read-only recovery after the direct child was reaped. Never signal a PID
+/// or group which could now have been reused. A missing dedicated Unix group
+/// proves its members ended; Windows needs a retained successful tree receipt.
+fn reaped_provider_tree_confirmed(pid: Option<u32>, signalled: &AtomicBool) -> bool {
+    if signalled.load(Ordering::Acquire) { return true; }
+    #[cfg(unix)]
+    if let Some(pid) = pid.and_then(|pid| libc::pid_t::try_from(pid).ok()).filter(|pid| *pid > 0) {
+        // SAFETY: signal 0 probes existence only and never sends a signal.
+        return unsafe { libc::kill(-pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+    }
+    let _ = pid;
+    false
 }
 
 /// A native start owns cancellation before its first preparation await. Stop
@@ -1291,6 +1313,13 @@ impl NativeStartRegistry {
         let attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         attempts.get(thread_id).map(|attempt| (attempt.turn_id.clone(), attempt.start_request_id.clone(),
             if attempt.cancelled.load(Ordering::Acquire) { "stopping" } else { "starting" }))
+    }
+
+    /// Call with the provider turn-map lock held. Both pieces of native
+    /// admission state then describe one instant, rather than interleaved reads.
+    pub(crate) fn thread_settled(&self, thread_id: &str, no_live_turn: impl FnOnce() -> bool) -> bool {
+        let attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        !attempts.contains_key(thread_id) && no_live_turn()
     }
 
     pub(crate) fn with_remote_owner<T>(&self,thread:&str,turn:Option<&str>,start:Option<&str>,claim:impl FnOnce()->Result<T,String>)->Result<T,String>{
@@ -1557,6 +1586,7 @@ struct ClaudeTurn {
     /// the original prompt finished writing. Control and Stop remain usable.
     input_ready: AtomicBool,
     cutoff_uncertain: AtomicBool,
+    tree_cutoff_confirmed: AtomicBool,
     cutoff_error: StdMutex<Option<String>>,
     /// Ids of `control_request` messages this CLI process has sent and the
     /// renderer has not answered yet. A control response is only accepted
@@ -1885,9 +1915,11 @@ impl ClaudeTurn {
         let mut child = self.child.lock().await;
         match child.try_wait() {
             Ok(Some(_)) => {
-                if let Some(error) = self.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+                let mut prior_error = self.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(error) = prior_error.as_ref().filter(|_| !reaped_provider_tree_confirmed(self.pid, &self.tree_cutoff_confirmed)) {
                     return Err(format!("An earlier provider cutoff remains unconfirmed ({error}); the reaped process identity cannot safely be signalled again."));
                 }
+                *prior_error = None;
                 self.cutoff_uncertain.store(false, Ordering::Release);
                 return Ok(());
             }
@@ -1899,7 +1931,9 @@ impl ClaudeTurn {
                 return Err(error);
             }
         }
+        *self.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some("The provider process-tree cutoff has not completed.".into());
         let tree_result = self.pid.map(kill_process_tree).unwrap_or(Ok(()));
+        if self.pid.is_some() && tree_result.is_ok() { self.tree_cutoff_confirmed.store(true, Ordering::Release); }
         let _ = child.start_kill();
         let reap_result = match timeout(Duration::from_secs(2), child.wait()).await {
             Ok(Ok(_)) => Ok(()),
@@ -2040,6 +2074,8 @@ async fn reap_claude_process(
     child: &mut Child,
     stdout: &mut (impl AsyncRead + Unpin),
     grace: Duration,
+    tree_cutoff_confirmed: &AtomicBool,
+    cutoff_error: &StdMutex<Option<String>>,
 ) -> Result<std::process::ExitStatus, String> {
     let mut sink = tokio::io::sink();
     let graceful = async {
@@ -2051,7 +2087,10 @@ async fn reap_claude_process(
     match timeout(grace, graceful).await {
         Ok(exit) => exit.map_err(|error| format!("Could not confirm Claude process exit: {error}")),
         Err(_) => {
-            let tree_result = child.id().map(kill_process_tree).unwrap_or(Ok(()));
+            *cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some("The provider process-tree cutoff has not completed.".into());
+            let pid = child.id();
+            let tree_result = pid.map(kill_process_tree).unwrap_or(Ok(()));
+            if pid.is_some() && tree_result.is_ok() { tree_cutoff_confirmed.store(true, Ordering::Release); }
             let _ = child.start_kill();
             let exit = timeout(Duration::from_secs(2), child.wait()).await
                 .map_err(|_| "Claude process did not exit within the cutoff deadline.".to_string())?
@@ -2919,6 +2958,7 @@ impl AppServer {
             }
         }
         cutoff_runtime_child(&self.child, &self.cutoff).await?;
+        self.lifecycle.lock().confirmed_cutoffs.insert(self.instance.clone());
         clear_server_identity(&self.identity_slot, self.identity);
         if let Some(task) = &self.openrouter_proxy_task {
             task.abort();
@@ -7384,6 +7424,7 @@ async fn claude_turn_start(
         alive: alive.clone(),
         input_ready: AtomicBool::new(false),
         cutoff_uncertain: AtomicBool::new(false),
+        tree_cutoff_confirmed: AtomicBool::new(false),
         cutoff_error: StdMutex::new(None),
         control_requests: Mutex::new(HashSet::new()),
         remote_requests: Mutex::new(HashMap::new()),
@@ -7775,13 +7816,13 @@ async fn claude_turn_start(
             } else {
                 Duration::from_secs(5)
             };
-            reap_claude_process(&mut child, &mut lines.into_inner(), grace).await
+            reap_claude_process(&mut child, &mut lines.into_inner(), grace, &stdout_runtime.tree_cutoff_confirmed, &stdout_runtime.cutoff_error).await
         };
         let exit = match exit_result {
             Ok(exit) => Some(exit),
             Err(error) => {
-                stdout_runtime.alive.store(false, Ordering::Release);
                 stdout_runtime.cutoff_uncertain.store(true, Ordering::Release);
+                stdout_runtime.alive.store(false, Ordering::Release);
                 *stdout_runtime.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
                 stderr_task.abort();
                 emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn,
@@ -8061,6 +8102,41 @@ async fn claude_turn_active(
         .await
         .get(&thread_id)
         .is_some_and(|turn| turn.alive.load(Ordering::Acquire) || turn.cutoff_uncertain.load(Ordering::Acquire)))
+}
+
+/// Recovery evidence that this thread has no Claude work at all: no start
+/// still settling (including one being cancelled) and no live or
+/// cutoff-uncertain turn process. Read-only; it never kills or retires.
+#[tauri::command]
+async fn claude_turn_settled(
+    state: State<'_, ClaudeState>,
+    thread_id: String,
+) -> Result<bool, String> {
+    if thread_id.trim().is_empty() || thread_id.len() > 256 {
+        return Err("A Claude thread identity is required.".into());
+    }
+    let turns = state.turns.lock().await;
+    Ok(state.starts.thread_settled(&thread_id, || !turns.get(&thread_id).is_some_and(|turn| {
+        turn.alive.load(Ordering::Acquire) || turn.cutoff_uncertain.load(Ordering::Acquire)
+    })))
+}
+
+/// The native identity, including preparation before a process exists, lets a
+/// recovery Stop preserve a newer turn that starts while its IPC is in flight.
+#[tauri::command]
+async fn claude_turn_state(state: State<'_, ClaudeState>, thread_id: String) -> Result<Option<Value>, String> {
+    if thread_id.trim().is_empty() || thread_id.len() > 256 {
+        return Err("A Claude thread identity is required.".into());
+    }
+    let turns = state.turns.lock().await;
+    if let Some((turn, start, phase)) = state.starts.identity(&thread_id) {
+        return Ok(Some(json!({"turnId":turn,"startRequestId":start,"phase":phase})));
+    }
+    Ok(turns.get(&thread_id).map(|turn| json!({
+        "turnId":turn.turn_id,"startRequestId":turn.start_request_id,
+        "phase":if turn.cutoff_uncertain.load(Ordering::Acquire) {"stopping"}
+            else if turn.alive.load(Ordering::Acquire) {"running"} else {"completed"}
+    })))
 }
 
 fn cached_claude_context(
@@ -9305,6 +9381,7 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState, slot: &mut Option<A
         // The pid is free for reuse from here on, so it must no longer be
         // published as ours.
         if cutoff_confirmed {
+            lifecycle_for_reader.lock().confirmed_cutoffs.insert(instance_for_reader.clone());
             clear_server_identity(&identity_slot_for_reader, identity);
             lifecycle_for_reader.clear_instance(&instance_for_reader);
         }
@@ -10285,6 +10362,10 @@ async fn runtime_instance(
 struct RuntimeThreadState {
     instance: String,
     loaded: bool,
+    /// Native lifecycle evidence for this process: an active or starting turn,
+    /// compaction, native agent, ambiguous native activity, or a thread
+    /// mutation still in flight. Unknown process state also reads as busy.
+    busy: bool,
 }
 
 /// Whether this exact managed app-server process is already holding a thread.
@@ -10301,9 +10382,17 @@ async fn runtime_thread_state(
     }
     let _rpc_guard = state.lifecycle.begin_rpc_call("thread/read")?;
     let server = ensure_server(&app, &state).await?;
+    let busy = {
+        let lifecycle = server.lifecycle.lock();
+        !server.is_alive()
+            || lifecycle.instance.as_deref() != Some(server.instance.as_str())
+            || remote_thread_busy(&lifecycle, &thread_id)
+            || lifecycle.thread_changes.get(&thread_id).is_some_and(|(_, pending)| *pending != 0)
+    };
     Ok(RuntimeThreadState {
         instance: server.instance.clone(),
         loaded: server.has_loaded_thread(&thread_id),
+        busy,
     })
 }
 
@@ -10630,6 +10719,8 @@ pub fn run() {
                     claude_turn_interrupt,
                     claude_turn_kill,
                     claude_turn_active,
+                    claude_turn_settled,
+                    claude_turn_state,
                     claude_thread_context_usage,
                     claude_turn_terminal_receipt,
                     claude_turn_terminal_receipt_ack,
@@ -10640,6 +10731,7 @@ pub fn run() {
                     cursor_turn_interrupt,
                     cursor_turn_kill,
                     cursor_turn_active,
+                    cursor_turn_settled,
                     cursor_turn_state,
                     cursor_permission_respond,
                     state_read,
@@ -10795,6 +10887,8 @@ pub fn run() {
                     remote::owners::remote_local_owner_open,
                     remote::owners::remote_local_owner_finish,
                     remote::owners::remote_work_owner_finish,
+                    remote::owners::remote_owner_thread_settled,
+                    remote::owners::remote_owner_thread_stop_retry,
                     remote::diagnostics::remote_host_provider_status,
                     remote::owners::remote_work_owner_open,
                     remote::owners::remote_work_owner_retire,
@@ -10977,8 +11071,9 @@ pub(crate) async fn remote_native_dispatch(app:&AppHandle,target:&remote::work::
         if target.turn_id.as_deref()!=Some(turn.turn_id.as_str())||target.owner!=format!("claude:{}",turn.turn_id)||!turn.alive.load(Ordering::Acquire){return Err(stale());}
         if action=="turn_stop"{
             let mut child=turn.child.lock().await;
-            permit.begin(||{if !turn.alive.load(Ordering::Acquire){return Err(stale());}turn.alive.store(false,Ordering::Release);turn.cutoff_uncertain.store(true,Ordering::Release);
-                match child.try_wait(){Ok(None)=>{if let Some(pid)=child.id(){kill_process_tree(pid)?;}child.start_kill().map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Claude cutoff could not be confirmed.".to_string())},_=>Err(stale())}})?;
+            permit.begin(||{if !turn.alive.load(Ordering::Acquire){return Err(stale());}turn.cutoff_uncertain.store(true,Ordering::Release);turn.alive.store(false,Ordering::Release);
+                *turn.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some("The provider process-tree cutoff has not completed.".into());
+                match child.try_wait(){Ok(None)=>{if let Some(pid)=child.id(){kill_process_tree(pid)?;turn.tree_cutoff_confirmed.store(true,Ordering::Release);}child.start_kill().map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Claude cutoff could not be confirmed.".to_string())},_=>Err(stale())}})?;
             timeout(Duration::from_secs(2),child.wait()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Claude cutoff timed out.".to_string())?.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Claude cutoff could not be confirmed.".to_string())?;
             turn.cutoff_uncertain.store(false,Ordering::Release);drop(child);remove_claude_turn_if_current(&state.turns,thread,&turn).await;return Ok(Value::Null);
         }
@@ -11096,12 +11191,52 @@ pub(crate) async fn remote_owned_child_ended(app:&AppHandle,target:&mut remote::
  let stale=||remote::work::refused("stale_target");let thread=target.thread_id.as_deref().ok_or_else(stale)?;
  match target.provider.as_deref(){
  Some("cursor")=>cursor::remote_owned_child_ended(app,target).await,
- Some("claude")=>{let state=app.state::<ClaudeState>();if target.kind=="start"&&state.starts.identity(thread).is_some_and(|(turn,_,phase)|Some(&turn)==target.turn_id.as_ref()&&phase=="starting"){return Ok(false);}
-  let turn=state.turns.lock().await.get(thread).cloned();if let Some(turn)=turn.filter(|turn|Some(&turn.turn_id)==target.turn_id.as_ref()){
+ Some("claude")=>{let state=app.state::<ClaudeState>();let turns=state.turns.lock().await;
+  if target.kind=="start"&&state.starts.identity(thread).is_some_and(|(turn,_,_)|Some(&turn)==target.turn_id.as_ref()){return Ok(false);}
+  let turn=turns.get(thread).cloned();if let Some(turn)=turn.filter(|turn|Some(&turn.turn_id)==target.turn_id.as_ref()){
    if turn.cutoff_uncertain.load(Ordering::Acquire){return Err(stale());}if !turn.alive.load(Ordering::Acquire){return Ok(true);}target.kind="turn".into();target.owner=format!("claude:{}",turn.turn_id);Ok(false)
   }else{Ok(true)}},
- Some("openai"|"openrouter"|"lmstudio")=>{let state=app.state::<RuntimeState>();let server=state.server.lock().await.as_ref().cloned().ok_or_else(stale)?;if target.owner!=format!("codex:{}",server.instance){return Err(stale());}let owner=server.lifecycle.lock();Ok(owner.remote_turn_owners.get(thread)!=target.turn_id.as_ref())},
+ Some("openai"|"openrouter"|"lmstudio")=>{
+  let state=app.state::<RuntimeState>();let servers=state.server.lock().await;
+  let instance=target.owner.strip_prefix("codex:").filter(|id|!id.is_empty()).ok_or_else(stale)?;
+  let owner=state.lifecycle.lock();
+  // A replacement or dead transport alone never proves cutoff of the old
+  // process tree. Only the exact checked native receipt can settle it.
+  if owner.confirmed_cutoffs.contains(instance){return Ok(true);}
+  let server=servers.as_ref().filter(|server|server.instance==instance&&server.is_alive()).ok_or_else(stale)?;
+  if owner.instance.as_deref()!=Some(server.instance.as_str()){return Err(stale());}
+  Ok(owner.remote_turn_owners.get(thread)!=target.turn_id.as_ref()
+    && !remote_thread_busy(&owner,thread)
+    && owner.thread_changes.get(thread).is_none_or(|(_,pending)|*pending==0))
+ },
  _=>Err(stale())}
+}
+
+/// Explicit host Stop retry for a child retained by a closed engine owner.
+/// Retain the original identity across every await; never select a successor.
+pub(crate) async fn remote_owned_child_retry_stop(app: &AppHandle, target: &remote::work::Target) -> Result<(), String> {
+    let stale = || remote::work::refused("stale_target");
+    let thread = target.thread_id.clone().ok_or_else(stale)?;
+    let turn = target.turn_id.clone().filter(|turn| !turn.is_empty()).ok_or_else(stale)?;
+    match target.provider.as_deref() {
+        Some("claude") => claude_turn_kill(app.state::<ClaudeState>(), thread, Some(turn), target.start_request_id.clone()).await,
+        Some("cursor") => cursor::cursor_turn_kill(app.state::<CursorState>(), thread, Some(turn), target.start_request_id.clone()).await,
+        Some("openai" | "openrouter" | "lmstudio") => {
+            let instance = target.owner.strip_prefix("codex:").filter(|id| !id.is_empty()).ok_or_else(stale)?;
+            {
+                let state = app.state::<RuntimeState>();
+                let servers = state.server.lock().await;
+                let server = servers.as_ref().filter(|server| server.instance == instance && server.is_alive()).ok_or_else(stale)?;
+                let lifecycle = server.lifecycle.lock();
+                if lifecycle.instance.as_deref() != Some(instance) || lifecycle.remote_turn_owners.get(&thread) != Some(&turn) {
+                    return Err(stale());
+                }
+            }
+            codex_rpc(app.clone(), app.state::<RuntimeState>(), "turn/interrupt".into(),
+                json!({"threadId":thread,"turnId":turn,"expectedRuntimeInstance":instance})).await.map(|_| ())
+        }
+        _ => Err(stale()),
+    }
 }
 
 /// Tracking only for ordinary callers; no new waits, permission checks, flags or

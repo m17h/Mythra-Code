@@ -7,7 +7,7 @@ import { refreshModelPricingCatalog, pricingRefreshStatus } from "../../usageLed
 import { publicCrew } from "./executionPreferences";
 import { providerDisplayName, sanitizeChildAgentLinks, sanitizeChildAgentPresets } from "../../childAgents";
 import { sanitizeNativeAgentLinks } from "../../nativeAgentLinks";
-import { collectSubAgentWorkers, type SubAgentWorker, type SubAgentWorkerInput } from "../../subAgentActivity";
+import { collectSubAgentWorkers, summarizeSubAgentWorkers, type SubAgentWorker, type SubAgentWorkerInput } from "../../subAgentActivity";
 import { useTaskStore } from "../../taskStore";
 import { threadUsageSummary, type ThreadUsageAmounts } from "../../threadUsage";
 import { commitMessageScope, useCommitMessageStore } from "../../commitMessages";
@@ -113,7 +113,8 @@ export class HostResources {
     const state = useTaskStore.getState(), links = sanitizeChildAgentLinks(loadStored("kiwi.childAgentLinks", {}));
     return { rootThreadId: threadId, links, nativeLinks: sanitizeNativeAgentLinks(loadStored("kiwi.nativeAgentLinks", {})),
       agents: state.tasks[threadId]?.agents ?? [], rootActivities: state.tasks[threadId]?.activities ?? [], statuses: state.statuses,
-      mailboxes: getChildMailboxes(), reviewTokens: Object.fromEntries(Object.entries(links).map(([id, link]) => [id, childReviewToken(link)])) };
+      mailboxes: getChildMailboxes(), reviewTokens: Object.fromEntries(Object.entries(links).map(([id, link]) => [id, childReviewToken(link)])),
+      parentRunId: state.parentRuns[threadId]?.id };
   }
   workers(threadId: string): SubAgentWorker[] { return collectSubAgentWorkers(this.input(threadId)); }
   resolveWorker(handle: string, device: string, root: string): SubAgentWorker {
@@ -230,13 +231,26 @@ export class HostResources {
         return input.nativeLinks?.[id]?.rootThreadId === rootId && input.nativeLinks[id].runtime === "claude";
       };
       if (request.op === "agents.read" || request.op === "mail.read") {
-        const workers = this.workers(rootId).filter((worker) => scoped(worker.id)).filter((worker) => args.agentId === undefined || worker.id === idArg(args.agentId));
+        const workers = collectSubAgentWorkers(input).filter((worker) => scoped(worker.id)).filter((worker) => args.agentId === undefined || worker.id === idArg(args.agentId));
         if (args.agentId !== undefined && !workers.length) throw new HostReadError("thread_unavailable", "This sub-agent is not shared in this workspace.");
-        if (request.op === "agents.read") result.workers = workers.slice(0, limit).map((worker): WireWorker => ({ id: worker.id, kind: worker.kind, ...(worker.nativeRuntime ? { nativeRuntime: worker.nativeRuntime } : {}), status: worker.status, title: text(worker.title, 4000), detail: worker.provider ? `${providerDisplayName(worker.provider)} · ${text(worker.model, 256) || "provider managed"}` : "Same provider as this thread", createdAt: worker.createdAt,
+        // Totals cover every scoped worker before the page bound, with the same
+        // rules as the local badge. A bounded page keeps workers needing the
+        // parent first, then the usual order, so they can still be acted on.
+        const needsParent = (worker: SubAgentWorker) => Boolean(worker.pendingResult || worker.mail?.openQuestions);
+        const shown = request.op === "agents.read" && workers.length > limit
+          ? [...workers.filter(needsParent), ...workers.filter((worker) => !needsParent(worker))].slice(0, limit)
+          : workers.slice(0, limit);
+        if (request.op === "agents.read" && args.agentId === undefined) {
+          const counts = summarizeSubAgentWorkers(workers);
+          result.pending = { questions: counts.questions ?? 0, results: counts.pendingResults ?? 0 };
+          result.workerTotal = workers.length;
+        }
+        if (request.op === "agents.read") result.workers = shown.map((worker): WireWorker => ({ id: worker.id, kind: worker.kind, ...(worker.nativeRuntime ? { nativeRuntime: worker.nativeRuntime } : {}), status: worker.status, title: text(worker.title, 4000), detail: worker.provider ? `${providerDisplayName(worker.provider)} · ${text(worker.model, 256) || "provider managed"}` : "Same provider as this thread", createdAt: worker.createdAt,
           target: this.target(worker, request.device, rootId), canOpen: worker.canOpen !== false, canStop: worker.canStop === true, canAccept: Boolean(worker.reviewToken && worker.review !== "accepted"),
           ...(worker.provider ? { provider: worker.provider } : {}), ...(worker.model ? { model: text(worker.model, 256) } : {}), ...(worker.task ? { task: text(worker.task, 12000) } : {}),
           ...(worker.progress ? { progress: text(worker.progress, 8000) } : {}), ...(worker.result ? { result: text(worker.result, 12000) } : {}), ...(worker.review ? { review: worker.review } : {}),
-          ...(finite(worker.finishedAt) ? { finishedAt: worker.finishedAt } : {}), ...(worker.targetId ? { targetId: worker.targetId } : {}) }));
+          ...(finite(worker.finishedAt) ? { finishedAt: worker.finishedAt } : {}), ...(worker.targetId ? { targetId: worker.targetId } : {}),
+          ...(worker.pendingResult ? { pendingResult: true as const } : {}), ...(worker.mail?.openQuestions ? { pendingQuestions: worker.mail.openQuestions } : {}) }));
         else result.mailboxes = workers.slice(0, limit).flatMap((worker) => { const value = input.mailboxes?.[worker.id]; return value && value.rootThreadId === rootId ? [mailbox(worker.id, value, 50)] : []; });
         result.truncated = workers.length > limit;
       } else if (request.op === "usage.thread.read" || request.op === "usage.thread.details") {

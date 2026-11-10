@@ -403,6 +403,29 @@ export function isClaudeTurnActive(threadId: string): Promise<boolean> {
   return invoke<boolean>("claude_turn_active", { threadId });
 }
 
+/** Native proof that this thread has no Claude start settling and no live or
+ * cutoff-uncertain turn process. Read-only recovery evidence. */
+export function isClaudeTurnSettled(threadId: string): Promise<boolean> {
+  return invoke<boolean>("claude_turn_settled", { threadId });
+}
+
+/** Exact native identity, including starts that never reached the renderer. */
+export interface ClaudeTurnState {
+  turnId: string;
+  startRequestId?: string;
+  phase: "starting" | "running" | "stopping" | "completed";
+}
+
+export async function claudeTurnState(threadId: string): Promise<ClaudeTurnState | null> {
+  const value = await invoke<unknown>("claude_turn_state", { threadId });
+  if (!value || typeof value !== "object") return null;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.turnId !== "string" || !entry.turnId
+    || entry.phase !== "starting" && entry.phase !== "running" && entry.phase !== "stopping" && entry.phase !== "completed") return null;
+  return { turnId: entry.turnId, phase: entry.phase,
+    ...(typeof entry.startRequestId === "string" && entry.startRequestId ? { startRequestId: entry.startRequestId } : {}) };
+}
+
 /** The exact turn's terminal event, recorded before its process released the
  * thread. Null when that turn has no recorded ending. */
 export function claudeTurnTerminalReceipt(threadId: string, turnId: string): Promise<JsonObject | null> {

@@ -94,12 +94,13 @@ export function partitionBulkArchiveThreads(
   threads: Thread[],
   statuses: Record<string, TaskStatus | undefined>,
   workflowOwners: Record<string, WorkflowThreadOwner> = {},
+  blocked?: (thread: Thread) => boolean,
 ): { ready: Thread[]; active: Thread[] } {
   const ready: Thread[] = [];
   const active: Thread[] = [];
   for (const thread of threads) {
     const status = statuses[thread.id];
-    (status === "starting" || status === "running" || workflowOwners[thread.id] ? active : ready).push(thread);
+    (status === "starting" || status === "running" || workflowOwners[thread.id] || blocked?.(thread) ? active : ready).push(thread);
   }
   return { ready, active };
 }

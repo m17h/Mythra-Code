@@ -19,6 +19,8 @@ import { sameStop, sameStopLifetime, WorkTargets, type WorkTarget } from "./targ
 import type { RemoteStopSnapshot, RemoteTurnRunner, RemoteWorkAdapter } from "./workTypes";
 import { assertParityAuthority, executeParityMutation, isParityOperation, isParityRead, projectParityRead, validateParityArgs, type HostParityActions } from "./parityActions";
 import { DraftTokens, type DraftToken } from "./draftTokens";
+import { parentRunHoldsThread } from "../../parentRun";
+import { isUncertainParentRun, parentRecoveryProvider, reconcileUncertainParentRun } from "../../parentRunRecovery";
 import { validateExecutionSettings } from "./executionPreferences";
 import { commitHostState } from "./stateCommit";
 import { createHostSettingsActions } from "./settingsActions";
@@ -227,6 +229,14 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
     const ctx = context({ threadId }, request.device), runner = options.getRunner();
     await runner.waitForThreadStopTarget?.(threadId);
     assertTarget({ threadId }, request.device, ctx);
+    const heldParent = useTaskStore.getState().parentRuns[threadId];
+    if (isUncertainParentRun(heldParent)) {
+      // A closed native owner cannot register another Stop handle. Reconcile
+      // independently of that token so this real viewer path can release a
+      // settled latch after reload or an unconfirmed retirement.
+      await reconcileUncertainParentRun(threadId, parentRecoveryProvider(ctx.activeThread ?? undefined, heldParent));
+      assertTarget({ threadId }, request.device, ctx);
+    }
     const task = useTaskStore.getState().tasks[threadId], stop = runner.getThreadStopTarget(threadId);
     const register = async (kind: "turn" | "start" | "parent" | "approval" | "question", extra: { stop?: RemoteStopSnapshot; approval?: NonNullable<typeof task>["approvals"][number] }) => {
       try {
@@ -256,7 +266,9 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
       assertTarget({ threadId }, request.device, ctx);
     }
     const liveParent = useTaskStore.getState().parentRuns[threadId];
-    const stoppable = task?.status === "running" || task?.status === "starting" || stop.workflowRunId || liveParent;
+    // Between turns, only a run that can still start a parent turn by itself
+    // offers Stop; a dormant loaded or paused record has nothing to cut off.
+    const stoppable = task?.status === "running" || task?.status === "starting" || stop.workflowRunId || parentRunHoldsThread(liveParent);
     const stopTarget = stoppable ? await register(stop.ownerHandle ? "parent" : stop.turnId ? "turn" : stop.workflowRunId || liveParent ? "parent" : "start", { stop }) : undefined;
     assertTarget({ threadId }, request.device, ctx);
     const steerTarget = task?.status === "running" && stop.turnId && !isAssistantOutputActive(task) && !stop.workflowRunId
@@ -409,8 +421,10 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
       await delivery.beforeCreate();
       if (request.op === "turn.stop") {
         if (!owned.stop) throw stale();
-        await targets.claim(owned, id);
-        if (!(owned.wire.kind === "parent" ? sameStopLifetime(owned.stop, options.getRunner().getThreadStopTarget(threadId!))
+        // Native claims are tied to one operation even when cutoff fails.
+        // Never hand that claimed (or natively stale) token to a later retry.
+        try { await targets.claim(owned, id); } finally { targets.consume(owned); }
+        if (!(owned.stop.ownerHandle ? sameStopLifetime(owned.stop, options.getRunner().getThreadStopTarget(threadId!))
           : sameStop(owned.stop, options.getRunner().getThreadStopTarget(threadId!)))) throw stale();
         await delivery.beforeDispatch({ threadId: threadId!, messageId: delivery.messageId, provider: ctx.effectiveSettings.provider,
           turnId: owned.stop.turnId, startRequestId: owned.stop.startRequestId });

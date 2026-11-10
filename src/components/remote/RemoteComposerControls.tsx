@@ -72,7 +72,7 @@ export function RemoteComposerControls({ device, workspaceId, revision, onOpenTh
     }, () => undefined);
     return () => { current = false; };
   }, [device, workspaceId]);
-  const { workers, act } = useRemoteWorkers(device, name, { workspaceId, threadId }, revision, running);
+  const { workers, pending, act } = useRemoteWorkers(device, name, { workspaceId, threadId }, revision, running);
   const workerAction = async (op: "agents.stop" | "agents.accept" | "agents.replace", id: string, extra?: Record<string, unknown>) => {
     const message = await act(op, id, extra);
     if (message) onNotice(message);
@@ -83,7 +83,7 @@ export function RemoteComposerControls({ device, workspaceId, revision, onOpenTh
       disabledReason={(mode) => mode === "full" && !fullAccess ? `Full access is turned off for this device on ${name}. Turn it on in Devices on that device.` : undefined} />
     <SubAgentCommandCenter policy={policy} engine={subagents.engine} provider={provider} nativeMaxConcurrent={subagents.maxConcurrent} nativeOptions={subagents.nativeOptions}
       autoCompactTokens={subagents.autoCompactTokens} nativeDefaultModel={context?.selected.model}
-      presets={presets} contextKey={threadId ?? `new:${scopeKey}`} capturedPolicy={null} mode="open" readiness={readiness} workers={workers} parentActive={running}
+      presets={presets} contextKey={threadId ?? `new:${scopeKey}`} capturedPolicy={null} mode="open" readiness={readiness} workers={workers} pendingSummary={pending} parentActive={running}
       onOpenWorker={async (worker) => onOpenThread(worker.id)} onStopWorker={(worker) => workerAction("agents.stop", worker.id)}
       onAcceptWorker={(worker) => workerAction("agents.accept", worker.id)} onReplaceWorker={(worker, targetId) => workerAction("agents.replace", worker.id, { targetId })}
       scopeLabel={threadId ? "this thread" : "this new thread"} projectOverride={false} modelCatalogs={modelCatalogs} onUnavailable={onNotice} onOpenSettings={onOpenSettings}

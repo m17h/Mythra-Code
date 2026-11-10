@@ -105,10 +105,13 @@ export function watchRemoteCapabilities(device: string, threadId: string): () =>
 }
 
 /** Only an explicit host Work refusal proves the viewer is view-only. */
-export async function refreshRemoteCapabilities(device: string, threadId: string): Promise<void> {
+export async function refreshRemoteCapabilities(device: string, threadId: string, options?: { ifIdle?: boolean }): Promise<void> {
   const thread = watchedThreads.get(device);
   const live = () => inspectionTimeline(device, threadId)?.state === "live";
   if (!thread || thread.threadId !== threadId || !live()) return;
+  // Quiet ownership polls must not replace a timeline-triggered inspection or
+  // its pending retry. Explicit refreshes still retire obsolete replies.
+  if (options?.ifIdle && thread.request) return;
   cancelInspection(thread);
   const request: InspectionRequest = {};
   thread.request = request;
@@ -136,7 +139,7 @@ export async function refreshRemoteCapabilities(device: string, threadId: string
         request.timer = undefined;
         void inspect(attempt + 1);
       }, INSPECT_RETRY_MS[attempt]);
-    }
+    } else if (current()) thread.request = undefined;
   };
   await inspect(0);
 }

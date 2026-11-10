@@ -1,5 +1,6 @@
 import { childAgentModel, childLifecycleForLink, childReviewPhase, providerDisplayName, type ChildAgentLink } from "./childAgents";
-import { summarizeChildMailbox, type ChildMailbox, type ChildMailMessage } from "./childAgentMailbox";
+import { isOpenChildQuestion, pendingQuestionReplies, summarizeChildMailbox, type ChildMailbox, type ChildMailMessage } from "./childAgentMailbox";
+import { classifyParentObligation } from "./parentRun";
 import { nativeDescendantIds, type NativeAgentLink, type NativeAgentReadout } from "./nativeAgentLinks";
 import type { TaskStatus } from "./taskStore";
 import type { AgentRecord } from "../components/StudioDock";
@@ -26,7 +27,7 @@ export type SubAgentReview = "awaiting" | "accepted";
 
 /** Parent ↔ child mailbox counters for one worker row. */
 export interface SubAgentMailState {
-  /** Child questions the parent has not answered yet (read or unread). */
+  /** Current child questions still needing a reply, excluding replies in flight. */
   openQuestions: number;
   /** Child questions/updates the parent has not read yet. */
   unread: number;
@@ -71,6 +72,10 @@ export interface SubAgentWorker extends NativeAgentReadout {
   review?: SubAgentReview;
   /** Exact settled result shown when the user presses Accept. */
   reviewToken?: string;
+  /** A current result the parent still needs to collect or sign off. */
+  pendingResult?: true;
+  /** Questions still needing a reply when mailbox details are not loaded (remote rows). */
+  pendingQuestions?: number;
   acceptedBy?: "parent" | "user";
   resultRevision?: number;
   manualAttemptId?: string;
@@ -97,6 +102,8 @@ export interface SubAgentCounts {
   unknown?: number;
   /** Unanswered child questions across the crew. */
   questions?: number;
+  /** Current results the parent still needs to handle. */
+  pendingResults?: number;
   unreadUpdates?: number;
   deliveryIssues?: number;
   /** Earlier native assignments whose conversation now has another activation. */
@@ -212,13 +219,19 @@ export interface SubAgentWorkerInput {
   /** Parent ↔ child mailboxes keyed by child thread id. */
   mailboxes?: Readonly<Record<string, ChildMailbox>>;
   reviewTokens?: Readonly<Record<string, string | undefined>>;
+  /** Id of the parent run currently recorded for this root. Only its own
+   * assignments can count as results the parent still has to handle. */
+  parentRunId?: string;
 }
 
 const MAX_RECENT_MAIL = 6;
 
-function mailState(mailbox: ChildMailbox | undefined): SubAgentMailState | undefined {
+function mailState(mailbox: ChildMailbox | undefined, canAnswerQuestions: boolean): SubAgentMailState | undefined {
   if (!mailbox || !mailbox.messages.length && !mailbox.dropped) return undefined;
   const summary = summarizeChildMailbox(mailbox);
+  const pendingReplies = new Set(pendingQuestionReplies(mailbox.messages));
+  const questions = canAnswerQuestions ? mailbox.messages.filter((message) => isOpenChildQuestion(message) && !pendingReplies.has(message.id)) : [];
+  const latestQuestion = questions[questions.length - 1];
   // A compact view must still expose every unresolved question and unread
   // update, even if newer settled messages pushed it outside the last six.
   const recentStart = Math.max(0, mailbox.messages.length - MAX_RECENT_MAIL);
@@ -226,13 +239,13 @@ function mailState(mailbox: ChildMailbox | undefined): SubAgentMailState | undef
     || message.state === "unread" || message.state === "queued" || message.state === "delivering" || message.state === "failed" || message.uncertain
     || message.direction === "toParent" && message.kind === "question" && !message.answeredAt && !message.closedAt);
   return {
-    openQuestions: summary.unansweredQuestions,
+    openQuestions: questions.length,
     unread: summary.unreadQuestions + summary.unreadUpdates,
     unreadUpdates: summary.unreadUpdates,
     deliveryIssues: mailbox.messages.filter((message) => message.direction === "toChild" && (message.state === "failed" || message.uncertain)).length,
     queuedForChild: summary.queuedForChild,
     deliveringForChild: mailbox.messages.filter((message) => message.direction === "toChild" && message.state === "delivering").length,
-    ...(summary.latestQuestion ? { latestQuestion: summary.latestQuestion.text } : {}),
+    ...(latestQuestion ? { latestQuestion: latestQuestion.text } : {}),
     recent: visibleMessages.map(({ id, direction, kind, text, state, reason, uncertain, via, replyTo, answeredAt, closedAt, textTruncated }) => ({ id, direction, kind, text, state, reason, uncertain, via, replyTo, answeredAt, closedAt, textTruncated })),
     dropped: mailbox.dropped,
     notShown: mailbox.messages.length - visibleMessages.length,
@@ -422,10 +435,43 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
     const lifecycle = childLifecycleForLink(link, input.statuses[link.childThreadId] ?? "idle");
     const phase = childReviewPhase(link, input.statuses[link.childThreadId] ?? "idle");
     const awaitingSignoff = link.signoff === "required" && !link.acceptedAt;
-    const mail = mailState(input.mailboxes?.[link.childThreadId]);
+    const storedMailbox = input.mailboxes?.[link.childThreadId];
+    const mailbox = storedMailbox?.rootThreadId === rootThreadId ? storedMailbox : undefined;
+    const reviewToken = input.reviewTokens?.[link.childThreadId];
+    // Only the parent run that follows this assignment owes its result, as in
+    // the run's own obligations. A manual takeover clears reviewRunId, while
+    // later parent guidance can claim that work again without starting a new
+    // turn (and therefore without clearing manualAttemptId). Older or retired
+    // runs collect nothing more; their results remain visible in the panel.
+    const runOwned = Boolean(link.reviewRunId) && link.reviewRunId === input.parentRunId;
+    const obligation = runOwned ? classifyParentObligation({
+      childId: link.childThreadId,
+      title: link.title,
+      accepted: Boolean(link.acceptedAt),
+      acceptedByUser: link.acceptedBy === "user",
+      userStopped: link.stopOrigin === "user",
+      working: phase === "running" || Boolean(mailbox?.messages.some((message) => message.direction === "toChild"
+        && (message.state === "queued" || message.state === "delivering"))),
+      lifecycle,
+      reviewToken,
+      collectedToken: link.collectedReviewToken,
+      signoffRequired: link.signoff === "required",
+      openQuestions: [],
+      resultRevision: link.resultRevision ?? 0,
+      followUps: link.followUps ?? 0,
+    }) : "none";
+    // A user sign-off leaves the parent only a routine wrap-up, so it is not
+    // shown as a result still to review.
+    const pendingResult = obligation === "needs_collect" || obligation === "needs_signoff";
+    // Questions count while answering them is the parent's next step: the
+    // child is live or awaiting review, or a completed result is still owed.
+    // Answering a failed or cancelled child would restart it instead.
+    const mail = mailState(mailbox, !link.acceptedAt && link.stopOrigin !== "user" && (!link.manualAttemptId || runOwned)
+      && (phase === "running" || phase === "awaiting_review" || obligation === "needs_collect" && lifecycle === "completed"));
     // Work awaiting sign-off or a reply stays in view after the run boundary
     // advances; it is not settled yet even though its turn ended.
-    const needsAttention = awaitingSignoff || lifecycle === "unknown" || Boolean(mail?.openQuestions || mail?.queuedForChild || mail?.unread
+    const needsAttention = pendingResult || awaitingSignoff || lifecycle === "unknown"
+      || Boolean(mailbox?.messages.some(isOpenChildQuestion) || mail?.queuedForChild || mail?.unread
       || !link.acceptedAt && mail?.deliveryIssues);
     if (input.runStartedAt !== undefined && link.createdAt < input.runStartedAt
       && lifecycle !== "running" && lifecycle !== "starting" && !needsAttention) continue;
@@ -446,7 +492,8 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
       createdAt: link.createdAt,
       ...(link.finishedAt ? { finishedAt: link.finishedAt } : {}),
       ...(awaitingSignoff && phase !== "running" && phase !== "unknown" ? { review: "awaiting" as const } : {}),
-      ...(input.reviewTokens?.[link.childThreadId] ? { reviewToken: input.reviewTokens[link.childThreadId] } : {}),
+      ...(reviewToken ? { reviewToken } : {}),
+      ...(pendingResult ? { pendingResult: true as const } : {}),
       ...(link.acceptedAt && phase === "accepted" ? { review: "accepted" as const, acceptedBy: link.acceptedBy ?? "parent", ...(link.acceptNote ? { acceptNote: link.acceptNote } : {}) } : {}),
       ...(mail ? { mail } : {}),
     });
@@ -524,11 +571,32 @@ export function summarizeSubAgentWorkers(workers: SubAgentWorker[]): SubAgentCou
     if (worker.review === "awaiting" && worker.status === "completed") counts.completedAwaitingReview = (counts.completedAwaitingReview ?? 0) + 1;
     if (worker.review === "accepted") counts.accepted = (counts.accepted ?? 0) + 1;
     if (worker.review === "accepted" && worker.status === "completed") counts.completedAccepted = (counts.completedAccepted ?? 0) + 1;
-    if (worker.mail?.openQuestions) counts.questions = (counts.questions ?? 0) + worker.mail.openQuestions;
+    const openQuestions = worker.mail ? worker.mail.openQuestions : worker.pendingQuestions ?? 0;
+    if (openQuestions) counts.questions = (counts.questions ?? 0) + openQuestions;
+    if (worker.pendingResult) counts.pendingResults = (counts.pendingResults ?? 0) + 1;
     if (worker.mail?.unreadUpdates) counts.unreadUpdates = (counts.unreadUpdates ?? 0) + worker.mail.unreadUpdates;
     if (worker.review !== "accepted" && worker.mail?.deliveryIssues) counts.deliveryIssues = (counts.deliveryIssues ?? 0) + worker.mail.deliveryIssues;
   }
   return counts;
+}
+
+/**
+ * Pending totals reported by another device, whose worker list may be a
+ * bounded page. `exact` totals cover every worker, shown or not. `unavailable`
+ * means the host did not report usable totals (including older versions):
+ * nothing about hidden or unflagged workers is known, so it must never read
+ * as zero.
+ */
+export type SubAgentPendingSummary =
+  | { kind: "exact"; questions: number; results: number; shown: number; total: number }
+  | { kind: "unavailable"; shown: number; truncated: boolean };
+
+/** Pending work for the composer badge and its expanded explanation. */
+export function describePendingSubAgentWork(counts: Pick<SubAgentCounts, "questions" | "pendingResults">): string {
+  const parts: string[] = [];
+  if (counts.questions) parts.push(`${counts.questions} question${counts.questions === 1 ? "" : "s"}`);
+  if (counts.pendingResults) parts.push(`${counts.pendingResults} result${counts.pendingResults === 1 ? "" : "s"} to review`);
+  return parts.join(" · ");
 }
 
 /** Compact activity line, e.g. `2 working · 1 starting · 3 done`. */
