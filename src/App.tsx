@@ -159,10 +159,12 @@ import {
 } from "./lib/github";
 import { useAppUpdater } from "./lib/appUpdater";
 import { UpdateNotice, useUpdateNoticePreview } from "./components/UpdateNotice";
+import { CheckpointGitToast } from "./components/CheckpointGitToast";
 import { usePersistedState, usePersistedStateRef } from "./hooks/usePersistedState";
 import { forgetQueuedDeliveries, useTurnRunner, type TurnRunnerContext } from "./hooks/useTurnRunner";
 import { clearCommitMessageSuggestion } from "./lib/commitMessages";
 import { useCheckpoints } from "./hooks/useCheckpoints";
+import { useCheckpointGitNotice } from "./hooks/useCheckpointGitNotice";
 import { useAppShortcuts, workspaceShortcutLabel } from "./hooks/useAppShortcuts";
 import { useThreadHealth } from "./hooks/useThreadHealth";
 import { useCodexEvents } from "./hooks/useCodexEvents";
@@ -898,6 +900,8 @@ export default function App() {
   const [threadWorktrees, persistThreadWorktrees, threadWorktreesRef] = usePersistedStateRef<Record<string, ThreadWorktreeRecord>>("kiwi.threadWorktrees", {});
   const [workspaceGitInfo, setWorkspaceGitInfo] = useState<WorkspaceGitInfo | null>(null);
   const [gitInitializing, setGitInitializing] = useState(false);
+  /** The project path the composer's Initialize Git action is working on. */
+  const gitInitializingPathRef = useRef<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<"success" | "info">("success");
   const successToastTimerRef = useRef<number | null>(null);
@@ -2158,31 +2162,68 @@ export default function App() {
     setSuccessToast(null);
   }, []);
 
-  const initializeActiveProjectGit = useCallback(async () => {
-    if (!activeProject || gitInitializing) return;
-    const project = activeProject;
-    setError(null);
-    setGitInitializing(true);
-    try {
-      const result = await initializeWorkspaceGit(project.path);
-      if (activeProjectIdRef.current === project.id) {
+  const {
+    checkpointGitNotice,
+    showCheckpointGitNotice,
+    markCheckpointGitAvailable,
+    dismissCheckpointGitNotice,
+    initializeCheckpointGit,
+    isCheckpointGitInitializing,
+  } = useCheckpointGitNotice({
+    projectsRef,
+    activeThreadId,
+    activeProjectId,
+    activeExecutionPath,
+    isInitializingElsewhere: (workspacePath) => Boolean(gitInitializingPathRef.current
+      && normalizedProjectPath(gitInitializingPathRef.current) === normalizedProjectPath(workspacePath)),
+    onInitialized: (project, result) => {
+      if (activeProjectIdRef.current === project.id && projectsRef.current.some((entry) => (
+        entry.id === project.id && normalizedProjectPath(entry.path) === normalizedProjectPath(project.path)
+      ))) {
         setWorkspaceGitInfo(result.info);
         setDraftThreadIsolated(false);
       }
+    },
+    // Initialization can finish after a switch to another machine's view.
+    showSuccessToast: (message) => showSuccessToast(onThisDevice(message)),
+  });
+
+  const initializeActiveProjectGit = useCallback(async () => {
+    if (!activeProject || gitInitializingPathRef.current) return;
+    const project = activeProject;
+    const projectStillMatches = () => projectsRef.current.some((entry) => (
+      entry.id === project.id && normalizedProjectPath(entry.path) === normalizedProjectPath(project.path)
+    ));
+    // The checkpoint notification may already be initializing this folder.
+    if (isCheckpointGitInitializing(project.path)) return;
+    setError(null);
+    setGitInitializing(true);
+    gitInitializingPathRef.current = project.path;
+    try {
+      const result = await initializeWorkspaceGit(project.path);
+      if (activeProjectIdRef.current === project.id && projectStillMatches()) {
+        setWorkspaceGitInfo(result.info);
+        setDraftThreadIsolated(false);
+      }
+      // Future automatic checkpoints can run here; a stale notice closes.
+      markCheckpointGitAvailable(project.path, true);
       showSuccessToast(
         result.initialized
           ? `Git repository created for ${project.name}. Isolated worktrees are ready.`
           : `Initial Git snapshot created for ${project.name}. Isolated worktrees are ready.`,
       );
     } catch (reason) {
-      if (activeProjectIdRef.current === project.id) {
+      if (activeProjectIdRef.current === project.id && projectStillMatches()) {
         setError(formatGitError(reason));
-        void readWorkspaceGitInfo(project.path).then(setWorkspaceGitInfo).catch(() => {});
+        void readWorkspaceGitInfo(project.path).then((info) => {
+          if (activeProjectIdRef.current === project.id && projectStillMatches()) setWorkspaceGitInfo(info);
+        }).catch(() => {});
       }
     } finally {
+      gitInitializingPathRef.current = null;
       setGitInitializing(false);
     }
-  }, [activeProject, gitInitializing, showSuccessToast]);
+  }, [activeProject, isCheckpointGitInitializing, markCheckpointGitAvailable, projectsRef, showSuccessToast]);
 
   useEffect(() => {
     let disposed = false;
@@ -4096,6 +4137,8 @@ export default function App() {
     refreshDiffFor,
     setError,
     setTransientStatus,
+    onCheckpointGitMissing: showCheckpointGitNotice,
+    onCheckpointGitAvailable: markCheckpointGitAvailable,
   });
 
   const prepareNewThreadGit = useCallback(async (threadId: string, workspace: Project, enabled: boolean): Promise<boolean> => {
@@ -4106,6 +4149,7 @@ export default function App() {
       const result = await automaticallyInitializeWorkspaceGit(workspace.path);
       retryUnsupportedCheckpointPath(workspace.path);
       if (!result.initialized) return false;
+      markCheckpointGitAvailable(workspace.path, true);
       if (activeProjectIdRef.current === workspace.id && projectStillMatches()) {
         void readWorkspaceGitInfo(workspace.path).then((info) => {
           if (activeProjectIdRef.current === workspace.id && projectStillMatches()) setWorkspaceGitInfo(info);
@@ -4122,7 +4166,7 @@ export default function App() {
       showToast(detail, "info");
       return false;
     }
-  }, [projectsRef, retryUnsupportedCheckpointPath, settingsRef, showToast]);
+  }, [markCheckpointGitAvailable, projectsRef, retryUnsupportedCheckpointPath, settingsRef, showToast]);
 
   // The event context is rebuilt each render so callbacks always see fresh
   // state; useCodexEvents reads it through a ref and subscribes exactly once.
@@ -10303,7 +10347,20 @@ export default function App() {
           </div>
         </header>
 
-        <UpdateNotice update={updateNoticePreview ?? appUpdater} onOpen={() => openSettings("updates")} />
+        <div className="app-checkpoint-notice-stack">
+          <UpdateNotice update={updateNoticePreview ?? appUpdater} onOpen={() => openSettings("updates")} />
+          {/* Always mounted so the notice is announced politely when it arrives. */}
+          <div className="checkpoint-git-toast-region" aria-live="polite">
+            {checkpointGitNotice && (
+              <CheckpointGitToast
+                key={checkpointGitNotice.key}
+                notice={checkpointGitNotice}
+                onInitialize={(key) => void initializeCheckpointGit(key)}
+                onDismiss={dismissCheckpointGitNotice}
+              />
+            )}
+          </div>
+        </div>
 
         {!activeWorkspace ? (
           <section className="welcome-screen">

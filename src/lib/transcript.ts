@@ -1,6 +1,7 @@
 import { isMythraNoticeMessage, reconcileUserMessages } from "./userMessageEcho";
 import { sanitizeMessageSkillDependencies } from "./skillDependencies";
 import type { Activity, ChatMessage } from "../types";
+import { withoutObsoleteCheckpointGitWarnings } from "./checkpointGitNotice";
 
 function mergeById<T extends { id: string; timelineOrder?: number }>(
   durable: T[],
@@ -41,7 +42,7 @@ export function mergeTranscriptHistory(
 export function buildTranscriptMarkdown(label: string, messages: ChatMessage[], activities: Activity[]): string {
   const entries = [
     ...messages.map((value) => ({ kind: "message" as const, order: value.timelineOrder ?? Number.MAX_SAFE_INTEGER, value })),
-    ...activities.map((value) => ({ kind: "activity" as const, order: value.timelineOrder ?? Number.MAX_SAFE_INTEGER, value })),
+    ...withoutObsoleteCheckpointGitWarnings(activities).map((value) => ({ kind: "activity" as const, order: value.timelineOrder ?? Number.MAX_SAFE_INTEGER, value })),
   ].sort((left, right) => left.order - right.order || (left.kind === "message" ? 0 : 1) - (right.kind === "message" ? 0 : 1));
 
   const lines: string[] = [`# ${label}`, "", `_Exported from Mythra Code on ${new Date().toLocaleString()}_`, ""];
