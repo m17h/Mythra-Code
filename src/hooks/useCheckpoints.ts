@@ -14,7 +14,8 @@ import {
   type CheckpointRestoreTarget,
 } from "../lib/checkpoints";
 import { abandonRemoteCheckpoint, completeRemotePreparedCheckpoint } from "../lib/remote/host/promptPreparation";
-import { setWorktreeAppliedBaseline, type ThreadWorktreeRecord } from "../lib/worktrees";
+import { readWorkspaceGitInfo, setWorktreeAppliedBaseline, type ThreadWorktreeRecord } from "../lib/worktrees";
+import { isMissingGitCheckpointError } from "../lib/checkpointGitNotice";
 import { useTaskStore } from "../lib/taskStore";
 import { friendlyError } from "../lib/errors";
 import { recordError } from "../lib/errorLog";
@@ -48,6 +49,10 @@ export interface CheckpointsContext {
   refreshDiffFor: (threadId: string, projectPath: string) => Promise<void>;
   setError: (error: string | null) => void;
   setTransientStatus: (message: string) => void;
+  /** An automatic checkpoint was skipped because this exact folder has no Git. */
+  onCheckpointGitMissing?: (notice: { threadId: string; workspacePath: string }) => void;
+  /** A folder previously without Git can now take automatic checkpoints. */
+  onCheckpointGitAvailable?: (workspacePath: string) => void;
 }
 
 /**
@@ -146,11 +151,27 @@ export function useCheckpoints(context: CheckpointsContext) {
   ): Promise<string | undefined> => {
     const { chatWorkspacePath, knownThreadsRef, threadProjectBindingsRef } = contextRef.current;
     const pathKey = normalizedProjectPath(workspacePath);
-    if (
-      (chatWorkspacePath && pathKey === normalizedProjectPath(chatWorkspacePath))
-      || checkpointUnsupportedPathsRef.current.has(pathKey)
-    ) return undefined;
+    if (chatWorkspacePath && pathKey === normalizedProjectPath(chatWorkspacePath)) return undefined;
+    // Claim preparation before the first await, including the cached-folder
+    // probe. A stop or a newer preparation must also invalidate that read.
     const id = crypto.randomUUID();
+    preparingRunCheckpointsRef.current.set(threadId, id);
+    if (checkpointUnsupportedPathsRef.current.has(pathKey)) {
+      // Git can appear outside the app (a terminal, or the model running
+      // `git init`). A read-only look keeps that discoverable without
+      // creating, then discarding, a checkpoint record on every turn.
+      const info = await readWorkspaceGitInfo(workspacePath).catch(() => null);
+      if (preparingRunCheckpointsRef.current.get(threadId) !== id) return undefined;
+      if (!info || !info.isRepo || !info.isRoot || info.error) {
+        preparingRunCheckpointsRef.current.delete(threadId);
+        // Still no Git at all: the notification decides whether this folder
+        // was already announced, so a preempted notice can return later.
+        if (info && !info.isRepo && !info.error) contextRef.current.onCheckpointGitMissing?.({ threadId, workspacePath });
+        return undefined;
+      }
+      checkpointUnsupportedPathsRef.current.delete(pathKey);
+      contextRef.current.onCheckpointGitAvailable?.(workspacePath);
+    }
     const parent = checkpointHeadsRef.current[pathKey];
     const taskState = useTaskStore.getState();
     checkpointPredecessorTurnsRef.current.set(id, taskState.tasks[threadId]?.lastCompletedTurnId);
@@ -178,7 +199,6 @@ export function useCheckpoints(context: CheckpointsContext) {
     // Preparation has its own identity: an older snapshot cannot replace a
     // newer preparation, and a predecessor's completion cannot finalize a
     // snapshot whose initial capture has not even finished.
-    preparingRunCheckpointsRef.current.set(threadId, id);
     persistCheckpoints((current) => [
       checkpoint,
       ...current.map((entry) => (
@@ -214,15 +234,30 @@ export function useCheckpoints(context: CheckpointsContext) {
         head: snapshot.head ?? undefined,
       } : entry));
       activeRunCheckpointsRef.current.set(threadId, id);
+      checkpointUnsupportedPathsRef.current.delete(pathKey);
+      contextRef.current.onCheckpointGitAvailable?.(workspacePath);
       return id;
     } catch (reason) {
-      if (preparingRunCheckpointsRef.current.get(threadId) === id) preparingRunCheckpointsRef.current.delete(threadId);
+      const ownsPreparation = preparingRunCheckpointsRef.current.get(threadId) === id;
+      if (ownsPreparation) preparingRunCheckpointsRef.current.delete(threadId);
       checkpointPredecessorTurnsRef.current.delete(id);
       const message = friendlyError(reason);
       persistCheckpoints((current) => current.filter((entry) => entry.id !== id));
-      void deleteCheckpointSnapshot(id, workspacePath).catch(() => undefined);
+      void runCheckpointProjectOperation(
+        workspacePath,
+        () => deleteCheckpointSnapshot(id, workspacePath),
+      ).catch(() => undefined);
+      // A cancelled/replaced attempt cannot announce stale folder state or
+      // repopulate the unsupported cache after a newer preparation succeeds.
+      if (!ownsPreparation) return undefined;
       if (/Checkpoints (?:currently )?require/i.test(message)) {
         checkpointUnsupportedPathsRef.current.add(pathKey);
+        if (isMissingGitCheckpointError(message)) {
+          // A notification offers to set Git up; the thread itself carries no
+          // permanent row, because that state can change at any time.
+          contextRef.current.onCheckpointGitMissing?.({ threadId, workspacePath });
+          return undefined;
+        }
         useTaskStore.getState().upsertActivity(threadId, {
           id: `checkpoint-unavailable-${id}`,
           kind: "warning",

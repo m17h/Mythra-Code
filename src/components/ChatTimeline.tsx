@@ -38,6 +38,7 @@ import { createLineStreamingTextPacer } from "../lib/lineStreamingTextPacer";
 import { createCompletionReveal, type CompletionReveal } from "../lib/completionReveal";
 import { MessageImagePreview, LocalMessageImagePreview } from "./MessageImagePreview";
 import { ParentRunTurnLabel } from "./ParentRunLine";
+import { withoutObsoleteCheckpointGitWarnings } from "../lib/checkpointGitNotice";
 import { TimelineEnvironmentContext, TimelineSubAgentControls, TimelineSubAgentClock, TimelineParentTurnLabel, useTimelineEnvironment, useTimelineTask, type TimelineEnvironment, type MessageFeedbackOpener } from "./TimelineEnvironment";
 import { getChildMailbox, subscribeChildMailbox } from "../lib/childAgentMailbox";
 import { isMythraNoticeMessage } from "../lib/userMessageEcho";
@@ -2218,7 +2219,10 @@ const TimelineContent = memo(function TimelineContent({
   // Outcome, final-answer, live-status and summary inference always read the
   // source transcript. Friendly row projection happens only when rendering
   // individual operations in the details/inline surfaces.
-  const ordered = useMemo(() => orderedTimelineEntries(messages, activities), [messages, activities]);
+  // Older versions recorded a permanent "no Git" row at thread start; a
+  // notification replaces it, so saved and remote history hides that row only.
+  const shownActivities = useMemo(() => withoutObsoleteCheckpointGitWarnings(activities), [activities]);
+  const ordered = useMemo(() => orderedTimelineEntries(messages, shownActivities), [messages, shownActivities]);
   const runs = useMemo(() => timelineRuns(ordered), [ordered]);
   const presented = useMemo(() => presentTimeline(ordered, runs, running, awaiting, activeTurnId), [activeTurnId, awaiting, ordered, runs, running]);
   // What the previous commit folded into the live run. Exposing its answer

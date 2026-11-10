@@ -1,0 +1,133 @@
+/* Keep the notices out of the thread's flow, anchored after the actual header
+   height. A column stacks the cards using their rendered heights, including
+   when the header or the update notice wraps in a narrow panel. */
+.app-checkpoint-notice-stack {
+  position: relative;
+  z-index: 3;
+  top: 8px;
+  height: 0;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+.app-checkpoint-notice-stack > .app-update-notice-region,
+.app-checkpoint-notice-stack > .checkpoint-git-toast-region {
+  position: relative;
+  top: auto;
+  flex: none;
+}
+.app-checkpoint-notice-stack > .app-update-notice-region:has(> .app-update-notice) ~ .checkpoint-git-toast-region:not(:empty) { margin-top: 8px; }
+
+.checkpoint-git-toast-region {
+  display: flex;
+  justify-content: center;
+  padding: 0 var(--s-4);
+  pointer-events: none;
+}
+
+.checkpoint-git-toast {
+  max-width: min(620px, 100%);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 6px 6px 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--amber, #e2a869) 30%, var(--line-strong));
+  border-radius: var(--r-lg);
+  color: var(--text);
+  background: color-mix(in srgb, var(--amber, #e2a869) 4%, var(--menu-surface));
+  box-shadow: var(--elev-2);
+  pointer-events: auto;
+  animation: checkpoint-git-toast-arrive 320ms var(--ease) both;
+}
+.checkpoint-git-toast-icon {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--amber, #e2a869);
+  background: color-mix(in srgb, var(--amber, #e2a869) 13%, transparent);
+}
+.checkpoint-git-toast-copy { min-width: 0; flex: 1 1 auto; display: grid; gap: 2px; }
+.checkpoint-git-toast-copy strong {
+  overflow: hidden;
+  font-size: var(--fs-ui);
+  font-weight: 620;
+  letter-spacing: var(--track-tight);
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.checkpoint-git-toast-copy small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+/* Failures remain until dismissed, so make the entire diagnostic available
+   without a pointer-only title tooltip. Its focus stop allows keyboard scroll. */
+.checkpoint-git-toast.failed .checkpoint-git-toast-copy small {
+  display: block;
+  max-height: min(12rem, 30vh);
+  overflow: auto;
+  white-space: pre-wrap;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+}
+.checkpoint-git-toast-actions { flex: none; display: flex; align-items: center; gap: 6px; margin-left: var(--s-1); }
+.checkpoint-git-toast-actions button {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--t-fast) ease, background var(--t-fast) ease, color var(--t-fast) ease;
+}
+.checkpoint-git-toast-primary {
+  border: 1px solid color-mix(in srgb, var(--green) 40%, var(--line-strong));
+  color: var(--text);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+.checkpoint-git-toast-primary:hover:not(:disabled) { border-color: color-mix(in srgb, var(--green) 62%, var(--line-strong)); background: color-mix(in srgb, var(--green) 18%, transparent); }
+.checkpoint-git-toast-primary:disabled { cursor: progress; opacity: .78; }
+.checkpoint-git-toast-dismiss { border: 1px solid var(--line); color: var(--muted); background: transparent; }
+.checkpoint-git-toast-dismiss:hover { color: var(--text); border-color: var(--line-strong); background: var(--line-quiet); }
+.checkpoint-git-toast.failed { border-color: color-mix(in srgb, var(--red) 34%, var(--line-strong)); background: color-mix(in srgb, var(--red) 4%, var(--menu-surface)); }
+.checkpoint-git-toast.failed .checkpoint-git-toast-icon { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+
+/* Lumen surfaces, matching the update notice. */
+.app-shell[data-theme][data-color-scheme] .app-checkpoint-notice-stack > .app-update-notice-region { top: auto; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-git-toast { border-radius: var(--r-xl); box-shadow: var(--lm-pop-shadow, var(--elev-2)); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-git-toast-icon { border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-git-toast-actions button { border-radius: var(--r-control, var(--r-sm)); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-git-toast-primary { border-color: transparent; color: var(--on-accent, var(--text)); background: var(--lm-fill, var(--green)); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-git-toast-primary:hover:not(:disabled) { border-color: transparent; background: var(--lm-fill, var(--green)); filter: brightness(1.06); }
+
+/* A narrow panel stacks the actions under the copy instead of squeezing it. */
+@container chat-main (max-width: 560px) {
+  .checkpoint-git-toast { flex-wrap: wrap; }
+  .checkpoint-git-toast-copy { flex-basis: calc(100% - 40px); }
+  .checkpoint-git-toast-copy strong { white-space: normal; }
+  .checkpoint-git-toast-actions { width: 100%; flex-wrap: wrap; justify-content: flex-end; margin-left: 0; }
+}
+
+@keyframes checkpoint-git-toast-arrive { from { opacity: 0; transform: translateY(-6px) scale(.98); } }
+@keyframes checkpoint-git-toast-fade { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .checkpoint-git-toast { animation: checkpoint-git-toast-fade 160ms linear both; }
+  .checkpoint-git-toast .spin { animation: none; }
+  .checkpoint-git-toast-actions button { transition: none; }
+}
