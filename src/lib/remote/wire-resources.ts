@@ -7,6 +7,8 @@ export interface WireWorker {
   target: string; provider?: WireProvider; model?: string; task?: string; progress?: string; result?: string;
   canOpen: boolean; canStop: boolean; canAccept: boolean; review?: "awaiting" | "accepted";
   finishedAt?: number; targetId?: string; nativeRuntime?: "codex" | "claude";
+  /** Composer badge inputs: a result the parent still has to handle, and questions it still has to answer. */
+  pendingResult?: true; pendingQuestions?: number;
 }
 export interface WireMailMessage { id: string; direction: "toParent" | "toChild"; kind: "question" | "update" | "guidance"; text: string; state: string; createdAt: number; answeredAt?: number; closedAt?: number; settledAt?: number; uncertain?: boolean; replyTo?: string; via?: "steer" | "turn" | "read" }
 export interface WireMailbox { agentId: string; dropped: number; messages: WireMailMessage[]; truncated: boolean }
@@ -16,6 +18,11 @@ export interface WireWorkflowView { digest: string; id: string; name: string; de
 export interface WireTerminalSummary { terminalId: string; command: string; state: string; startedAt: number; owned: boolean; threadId?: string; columns?: number; rows?: number; seq?: number }
 export interface WireResourceResult {
   revision: string; truncated: boolean; workers?: WireWorker[]; mailboxes?: WireMailbox[]; workflows?: WireWorkflowView[];
+  /** agents.read only: exact pending totals over every scoped worker, computed
+   * before the page bound. Absent from older hosts; absence is never zero. */
+  pending?: { questions: number; results: number };
+  /** agents.read only: every scoped worker, of which `workers` is a bounded page. */
+  workerTotal?: number;
   actions?: { id: string; name: string; command: string; icon?: string }[]; usage?: WireUsageDetail;
   lineage?: { threadId: string; sourceThreadId?: string; sourceTitle?: string; sourceProvider?: WireProvider; targetProvider?: WireProvider; createdAt?: number };
   suggestion?: { id: string; message: string; stagedMessage?: string; token: string; stale: boolean } | null;

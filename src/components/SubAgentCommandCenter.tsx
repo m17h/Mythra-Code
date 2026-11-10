@@ -25,10 +25,12 @@ import {
   type ChildAgentReadiness,
 } from "../lib/childAgents";
 import {
+  describePendingSubAgentWork,
   describeSubAgentActivity,
   isSubAgentWorkerActive,
   subAgentWorkerLabel,
   summarizeSubAgentWorkers,
+  type SubAgentPendingSummary,
   type SubAgentWorker,
 } from "../lib/subAgentActivity";
 import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
@@ -85,6 +87,12 @@ export interface SubAgentCommandCenterProps {
   mode: SubAgentPolicyMode;
   readiness: ChildAgentReadiness;
   workers: SubAgentWorker[];
+  /**
+   * Another device's totals when `workers` may be a bounded page. Exact totals
+   * replace counts derived from the shown rows; `unavailable` (an older host)
+   * is never shown as zero. Local callers omit it and count their own rows.
+   */
+  pendingSummary?: SubAgentPendingSummary;
   /** Whether the parent conversation is starting or running. */
   parentActive?: boolean;
   /** "Chats" or the project name — where an edit would be written. */
@@ -1019,7 +1027,21 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
   // presenting the unrelated saved Mythra concurrency limit as a native cap.
   const confirmedActive = counts.starting + counts.working;
   const unknownNote = statusUnknown ? ` · ${counts.unknown} status unknown` : "";
-  const attention = (counts.questions ?? 0) + (counts.unreadUpdates ?? 0) + (counts.deliveryIssues ?? 0) + (counts.awaitingReview ?? 0);
+  const summary = props.pendingSummary;
+  const rowPending = (counts.questions ?? 0) + (counts.pendingResults ?? 0);
+  const pendingCounts = summary?.kind === "exact" ? { questions: summary.questions, pendingResults: summary.results } : counts;
+  const pending = summary?.kind === "exact" ? summary.questions + summary.results : rowPending;
+  // An older host reports no totals. Its shown rows can only give a lower
+  // bound, so say what is known instead of a confident count or zero.
+  const pendingUnknown = summary?.kind === "unavailable";
+  const pendingDescription = pendingUnknown
+    ? `${rowPending ? `At least ${describePendingSubAgentWork(counts)}. ` : ""}Pending question and result totals aren’t available from the other device. Refresh or update Mythra Code there to see them here.`
+    : describePendingSubAgentWork(pendingCounts);
+  const pendingLabel = pendingUnknown ? rowPending ? `${rowPending}+ pending` : "pending ?" : `${pending} pending`;
+  const windowNote = summary?.kind === "exact" && summary.total > summary.shown
+    ? `Showing ${summary.shown} of ${summary.total} sub-agents. Those waiting on the parent are listed first.`
+    : summary?.kind === "unavailable" && summary.truncated ? `Showing the first ${summary.shown} sub-agents; more are on the other device.` : "";
+  const showPending = pending > 0 || pendingUnknown;
   const triggerLabel = !delegationOn
     ? statusUnknown
       ? counts.starting + counts.working > 0
@@ -1071,7 +1093,9 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
             : <UsersRound size={14} aria-hidden="true" />}
           {native && delegationOn && <span className="sr-only">Sub-agents: </span>}
           {triggerLabel}
-          {attention > 0 && <span className="sa-trigger-attention" title={describeSubAgentActivity(counts)}>{attention} to check</span>}
+          {showPending && <span className="sa-trigger-attention" title={pendingDescription}>
+            {pendingLabel}<span className="sr-only"> · {pendingDescription}</span>
+          </span>}
           {(!editable || runLocked) && <Lock size={11} className="sa-trigger-lock" aria-hidden="true" />}
           {props.projectOverride && <em className="project-override-mark">project</em>}
         </span>
@@ -1829,6 +1853,8 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
           </div>
 
           <div className="sa-activity">
+            {showPending && <p className="sa-attention-note">{pendingDescription}</p>}
+            {windowNote && <p className="sa-attention-note">{windowNote}</p>}
             <div className="sa-activity-head">
               <strong>Live sub-agents</strong>
               <span className="sa-counts" role="status">
@@ -1838,7 +1864,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
             {statusUnknown && <p className="sa-worker-error" role="status">{unknownWithoutConversation
               ? "Status is unconfirmed. Claude Code agents share the parent runtime; inspect the parent’s activity and use its Stop control if a cutoff is needed. Open other sub-agent conversations when available."
               : "Status is unconfirmed. Open the sub-agent conversation to inspect its current work, or use Stop to request a confirmed cutoff before changing this setup."}</p>}
-            {(counts.questions ?? 0) > 0 && <p className="sa-attention-note">To request a reply, send guidance in this parent conversation. Use Steer when available, or Send to queue or start its next turn.</p>}
+            {(pendingCounts.questions ?? 0) > 0 && <p className="sa-attention-note">To request a reply, send guidance in this parent conversation. Use Steer when available, or Send to queue or start its next turn.</p>}
             {workers.length > 0 ? (
               <ul className="sa-worker-list">
                 {workers.map((worker, index) => {
@@ -1856,7 +1882,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                   const progress = worker.progress?.trim();
                   const result = worker.result?.trim();
                   const mail = worker.mail;
-                  const openQuestions = mail?.openQuestions ?? 0;
+                  const openQuestions = mail ? mail.openQuestions : worker.pendingQuestions ?? 0;
                   const hasDetails = Boolean(worker.task?.trim() || progress || result || mail?.recent.length || mail?.dropped || worker.review === "accepted");
                   const detailsOpen = hasDetails && workerDetailsOpen === workerDetailsKey(worker);
                   const detailsId = `${workerDetailsIdBase}-${index}`;
@@ -1902,6 +1928,9 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                             <MessageCircleQuestion size={10} aria-hidden="true" />
                             {openQuestions === 1 ? "Question" : `${openQuestions} questions`}
                           </span>
+                        )}
+                        {worker.pendingResult && !awaitingReview && (
+                          <span className="sa-worker-badge" title="The parent has not collected this result yet">Result to collect</span>
                         )}
                         {(mail?.queuedForChild ?? 0) - (mail?.deliveringForChild ?? 0) > 0 && (
                           <span className="sa-worker-badge queued" title="Parent guidance not yet delivered to this sub-agent">

@@ -87,6 +87,7 @@ import type { HostContextSources, HostParityActions, HostRowActions, StopActionS
 import { EXECUTION_PREFERENCES_KEY, getHostThreadPreferences, sharedThreadPreferences, withoutHostPreference } from "./lib/remote/host/executionPreferences";
 import { appendHostCommandOutput, hostCommandBusy } from "./lib/remote/host/commandActions";
 import { HostReadError } from "./lib/remote/host/scope";
+import { isLiveRemoteEngineOwner } from "./lib/remote/host/engineOwners";
 import type { RemoteWorkflowEngine } from "./lib/remote/host/workflowExecution";
 import type { WireExecutionSettings } from "./lib/remote/wire";
 import { hostProviderCatalog, hostWorkspaceGit, refreshHostWorkspaceGit, selectedHostWorkspaceGit, synthesizedArchivedThread } from "./lib/remote/hostSources";
@@ -112,11 +113,12 @@ import {
 import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, ChildAgentTarget, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, SettingsSection, SubagentEngine, Thread, ThreadHandoff, ThreadReasoning, ThreadSubagentSettings, ThemeName, WorkspaceMode } from "./types";
 import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
-import { PendingTurnStarts } from "./lib/pendingTurnStarts";
-import { captureHistoryReadBoundary, selectInlineApproval, selectPendingApproval, selectPendingApprovalCount, storedPendingTimedTurns, threadsHeldForUser, useTaskStore, type QueuedTurn } from "./lib/taskStore";
+import { PendingTurnStarts, pendingTurnStartRevision } from "./lib/pendingTurnStarts";
+import { captureHistoryReadBoundary, parentRunStopEpoch, selectInlineApproval, selectPendingApproval, selectPendingApprovalCount, storedPendingTimedTurns, threadsHeldForUser, useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { countScheduledPrompts, scheduledCountsLabel } from "./lib/scheduledPromptCounts";
 import { eligibleQueueHead, hasEligibleQueuedTurns } from "./lib/timedPrompts";
-import { parentAuthKey, parentExecutionDifference, parentResumesRemain, parentRunBlocked, parentRunView, type ParentExecution, type ParentRun } from "./lib/parentRun";
+import { parentAuthKey, parentExecutionDifference, parentResumesRemain, parentRunBlocked, parentRunHoldsThread, parentRunView, stoppingParentRun, type ParentExecution, type ParentRun } from "./lib/parentRun";
+import { beginParentStopCutoff, isUncertainParentRun, parentRecoveryProvider, PARENT_RUN_RECOVERY_INTERVAL_MS, reconcileUncertainParentRun, stopByThreadEvidence } from "./lib/parentRunRecovery";
 import { recordParentRunTransitions } from "./lib/parentRunDiagnostics";
 import { newThreadPromptsForWorkspace, useNewThreadTimedPrompts, type NewThreadTimedPrompt } from "./lib/newThreadTimedPrompts";
 import { isMythraNoticeMessage } from "./lib/userMessageEcho";
@@ -208,7 +210,7 @@ import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
 import { projectRunExecCommand, projectRunShellCommand, sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./lib/projectRun";
 import { isLmStudioProviderId, runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
-import { archiveAfterTitleCancellation, activeThreadArchiveBlockedReason, archivedThreadsForInbox, finishThreadBlockedReason, providerForArchivedThread } from "./lib/threadArchive";
+import { archiveAfterTitleCancellation, activeThreadRemovalBlockedReason, archivedThreadsForInbox, finishThreadBlockedReason, providerForArchivedThread } from "./lib/threadArchive";
 import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
 import { EMPTY_PROJECT_PROMPT_PROFILES, updateProjectPromptOverrides, type ProjectPromptProfileState } from "./lib/projectPromptProfiles";
 import { DEFAULT_THREAD_SUBAGENT_SETTINGS, nativeSubagentUnavailableReason, sanitizeNativeSubagentMax, sanitizeNativeSubagentOptions, sanitizeSubagentEngine, sanitizeThreadSubagentSettings, settingsForThreadSubagents, threadSubagentSettingsFromApp } from "./lib/threadSubagentSettings";
@@ -1601,6 +1603,7 @@ export default function App() {
   };
   const agentRecords = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS) : EMPTY_AGENTS));
   const agentRunStartedAt = useTaskStore((state) => (activeThreadId ? state.tasks[activeThreadId]?.agentRunStartedAt : undefined));
+  const activeParentRunId = useTaskStore((state) => (activeThreadId ? state.parentRuns[activeThreadId]?.id : undefined));
   const tokenUsage = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.usage ?? null) : null));
   const visibleThreadHistory = useTaskStore((state) => studioOpen && studioTab === "usage" && activeThreadId
     ? state.tasks[activeThreadId]?.history : undefined);
@@ -1701,8 +1704,9 @@ export default function App() {
       nativeModel: effectiveSettings.model,
       mailboxes: childMailboxes,
       reviewTokens: Object.fromEntries(Object.values(childAgentLinks).map((link) => [link.childThreadId, childReviewToken(link)])),
+      parentRunId: activeParentRunId,
     }),
-    [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, childMailboxes, commandWorkerProofByThread, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
+    [activeParentRunId, activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, childMailboxes, commandWorkerProofByThread, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
   );
   const historicalSubAgentWorkers = useMemo(() => collectSubAgentWorkers({
     rootThreadId: activeThreadId,
@@ -1715,7 +1719,8 @@ export default function App() {
     nativeModel: effectiveSettings.model,
     mailboxes: childMailboxes,
     reviewTokens: Object.fromEntries(Object.values(childAgentLinks).map((link) => [link.childThreadId, childReviewToken(link)])),
-  }), [activeProvider, activeThreadId, agentRecords, childAgentLinks, childMailboxes, commandWorkerProofByThread, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses]);
+    parentRunId: activeParentRunId,
+  }), [activeParentRunId, activeProvider, activeThreadId, agentRecords, childAgentLinks, childMailboxes, commandWorkerProofByThread, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses]);
   const running = activeThreadId ? Boolean(activeWorkflowOwner) || taskStatus === "starting" || taskStatus === "running" : Boolean(selectedFirstPrompt) && startingDraftTurn;
   useEffect(() => {
     if (!activeThreadId) return;
@@ -6745,6 +6750,7 @@ export default function App() {
    */
   const stopWorkflowRef = useRef<((workflowId: string) => Promise<boolean>) | null>(null);
   const activeParentRun = useTaskStore((state) => activeThreadId ? state.parentRuns[activeThreadId] : undefined);
+  const parentRunStoppable = parentRunHoldsThread(activeParentRun);
   const parentRunApprovalChild = useTaskStore((state) => {
     if (!activeParentRun) return undefined;
     // The scheduler's rule: a nonblocking request does not hold the child.
@@ -6785,7 +6791,7 @@ export default function App() {
     for (const threadId of Object.keys(previous.parentRuns)) {
       const run = previous.parentRuns[threadId];
       // Retirement (Stop, Dismiss or a replacement user turn) is not sign-off.
-      if (!state.parentRuns[threadId] && state.statuses[threadId] === "completed"
+      if (!state.parentRuns[threadId] && !run.pause?.stop && state.statuses[threadId] === "completed"
         && !parentRunBlocked(parentRunObligations(run))) autoArchiveCompletionRef.current(threadId);
     }
     for (const run of Object.values(state.parentRuns)) {
@@ -6805,21 +6811,112 @@ export default function App() {
   }), []);
   const stopTurnAndChildren = useCallback(async () => {
     const rootThreadId = useTaskStore.getState().activeThreadId;
+    const priorRun = rootThreadId ? useTaskStore.getState().parentRuns[rootThreadId] : undefined;
+    const priorTask = rootThreadId ? useTaskStore.getState().tasks[rootThreadId] : undefined;
+    const uncertainDispatch = isUncertainParentRun(priorRun);
+    const stoppingRun = priorRun ? stoppingParentRun(priorRun, "Stop is waiting for confirmation that this work stopped.") : undefined;
+    const runner = turnRunnerRef.current;
+    const context = turnRunnerContextRef.current;
+    const stopTarget = rootThreadId ? runner?.getThreadStopTarget(rootThreadId) : undefined;
+    // Read before Stop retires anything: a closed native owner from an earlier
+    // failed Stop, a reload or a lost start leaves no identity to cut off.
+    const liveIdentity = Boolean(stopTarget && (stopTarget.turnId || stopTarget.startRequestId
+      || stopTarget.ownerHandle && isLiveRemoteEngineOwner(stopTarget.ownerHandle)));
+    const rootThread = rootThreadId ? knownThreadsRef.current?.[rootThreadId] : undefined;
+    const rootProvider = parentRecoveryProvider(rootThread, priorRun);
     // Before anything that can wait: nothing may continue this parent after Stop.
-    if (rootThreadId) useTaskStore.getState().stopParentRun(rootThreadId, "stop");
+    if (rootThreadId) useTaskStore.getState().stopParentRun(rootThreadId, "stop", stoppingRun);
+    const stopEpoch = rootThreadId ? parentRunStopEpoch(rootThreadId) : undefined;
+    const startRevision = rootThreadId ? pendingTurnStartRevision(rootThreadId) : undefined;
+    const sameStopAttempt = () => {
+      if (!rootThreadId) return false;
+      const state = useTaskStore.getState(), task = state.tasks[rootThreadId];
+      return state.parentRuns[rootThreadId] === stoppingRun && parentRunStopEpoch(rootThreadId) === stopEpoch
+        && pendingTurnStartRevision(rootThreadId) === startRevision
+        && task?.agentRunId === priorTask?.agentRunId && task?.agentRunStartedAt === priorTask?.agentRunStartedAt;
+    };
+    const releaseCutoff = rootThreadId && stoppingRun ? beginParentStopCutoff(rootThreadId) : undefined;
+    // Keep removal blocked throughout the awaited cutoff, even between parent
+    // turns. Clearing automatic-resume authority is not proof the work stopped.
     if (rootThreadId) rootCutoffIntentRef.current.set(rootThreadId, (rootCutoffIntentRef.current.get(rootThreadId) ?? 0) + 1);
     const frontier = rootThreadId ? captureChildStopFrontier(rootThreadId) : undefined;
     const rootCutoff = rootThreadId ? captureRootCutoff(rootThreadId) : undefined;
     const workflowOwner = rootThreadId ? useTaskStore.getState().workflowOwners[rootThreadId] : undefined;
     // Dispatch every cutoff before awaiting any provider. One slow runtime must
     // never delay the other agents from receiving Stop.
-    const failures = (await stopWithChildren(
-      () => workflowOwner ? stopWorkflowRef.current?.(workflowOwner.workflowId) ?? Promise.resolve(false) : stopTurn(),
-      () => rootThreadId ? cancelChildAgentsFor(rootThreadId, frontier) : Promise.resolve(),
-      () => rootThreadId ? waitForRootCutoff(rootThreadId, undefined, rootCutoff) : Promise.resolve(),
-    )).map(friendlyError);
+    let failures: string[];
+    try {
+      failures = (await stopWithChildren(
+        async () => {
+          if (workflowOwner) return stopWorkflowRef.current?.(workflowOwner.workflowId) ?? false;
+          if (!uncertainDispatch) return stopTurn();
+          if (runner && context && stopTarget && liveIdentity) {
+            try {
+              return await runner.stopThreadTurn({ ...context, running: true }, stopTarget);
+            } catch (reason) {
+              // The retained identity can name a start or turn that already
+              // ended natively, or an exact child of a closed owner whose
+              // earlier cutoff needs retrying. This explicit host Stop can
+              // retry those retained children, then requires fresh proof.
+              if (!rootThreadId || !rootProvider) throw reason;
+              await stopByThreadEvidence(rootThreadId, rootProvider, true, sameStopAttempt).catch(() => { throw reason; });
+              return;
+            }
+          }
+          // No live identity survives. Native/provider evidence for this exact
+          // thread decides: ended work needs no cutoff, work still running is
+          // cut off by this thread's own provider turn, then proven again.
+          if (!rootThreadId || !rootProvider) throw new Error("Mythra Code couldn’t identify this conversation’s provider to confirm its work ended. Its status remains unknown and removal stays blocked.");
+          await stopByThreadEvidence(rootThreadId, rootProvider, true, sameStopAttempt);
+        },
+        () => rootThreadId ? cancelChildAgentsFor(rootThreadId, frontier) : Promise.resolve(),
+        () => rootThreadId ? waitForRootCutoff(rootThreadId, undefined, rootCutoff) : Promise.resolve(),
+      )).map(friendlyError);
+    } finally {
+      releaseCutoff?.();
+    }
+    if (rootThreadId && priorRun && parentRunStopEpoch(rootThreadId) === stopEpoch) {
+      const state = useTaskStore.getState();
+      const task = state.tasks[rootThreadId];
+      const sameAttempt = task?.agentRunId === priorTask?.agentRunId && task?.agentRunStartedAt === priorTask?.agentRunStartedAt;
+      if (stoppingRun && !failures.length && state.parentRuns[rootThreadId] === stoppingRun && sameAttempt) {
+        state.stopParentRun(rootThreadId, "stop");
+      } else if (stoppingRun && failures.length && sameAttempt && state.parentRuns[rootThreadId] === stoppingRun) {
+        state.updateParentRun(rootThreadId, () => stoppingParentRun(stoppingRun, "Stop could not confirm this work stopped. Retry Stop: Mythra Code asks the provider again and cuts off anything still running."));
+      }
+    }
     if (failures.length) setError(`Stop could not confirm every cutoff:\n${failures.join("\n")}`);
   }, [captureChildStopFrontier, cancelChildAgentsFor, setError, stopTurn]);
+
+  // An uncertainty latch can outlive every live identity (reload, lost start,
+  // closed native owner), including on background threads and for work a
+  // remote device stopped through this host. Ask native evidence about each
+  // held thread on a slow cadence; release only happens through the guarded
+  // reconciliation, never because the interface looks idle.
+  useEffect(() => {
+    let disposed = false;
+    let seen = new Map<string, ParentRun>();
+    const check = () => {
+      if (disposed) return;
+      const next = new Map<string, ParentRun>();
+      for (const [threadId, run] of Object.entries(useTaskStore.getState().parentRuns)) {
+        if (!isUncertainParentRun(run)) continue;
+        next.set(threadId, run);
+        // Require the same record across one full interval, so a dispatch
+        // whose provider response is still arriving is never probed mid-flight.
+        if (seen.get(threadId) !== run) continue;
+        const thread = knownThreadsRef.current?.[threadId];
+        void reconcileUncertainParentRun(threadId, parentRecoveryProvider(thread, run)).catch(() => undefined);
+      }
+      seen = next;
+    };
+    check();
+    const interval = window.setInterval(check, PARENT_RUN_RECOVERY_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const retryRuntime = async () => {
     const runtime = await checkRuntime(false);
@@ -7129,6 +7226,32 @@ export default function App() {
       || mailbox.queuedForChild > 0 || mailbox.unansweredQuestions > 0;
   };
 
+  const threadRemovalBlockedReason = (threadId: string, action: "archive" | "delete"): string | null => {
+    const state = useTaskStore.getState();
+    const nativeActivity = nativeArchiveActivity({
+      threadId,
+      nativeLinks: nativeAgentLinksRef.current,
+      statuses: state.statuses,
+      agentRecordsByThread: Object.fromEntries(Object.entries(state.tasks).map(([id, task]) => [id, task.agents])),
+    });
+    const managedActive = (link: ChildAgentLink) => isSubAgentWorkerActive(workerStatusFromLifecycle(
+      childLifecycleForLink(link, state.statuses[link.childThreadId] ?? "idle"),
+    ));
+    const managedLink = childAgentLinksRef.current[threadId];
+    if (nativeActivity.activeSelf || managedLink && managedActive(managedLink)) {
+      return `Stop this sub-agent and wait for its work to stop before ${action === "archive" ? "archiving" : "deleting"} it.`;
+    }
+    const task = state.tasks[threadId];
+    return activeThreadRemovalBlockedReason(
+      { status: state.statuses[threadId] ?? task?.status ?? "idle", agents: task?.agents ?? [] },
+      action,
+      nativeActivity.activeDescendants || hasChildStartInFlight(threadId)
+        || Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === threadId && managedActive(link)),
+      Boolean(state.workflowOwners[threadId]),
+      state.parentRuns[threadId],
+    );
+  };
+
   const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean, automatic = false, strict = false): Promise<boolean> => {
     let label = thread.name || thread.preview || "Untitled thread";
     const archiveActivityBlock = () => {
@@ -7142,24 +7265,7 @@ export default function App() {
           return "This conversation has a scheduled future turn.";
         }
       }
-      const managedLink = childAgentLinksRef.current[thread.id];
-      if (managedLink && isSubAgentWorkerActive(workerStatusFromLifecycle(childLifecycleForLink(managedLink, state.statuses[thread.id] ?? "idle")))) {
-        return "Open and finish or stop this sub-agent before archiving it; its last turn has not been confirmed to have settled.";
-      }
-      const nativeActivity = nativeArchiveActivity({
-        threadId: thread.id,
-        nativeLinks: nativeAgentLinksRef.current,
-        statuses: state.statuses,
-        agentRecordsByThread: Object.fromEntries(Object.entries(state.tasks).map(([id, task]) => [id, task.agents])),
-      });
-      if (nativeActivity.activeSelf) return "Finish or stop this thread before archiving it.";
-      return activeThreadArchiveBlockedReason(
-        state.tasks[thread.id],
-        nativeActivity.activeDescendants
-          || Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && (!link.terminalStatus || link.activationPending))
-          || hasChildStartInFlight(thread.id),
-        Boolean(state.workflowOwners[thread.id]),
-      );
+      return threadRemovalBlockedReason(thread.id, "archive");
     };
     const initialBlock = archiveActivityBlock();
     if (initialBlock) {
@@ -7231,9 +7337,10 @@ export default function App() {
       workspaceKindThreads,
       useTaskStore.getState().statuses,
       useTaskStore.getState().workflowOwners,
+      (thread) => Boolean(threadRemovalBlockedReason(thread.id, "archive")),
     );
     if (ready.length === 0) {
-      setError(`Stop the active ${kindLabel} ${active.length === 1 ? "thread" : "threads"} before archiving this inbox.`);
+      setError(`Stop the ${kindLabel} ${active.length === 1 ? "thread that is" : "threads that are"} still working, running sub-agents or waiting to continue before archiving this inbox.`);
       return;
     }
     const activeNote = active.length
@@ -7312,35 +7419,8 @@ export default function App() {
     if (isolation && isolation.status !== "removed") {
       return refuse(`Remove “${isolation.branch}” from the Worktrees workspace tab before permanently deleting this thread.`);
     }
-    const taskStatus = useTaskStore.getState().statuses[threadId];
-    if (taskStatus === "starting" || taskStatus === "running" || useTaskStore.getState().workflowOwners[threadId]) {
-      return refuse(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
-    }
-    const nativeDeletionBusy = () => {
-      const current = useTaskStore.getState();
-      const managedLink = childAgentLinksRef.current[threadId];
-      const activity = nativeArchiveActivity({
-        threadId,
-        nativeLinks: nativeAgentLinksRef.current,
-        statuses: current.statuses,
-        agentRecordsByThread: Object.fromEntries(Object.entries(current.tasks).map(([id, task]) => [id, task.agents])),
-      });
-      return activity.activeSelf || activity.activeDescendants
-        || Boolean(managedLink && isSubAgentWorkerActive(workerStatusFromLifecycle(childLifecycleForLink(managedLink, current.statuses[threadId] ?? "idle"))))
-        || current.statuses[threadId] === "starting" || current.statuses[threadId] === "running"
-        || Boolean(current.workflowOwners[threadId])
-        || Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === threadId && (!link.terminalStatus || link.activationPending))
-        || current.tasks[threadId]?.agents.some((agent) => isActiveAgentRecord(agent.status))
-        || hasChildStartInFlight(threadId);
-    };
-    if (nativeDeletionBusy()) {
-      return refuse("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
-    }
-    if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === threadId && !link.terminalStatus)
-      || useTaskStore.getState().tasks[threadId]?.agents.some((agent) => isActiveAgentRecord(agent.status))
-      || hasChildStartInFlight(threadId)) {
-      return refuse("Finish or stop this task’s sub-agents before deleting it.");
-    }
+    const initialBlock = threadRemovalBlockedReason(threadId, "delete");
+    if (initialBlock) return refuse(initialBlock);
     const archived = archivedThreads.find((record) => record.id === threadId);
     let legacyClaudeTranscript = false;
     if (!thread && archived && !archived.provider) {
@@ -7359,6 +7439,8 @@ export default function App() {
         : "openai";
     const localSubscription = provider === "claude" || provider === "cursor";
     if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
+    const afterConfirmationBlock = threadRemovalBlockedReason(threadId, "delete");
+    if (afterConfirmationBlock) return refuse(afterConfirmationBlock);
     if (archivingThreadIdsRef.current.has(threadId) || hostRowReservationsRef.current.has(threadId)) return strict ? refuse("This conversation is already being removed.") : false;
     archivingThreadIdsRef.current.add(threadId);
     setThreadAvailabilityRevision((revision) => revision + 1);
@@ -7368,16 +7450,14 @@ export default function App() {
       // A rename already dispatched to storage must settle before deletion,
       // otherwise it can write a name into a transcript that was just removed.
       await threadRenameWritesRef.current.get(threadId)?.promise;
-      if (nativeDeletionBusy()) {
-        return refuse("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
-      }
+      const preparationBlock = threadRemovalBlockedReason(threadId, "delete");
+      if (preparationBlock) return refuse(preparationBlock);
       // Cancellation cannot stop a save already in flight. Let its captured
       // revision finish before deleting the file so it cannot recreate it.
       if (localSubscription && thread && useTaskStore.getState().tasks[threadId]?.transcriptDirty) {
         await localTranscriptSaves.flush(threadId);
-        if (nativeDeletionBusy()) {
-          return refuse("Finish or stop this task and its sub-agents before deleting it.");
-        }
+        const saveBlock = threadRemovalBlockedReason(threadId, "delete");
+        if (saveBlock) return refuse(saveBlock);
       }
       localTranscriptSaves.cancel(threadId);
       if (provider === "claude") await deleteClaudeTranscript(threadId);
@@ -8270,6 +8350,8 @@ export default function App() {
   const checkThreadFinishAllowed = (id: string): string | null => {
     if (!threads.some((thread) => thread.id === id)) return "This thread is no longer in the inbox.";
     if (archivingThreadIdsRef.current.has(id)) return "This thread is already being archived.";
+    const removalBlock = threadRemovalBlockedReason(id, "archive");
+    if (removalBlock) return removalBlock;
     const blocked = finishThreadBlockedReason(useTaskStore.getState().tasks[id],
       Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === id && !link.terminalStatus)
       || hasChildStartInFlight(id),
@@ -9031,7 +9113,7 @@ export default function App() {
   useAppShortcuts({
     escapeStopsRun: settings.escapeStopsRun,
     // Hidden local work must not answer keys meant for the machine on screen.
-    running: remoteActive ? remoteRunning : Boolean((running || childrenRunning) && activeThread),
+    running: remoteActive ? remoteRunning : Boolean((running || childrenRunning || parentRunStoppable) && activeThread),
     modalOpen: Boolean(voiceSession) || spellingMenuOpen || confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
     threadOpen: remoteActive ? remoteThreadOpen : Boolean(activeThreadId),
@@ -9697,7 +9779,18 @@ export default function App() {
     beginRunCheckpoint,
     discardRunCheckpoint,
     restartRuntimeForCapabilities,
+    threadUnavailableReason: (threadId) => (archivedThreadsRef.current.some((record) => record.id === threadId)
+      ? "This schedule reuses a conversation that is archived. Restore it, or set the schedule to start new threads."
+      : null),
     threadBusyReason: (threadId, ignoreOwnStarting) => {
+      // Archive and delete hold this ownership across their awaited steps; a
+      // scheduled turn admitted then would run in a conversation being removed.
+      if (archivingThreadIdsRef.current.has(threadId) || hostRowReservationsRef.current.has(threadId)) {
+        return "This conversation is being archived, deleted or changed. Its scheduled turn was not started.";
+      }
+      if (archivedThreadsRef.current.some((record) => record.id === threadId)) {
+        return "This conversation was archived. Its scheduled turn was not started.";
+      }
       const worktree = threadWorktreesRef.current[threadId];
       if (worktree?.status === "missing" || worktree?.status === "removed") {
         return "Restore this thread's isolated worktree before starting its scheduled turn.";
@@ -9831,8 +9924,8 @@ export default function App() {
           { label: pinnedThreadSet.has(thread.id) ? "Unpin" : "Pin", icon: pinnedThreadSet.has(thread.id) ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleThreadPin(thread.id) },
           { label: "Rename", icon: <Pencil size={13} />, onSelect: () => startThreadRename(thread) },
           ...(activeProject ? [{ label: "Open folder", icon: <FolderOpen size={13} />, onSelect: () => void openThreadFolder(thread) }] : []),
-          { label: "Archive", icon: <Archive size={13} />, onSelect: () => void archiveThread(thread) },
-          { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteThreadForever(thread.id, thread.name || thread.preview || "Untitled thread") },
+          { label: "Archive", icon: <Archive size={13} />, disabledReason: threadRemovalBlockedReason(thread.id, "archive") ?? undefined, onSelect: () => void archiveThread(thread) },
+          { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, disabledReason: threadRemovalBlockedReason(thread.id, "delete") ?? undefined, onSelect: () => void deleteThreadForever(thread.id, thread.name || thread.preview || "Untitled thread") },
         ]}
       />
     </div>
@@ -10045,9 +10138,9 @@ export default function App() {
                       <RowMenu
                         label={`Options for archived ${record.label}`}
                         scale={(settings.uiScale || 100) / 100}
-                        items={[
+                        items={() => [
                           { label: "Restore", icon: <ArchiveRestore size={13} />, onSelect: () => void unarchiveThread(record) },
-                          { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteThreadForever(record.id, record.label) },
+                          { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, disabledReason: threadRemovalBlockedReason(record.id, "delete") ?? undefined, onSelect: () => void deleteThreadForever(record.id, record.label) },
                         ]}
                       />
                     </div>
@@ -10386,7 +10479,7 @@ export default function App() {
                 chatFont={activeChatFont}
                 performanceProvider={effectiveSettings.provider}
                 running={running}
-                childrenRunning={childrenRunning}
+                childrenRunning={childrenRunning || parentRunStoppable}
                 statusLine={parentRunStatus && activeThreadId ? <ParentRunLine
                   view={parentRunStatus}
                   continueLabel={`Continue with ${parentContinueModel}`}
@@ -10638,7 +10731,8 @@ export default function App() {
                   threadId={activeThreadId}
                   isolated={Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed")}
                   mutationBlockedReason={prMutationBlockedReason}
-                  archiveBlockedReason={finishThreadBlockedReason(activeThreadId ? useTaskStore.getState().tasks[activeThreadId] : undefined, false, Boolean(activeWorkflowOwner))}
+                  archiveBlockedReason={(activeThreadId ? threadRemovalBlockedReason(activeThreadId, "archive") : null)
+                    ?? finishThreadBlockedReason(activeThreadId ? useTaskStore.getState().tasks[activeThreadId] : undefined, false, Boolean(activeWorkflowOwner))}
                   onUpdateLocal={threadPullRequest.pullRequest?.state === "MERGED" ? () => gitWorkspace.updateBase(threadPullRequest.pullRequest!.repository, threadPullRequest.pullRequest!.baseRefName) : undefined}
                   updateLocalBusy={gitWorkspace.busy}
                   updateLocalNotice={gitWorkspace.error || gitWorkspace.notice}

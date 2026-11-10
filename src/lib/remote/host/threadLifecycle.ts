@@ -3,7 +3,7 @@ import { childLifecycleForLink, type ChildAgentLink } from "../../childAgents";
 import { nativeArchiveActivity } from "../../subAgentArchive";
 import type { NativeAgentLink } from "../../nativeAgentLinks";
 import { isSubAgentWorkerActive, workerStatusFromLifecycle } from "../../subAgentActivity";
-import { activeThreadArchiveBlockedReason } from "../../threadArchive";
+import { activeThreadRemovalBlockedReason } from "../../threadArchive";
 import { providerFromThread } from "../../threadProvider";
 import type { ThreadWorktreeRecord } from "../../worktrees";
 import { useTaskStore } from "../../taskStore";
@@ -41,8 +41,14 @@ export function threadRowBlockedReason(op: ThreadEffectOperation, thread: Thread
     agentRecordsByThread: Object.fromEntries(Object.entries(state.tasks).map(([key, value]) => [key, value.agents])) });
   const link = evidence.childLinks[id];
   if (native.activeSelf || link && isSubAgentWorkerActive(workerStatusFromLifecycle(childLifecycleForLink(link, state.statuses[id] ?? "idle")))) return "Finish or stop this sub-agent; its last turn has not been confirmed to have settled.";
-  return activeThreadArchiveBlockedReason(task, native.activeDescendants || evidence.childStartInFlight
-    || Object.values(evidence.childLinks).some((entry) => entry.rootThreadId === id && (!entry.terminalStatus || entry.activationPending)), Boolean(state.workflowOwners[id]));
+  return activeThreadRemovalBlockedReason(
+    { status: state.statuses[id] ?? task?.status ?? "idle", agents: task?.agents ?? [] },
+    op === "thread.delete" ? "delete" : "archive",
+    native.activeDescendants || evidence.childStartInFlight || Object.values(evidence.childLinks).some((entry) => entry.rootThreadId === id
+      && isSubAgentWorkerActive(workerStatusFromLifecycle(childLifecycleForLink(entry, state.statuses[entry.childThreadId] ?? "idle")))),
+    Boolean(state.workflowOwners[id]),
+    op === "thread.archive" || op === "thread.delete" ? state.parentRuns[id] : undefined,
+  );
 }
 export function createThreadRowLifecycle(sources: ThreadLifecycleSources): ThreadRowLifecycle {
   return { begin(op, thread) {

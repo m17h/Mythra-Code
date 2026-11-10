@@ -90,6 +90,51 @@ export function finishRemoteThreadOwner(threadId: string, parentPresent: boolean
 export function clearRemoteEngineOwners(generation: number): void { for (const [handle, entry] of owners) if (!entry.owner.local && entry.owner.generation === generation) forget(handle); }
 export function isLiveRemoteEngineOwner(handle: string): boolean { return owners.has(handle) && !owners.get(handle)?.retiring; }
 
+/**
+ * Recovery after an unconfirmed Stop. Native finish never kills work: it closes
+ * admission and confirms every owned child ended. Unlike normal finalization it
+ * is allowed for an owner whose retirement failed. The caller must hold the
+ * thread's Stop/recovery ownership so no retirement is running concurrently.
+ * True: no owner remains or it confirmed and was released. False: owned work
+ * is still running. Undefined: native state could not be read.
+ */
+export async function confirmRemoteEngineOwnerSettled(handle: string, transport: HostTransport = nativeHostTransport,
+  isCurrent: () => boolean = () => true): Promise<boolean | undefined> {
+  if (!isCurrent()) return undefined;
+  const entry = owners.get(handle);
+  if (!entry) return true;
+  if (entry.finishing) await entry.finishing.catch(() => false);
+  if (!isCurrent()) return undefined;
+  if (owners.get(handle) !== entry) return true;
+  try {
+    const result = await transport.invoke<{ confirmed: boolean }>(entry.owner.local ? "remote_local_owner_finish" : "remote_work_owner_finish", { ...(entry.owner.local ? {} : { generation: entry.owner.generation }), ownerHandle: handle });
+    if (!isCurrent()) return undefined;
+    if (result?.confirmed !== true) return false;
+    if (owners.get(handle) === entry) forget(handle);
+    return true;
+  } catch { return undefined; }
+}
+
+/** Every native owner still recorded for this thread, including closed ones a
+ * reload or a failed retirement left without a renderer handle. Native evidence
+ * finalizes idle owners and fences their admission; it never kills work. */
+export async function remoteOwnersSettledForThread(threadId: string, transport: HostTransport = nativeHostTransport): Promise<{ settled: boolean; owners: number } | undefined> {
+  try {
+    const result = await transport.invoke<{ settled?: unknown; owners?: unknown }>("remote_owner_thread_settled", { threadId });
+    return typeof result?.settled === "boolean" && typeof result.owners === "number" ? { settled: result.settled, owners: result.owners } : undefined;
+  } catch { return undefined; }
+}
+
+/** Explicit host Stop can retry only native owners already closed by an
+ * earlier cutoff. The backend retains the exact child/process identities and
+ * refuses new/open owners. Never call this from unstamped remote actions. */
+export async function retryClosedRemoteOwnersForThread(threadId: string, isCurrent: () => boolean): Promise<{ settled: boolean; owners: number } | undefined> {
+  if (!isCurrent()) return undefined;
+  const result = await nativeHostTransport.invoke<{ settled?: unknown; owners?: unknown }>("remote_owner_thread_stop_retry", { threadId });
+  return isCurrent() && typeof result?.settled === "boolean" && typeof result.owners === "number"
+    ? { settled: result.settled, owners: result.owners } : undefined;
+}
+
 export function hasRemoteEngineOwners(): boolean { return owners.size > 0; }
 export function remoteEngineOwnerThreads(): IterableIterator<string> { return threads.keys(); }
 

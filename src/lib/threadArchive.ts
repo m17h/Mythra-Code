@@ -4,6 +4,26 @@ import { normalizedProjectPath } from "./paths";
 import type { ThreadKindView } from "./threadList";
 import type { ThreadTaskState } from "./taskStore";
 import { isActiveAgentRecord } from "./subAgentActivity";
+import { parentRunHoldsThread, type ParentRun } from "./parentRun";
+
+export function activeThreadRemovalBlockedReason(
+  task: Pick<ThreadTaskState, "status" | "agents"> | undefined,
+  action: "archive" | "delete",
+  activeChildren = false,
+  activeWorkflow = false,
+  parentRun?: Pick<ParentRun, "phase" | "autoResume" | "pause">,
+): string | null {
+  const operation = action === "archive" ? "archiving" : "deleting";
+  if (activeWorkflow) return `Stop this workflow before ${operation} its thread.`;
+  if (task?.status === "starting" || task?.status === "running") return `Stop this thread before ${operation} it.`;
+  if (activeChildren || task?.agents.some((agent) => isActiveAgentRecord(agent.status))) {
+    return `Stop this thread’s sub-agents, and confirm any whose status is unknown, before ${operation} it.`;
+  }
+  if (parentRunHoldsThread(parentRun)) {
+    return `Stop this thread and confirm its work has stopped before ${operation} it.`;
+  }
+  return null;
+}
 
 /** Activity that makes any archive unsafe, including activity that began while
  * an earlier asynchronous archive preparation step was still finishing. */
@@ -12,10 +32,7 @@ export function activeThreadArchiveBlockedReason(
   activeChildren = false,
   activeWorkflow = false,
 ): string | null {
-  if (activeWorkflow) return "Finish or stop this workflow before archiving its thread.";
-  if (task?.status === "starting" || task?.status === "running") return "Finish or stop this thread before archiving it.";
-  if (activeChildren || task?.agents.some((agent) => isActiveAgentRecord(agent.status))) return "Finish or stop this thread’s sub-agents before archiving it.";
-  return null;
+  return activeThreadRemovalBlockedReason(task, "archive", activeChildren, activeWorkflow);
 }
 
 /** Keep the final activity check adjacent to the archive side effect: title

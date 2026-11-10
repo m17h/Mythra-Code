@@ -199,6 +199,9 @@ export interface RuntimeThreadState {
   instance: string;
   /** True only when the current app-server process has loaded this thread. */
   loaded: boolean;
+  /** Native lifecycle activity for this thread in that process (turn, start,
+   * compaction, native agent or mutation). Absent from older builds. */
+  busy?: boolean;
 }
 
 export async function runtimeThreadState(threadId: string): Promise<RuntimeThreadState> {

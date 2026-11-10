@@ -403,6 +403,162 @@ pub(super) fn retire_device(core: &mut Core, device: &str) {
     }
 }
 
+fn owns_thread(owner: &Owner, thread: &str) -> bool {
+    owner.thread.as_deref() == Some(thread)
+        || owner.thread.is_none() && owner.stamp.thread_id.as_deref() == Some(thread)
+        || owner.prepared_threads.contains(thread)
+        || owner.children.values().any(|child| matches!(child, Child::Native(target) if target.thread_id.as_deref() == Some(thread)))
+}
+
+fn same_child(left: &Child, right: &Child) -> bool {
+    match (left, right) {
+        (Child::Native(left), Child::Native(right)) => key(left) == key(right),
+        (Child::Terminal(left), Child::Terminal(right)) => Arc::ptr_eq(left, right),
+        (Child::Command(left), Child::Command(right)) => Arc::ptr_eq(left, right),
+        _ => false,
+    }
+}
+
+/// An explicit local-host Stop may retry only the exact children retained by
+/// already-closed owners. LAN Stop still uses its stamped retirement path;
+/// this command never accepts a remote grant or an arbitrary native target.
+#[tauri::command]
+pub(crate) async fn remote_owner_thread_stop_retry(
+    app: AppHandle,
+    state: State<'_, RemoteState>,
+    window: WebviewWindow,
+    thread_id: String,
+) -> Result<Value, String> {
+    hostbridge::window_is_host(&window).map_err(|_| stale())?;
+    if thread_id.trim().is_empty() || thread_id.len() > 256 { return Err(stale()); }
+    let snapshots = {
+        let core = state.inner.lock();
+        let mut snapshots = Vec::new();
+        for (handle, owner) in core.owners.owners.iter().filter(|(_, owner)| owns_thread(owner, &thread_id)) {
+            if !owner.closed || !owner.pending.is_empty() {
+                return Ok(json!({"settled":false,"owners":1}));
+            }
+            snapshots.extend(owner.children.iter().map(|(id, child)| (handle.clone(), id.clone(), child.clone())));
+        }
+        snapshots
+    };
+    tokio::time::timeout(Duration::from_secs(15), async {
+        for (handle, id, child) in snapshots {
+            {
+                let core = state.inner.lock();
+                let Some(owner) = core.owners.owners.get(&handle) else { continue; };
+                if !owner.closed || !owner.pending.is_empty()
+                    || owner.children.get(&id).is_none_or(|current| !same_child(&child, current)) {
+                    return Err(stale());
+                }
+            }
+            match child {
+                Child::Native(mut target) => {
+                    if !crate::remote_owned_child_ended(&app, &mut target).await.unwrap_or(false) {
+                        crate::remote_owned_child_retry_stop(&app, &target).await?;
+                    }
+                }
+                Child::Terminal(route) => super::terminal::retire_exact(route).await?,
+                Child::Command(command) => retire_command(&app, &command).await?,
+            }
+        }
+        Ok::<(), String>(())
+    }).await.map_err(|_| "The retained native work has not confirmed its cutoff yet. Retry Stop after it settles.".to_owned())??;
+    // The normal evidence probe owns finalization. It will also detect any
+    // new owner admitted while this exact-child retry awaited native cutoff.
+    let remaining = state.inner.lock().owners.owners.values().filter(|owner| owns_thread(owner, &thread_id)).count();
+    Ok(json!({"settled":remaining == 0,"owners":remaining}))
+}
+
+/// Recover native tracking after an unconfirmed Stop, including lost renderer
+/// handles. Only when every exact child ended and no admission is pending do we
+/// close admission and release the owners. Never kills work or changes grants.
+#[tauri::command]
+pub(crate) async fn remote_owner_thread_settled(
+    app: AppHandle,
+    state: State<'_, RemoteState>,
+    window: WebviewWindow,
+    thread_id: String,
+) -> Result<Value, String> {
+    hostbridge::window_is_host(&window).map_err(|_| stale())?;
+    if thread_id.trim().is_empty() || thread_id.len() > 256 {
+        return Err(stale());
+    }
+    let snapshots = {
+        let core = state.inner.lock();
+        let mut snapshots = Vec::new();
+        for (handle, owner) in core.owners.owners.iter().filter(|(_, owner)| owns_thread(owner, &thread_id)) {
+            if !owner.pending.is_empty() {
+                return Ok(json!({"settled":false,"owners":snapshots.len() + 1}));
+            }
+            snapshots.push((handle.clone(), owner.children.clone()));
+        }
+        snapshots
+    };
+    for child in snapshots.iter().flat_map(|(_, children)| children.values()) {
+        let ended = match child {
+            Child::Terminal(route) => super::terminal::is_finished(route),
+            Child::Command(command) => command.finished.load(std::sync::atomic::Ordering::Acquire),
+            // Unproven native state is not an ending.
+            Child::Native(target) => {
+                let mut target = target.clone();
+                crate::remote_owned_child_ended(&app, &mut target).await.unwrap_or(false)
+            }
+        };
+        if !ended {
+            return Ok(json!({"settled":false,"owners":snapshots.len()}));
+        }
+    }
+    let roots = {
+        let mut core = state.inner.lock();
+        // Native work may have been admitted while provider reads awaited.
+        // Compare the complete thread scope, not just the initial child count.
+        let current = core.owners.owners.iter().filter(|(_, owner)| owns_thread(owner, &thread_id)).collect::<Vec<_>>();
+        if current.len() != snapshots.len() || current.iter().any(|(handle, owner)| {
+            !owner.pending.is_empty() || snapshots.iter().find(|(old, _)| old.as_str() == handle.as_str()).is_none_or(|(_, children)| {
+                children.len() != owner.children.len() || children.iter().any(|(id, child)| {
+                    owner.children.get(id).is_none_or(|current| !same_child(child, current))
+                })
+            })
+        }) {
+            return Ok(json!({"settled":false,"owners":current.len()}));
+        }
+        let roots = current.iter().filter(|(_, owner)| !owner.local).map(|(_, owner)| owner.stamp.clone()).collect::<Vec<_>>();
+        drop(current);
+        for (handle, _) in &snapshots {
+            let owner = core.owners.owners.get_mut(handle).ok_or_else(stale)?;
+            owner.closed = true;
+            owner.signal.notify_waiters();
+            super::prompt_preparation::retire_owner(&mut core, handle);
+        }
+        roots
+    };
+    if !roots.is_empty() {
+        super::finish_write(state.inner.enqueue_write(false, move |db| {
+            let tx = db.transaction().map_err(|_| stale())?;
+            for root in roots {
+                super::store::reject_unused_engine_steps(&tx, &root.device, &root.op_id)?;
+            }
+            tx.commit().map_err(|_| stale())
+        })).await?;
+    }
+    let mut core = state.inner.lock();
+    for (handle, children) in &snapshots {
+        if let Some(owner) = core.owners.owners.get(handle) {
+            if !owner.closed || !owner.pending.is_empty() || owner.children.len() != children.len()
+                || children.iter().any(|(id, child)| owner.children.get(id).is_none_or(|current| !same_child(child, current))) {
+                return Ok(json!({"settled":false,"owners":snapshots.len()}));
+            }
+        }
+    }
+    for (handle, _) in &snapshots {
+        core.owners.owners.remove(handle);
+    }
+    // A different owner may have opened during the durable receipt cleanup.
+    let remaining = core.owners.owners.values().filter(|owner| owns_thread(owner, &thread_id)).count();
+    Ok(json!({"settled":remaining == 0,"owners":remaining}))
+}
+
 /// Normal engine completion closes admission and releases retained native child
 /// references only after the real native owners have ended. It never kills work.
 #[tauri::command]
@@ -1360,7 +1516,7 @@ mod command_tests {
     }
 }
 
-pub(super) fn thread_busy(core:&Core,thread:&str)->bool{core.owners.owners.values().any(|o|!o.closed&&(o.thread.as_deref()==Some(thread)||o.children.values().any(|c|matches!(c,Child::Native(t) if t.thread_id.as_deref()==Some(thread)))))}
+pub(super) fn thread_busy(core:&Core,thread:&str)->bool{core.owners.owners.values().any(|o|owns_thread(o,thread)&&(!o.closed||!o.pending.is_empty()||!o.children.is_empty()))}
 
 /// Empty schedule preparation is not a running engine. Validate before SQL,
 /// retire after its queued transaction commits while holding the same Core lock.

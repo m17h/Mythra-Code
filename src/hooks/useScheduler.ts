@@ -12,6 +12,7 @@ import { safeErrorText } from "../lib/errors";
 import { localScheduleTimeZone, nextScheduledRunAt } from "../lib/schedules";
 import { planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "../lib/threadCapabilities";
 import { isActiveAgentRecord } from "../lib/subAgentActivity";
+import { parentRunHoldsThread } from "../lib/parentRun";
 import { parentAutoCompactionUnavailableReason } from "../lib/threadSubagentSettings";
 import type { AppSettings, Project, Provider, ScheduleRunRecord, ScheduleRunSettings, ScheduledTask, Thread } from "../types";
 
@@ -48,6 +49,8 @@ export interface SchedulerDeps {
   onThreadDelegationDisabled?: (threadId: string, options: { autoCompactTokens?: number }) => void;
   /** Includes durable/unresolved native children that may not have loaded tasks. */
   threadBusyReason?: (threadId: string, ignoreOwnStarting?: boolean) => string | null;
+  /** A reused conversation that must not be revived, such as an archived one. */
+  threadUnavailableReason?: (threadId: string) => string | null;
   recordRun: (run: ScheduleRunRecord) => void;
 }
 
@@ -71,7 +74,7 @@ class BusyScheduleThread extends Error {}
 function scheduleThreadIsBusy(threadId: string, ownsStartingStatus = false): boolean {
   const state = useTaskStore.getState();
   const task = state.tasks[threadId];
-  return Boolean(state.workflowOwners[threadId] || task?.activeTurnId
+  return Boolean(state.workflowOwners[threadId] || task?.activeTurnId || parentRunHoldsThread(state.parentRuns[threadId])
     || state.statuses[threadId] === "running"
     || (!ownsStartingStatus && state.statuses[threadId] === "starting"));
 }
@@ -178,6 +181,8 @@ export function useScheduler(deps: SchedulerDeps): void {
     const busyReason = (threadId: string, ownStarting = false): string | null => {
       const state = useTaskStore.getState();
       const task = state.tasks[threadId];
+      const unavailable = depsRef.current.threadUnavailableReason?.(threadId);
+      if (unavailable) return unavailable;
       const external = depsRef.current.threadBusyReason?.(threadId, ownStarting);
       if (external) return external;
       if (scheduleThreadIsBusy(threadId, ownStarting) || state.statuses[threadId] === "running" || state.statuses[threadId] === "starting" && !ownStarting
@@ -188,6 +193,24 @@ export function useScheduler(deps: SchedulerDeps): void {
       }
       return null;
     };
+    const unavailable = reuseThread && scheduled.lastThreadId ? current.threadUnavailableReason?.(scheduled.lastThreadId) : null;
+    if (unavailable) {
+      // Reviving a removed conversation would run it outside the inbox. Report
+      // the skipped run instead of retrying silently every minute.
+      updateOwnedSchedule((item) => ({ ...item, nextRunAt: nextScheduledRunAt(item) }));
+      current.recordRun({
+        id: crypto.randomUUID(),
+        scheduleId: scheduled.id,
+        scheduleName: scheduled.name,
+        projectId: scheduled.projectId,
+        threadId: scheduled.lastThreadId,
+        at: Date.now(),
+        status: "failed",
+        error: unavailable,
+      });
+      void auditEvent("schedule.failed", { scheduleId: scheduled.id, error: unavailable }).catch(() => {});
+      return;
+    }
     if (reuseThread && scheduled.lastThreadId && busyReason(scheduled.lastThreadId)) {
       // A recurring prompt must never collide with the previous unattended
       // turn in the same conversation. Retry soon without creating a second

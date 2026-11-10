@@ -102,6 +102,7 @@ struct CursorProcess {
     next_id: AtomicI64,
     alive: AtomicBool,
     cutoff_uncertain: AtomicBool,
+    tree_cutoff_confirmed: AtomicBool,
     cutoff_error: StdMutex<Option<String>>,
     input_timeout: Duration,
     /// The `session/prompt` requests (primary plus steers) of this turn.
@@ -590,7 +591,9 @@ impl CursorProcess {
         self.stage("terminate: child locked");
         match child.try_wait() {
             Ok(None) => {
+            *self.cutoff_error.lock().unwrap_or_else(PoisonError::into_inner) = Some("The provider process-tree cutoff has not completed.".into());
             let tree_result = self.pid.map(super::kill_process_tree).unwrap_or(Ok(()));
+            if self.pid.is_some() && tree_result.is_ok() { self.tree_cutoff_confirmed.store(true, Ordering::Release); }
             self.stage("terminate: tree kill returned");
             let _ = child.start_kill();
             let reaped = timeout(CURSOR_KILL_REAP_GRACE, child.wait()).await;
@@ -611,9 +614,10 @@ impl CursorProcess {
             }
             Ok(Some(_)) => {
             self.stage("terminate: already exited");
-            if let Some(error) = self.cutoff_error.lock().unwrap_or_else(PoisonError::into_inner).clone() {
+            let mut prior_error = self.cutoff_error.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(error) = prior_error.as_ref().filter(|_| !super::reaped_provider_tree_confirmed(self.pid, &self.tree_cutoff_confirmed)) {
                 Err(format!("An earlier Cursor cutoff remains unconfirmed ({error}); its reaped process identity cannot safely be signalled again."))
-            } else { self.cutoff_uncertain.store(false, Ordering::Release); Ok(()) }
+            } else { *prior_error = None; self.cutoff_uncertain.store(false, Ordering::Release); Ok(()) }
             }
             Err(error) => {
                 self.cutoff_uncertain.store(true, Ordering::Release);
@@ -698,6 +702,7 @@ async fn finish_cursor_run(
     // Retire before announcing. The terminal event can start a queued
     // follow-up turn at once, which must find this run neither alive nor
     // accepting steers (settling the last prompt already closed admission).
+    process.cutoff_uncertain.store(true, Ordering::Release);
     process.alive.store(false, Ordering::Release);
     process.run.close();
     if let Err(error) = process.shutdown().await {
@@ -1481,6 +1486,7 @@ fn attach_cursor_process(
         next_id: AtomicI64::new(1),
         alive: AtomicBool::new(true),
         cutoff_uncertain: AtomicBool::new(false),
+        tree_cutoff_confirmed: AtomicBool::new(false),
         cutoff_error: StdMutex::new(None),
         input_timeout,
         run: CursorPromptRun::default(),
@@ -2254,21 +2260,37 @@ pub async fn cursor_turn_active(
         .is_some_and(|turn| turn.alive.load(Ordering::Acquire) || turn.cutoff_uncertain.load(Ordering::Acquire)))
 }
 
+/// Recovery evidence that this thread has no Cursor work at all: no start
+/// still settling (including one being cancelled) and no live or
+/// cutoff-uncertain turn process. Read-only; it never kills or retires.
+#[tauri::command]
+pub async fn cursor_turn_settled(
+    state: State<'_, CursorState>,
+    thread_id: String,
+) -> Result<bool, String> {
+    if thread_id.trim().is_empty() || thread_id.len() > 256 {
+        return Err("A Cursor thread identity is required.".into());
+    }
+    let turns = state.turns.lock().await;
+    Ok(state.starts.thread_settled(&thread_id, || !turns.get(&thread_id).is_some_and(|turn| {
+        turn.alive.load(Ordering::Acquire) || turn.cutoff_uncertain.load(Ordering::Acquire)
+    })))
+}
+
 /// The latest native-owned session identity survives renderer replacement and
 /// turn completion. It is captured before sending the primary model prompt.
 #[tauri::command]
 pub async fn cursor_turn_state(state: State<'_, CursorState>, thread_id: String) -> Result<Option<CursorTurnIdentity>, String> {
+    let turns = state.turns.lock().await;
     let mut identity = state.identities.lock().await.get(&thread_id).cloned();
-    let turn = state.turns.lock().await.get(&thread_id).cloned();
+    let turn = turns.get(&thread_id).cloned();
     let pending = state.starts.identity(&thread_id);
     // Authentication/binary preparation can precede the first session record.
     // Never relabel the previous completed identity as this new pending start.
-    if turn.is_none() {
-        if let Some((turn_id, start_request_id, phase)) = pending.as_ref() {
-            if identity.as_ref().is_none_or(|identity| identity.turn_id != *turn_id) {
-                identity = Some(CursorTurnIdentity { turn_id: turn_id.clone(), start_request_id: start_request_id.clone(),
-                    cursor_session_id: None, phase: (*phase).into(), requested_effort: String::new(), effort_status: "providerDefault".into() });
-            }
+    if let Some((turn_id, start_request_id, phase)) = pending.as_ref() {
+        if identity.as_ref().is_none_or(|identity| identity.turn_id != *turn_id) {
+            identity = Some(CursorTurnIdentity { turn_id: turn_id.clone(), start_request_id: start_request_id.clone(),
+                cursor_session_id: None, phase: (*phase).into(), requested_effort: String::new(), effort_status: "providerDefault".into() });
         }
     }
     if let Some(identity) = identity.as_mut() {
@@ -2360,8 +2382,9 @@ pub(crate) async fn remote_dispatch(app:&AppHandle,target:&crate::remote::work::
     if process.turn_id!=target.turn_id||target.owner!=format!("cursor:{}",process.turn_id.as_deref().unwrap_or(""))||!process.alive.load(Ordering::Acquire){return Err(stale());}
     if action=="turn_stop"{
         let mut child=process.child.lock().await;
-        permit.begin(||{if !process.alive.load(Ordering::Acquire){return Err(stale());}process.alive.store(false,Ordering::Release);process.cutoff_uncertain.store(true,Ordering::Release);process.run.close();
-            match child.try_wait(){Ok(None)=>{if let Some(pid)=child.id(){super::kill_process_tree(pid)?;}child.start_kill().map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor cutoff could not be confirmed.".to_string())},_=>Err(stale())}})?;
+        permit.begin(||{if !process.alive.load(Ordering::Acquire){return Err(stale());}process.cutoff_uncertain.store(true,Ordering::Release);process.alive.store(false,Ordering::Release);process.run.close();
+            *process.cutoff_error.lock().unwrap_or_else(PoisonError::into_inner)=Some("The provider process-tree cutoff has not completed.".into());
+            match child.try_wait(){Ok(None)=>{if let Some(pid)=child.id(){super::kill_process_tree(pid)?;process.tree_cutoff_confirmed.store(true,Ordering::Release);}child.start_kill().map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor cutoff could not be confirmed.".to_string())},_=>Err(stale())}})?;
         timeout(CURSOR_KILL_REAP_GRACE,child.wait()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor cutoff timed out.".to_string())?.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor cutoff could not be confirmed.".to_string())?;
         process.cutoff_uncertain.store(false,Ordering::Release);drop(child);
         let mut turns=state.turns.lock().await;if turns.get(thread).is_some_and(|current|Arc::ptr_eq(current,&process)){turns.remove(thread);}return Ok(Value::Null);
@@ -2410,14 +2433,14 @@ pub(crate) async fn remote_pending_inventory(state:&CursorState,result:&mut crat
  let turns:Vec<_>=state.turns.lock().await.iter().map(|(id,turn)|(id.clone(),turn.clone())).collect();for(thread,turn)in turns{if !turn.alive.load(Ordering::Acquire){continue;}let pending=turn.server_requests.lock().await;let requests=turn.remote_requests.lock().await;for id in pending.iter(){if let(Some(request),Ok(id))=(requests.get(id),serde_json::from_str::<Value>(id)){if let Some(method)=request["method"].as_str(){result.push(id,method,&thread,&request["params"],turn.turn_id.as_deref(),request["params"]["itemId"].as_str(),crate::unix_timestamp_ms());}else{result.incomplete();}}else{result.incomplete();}}}
 }
 
-pub(crate) async fn remote_owned_child_ended(app:&AppHandle,target:&mut crate::remote::work::Target)->Result<bool,String>{let stale=||crate::remote::work::refused("stale_target");let thread=target.thread_id.as_deref().ok_or_else(stale)?;let state=app.state::<CursorState>();
- if target.kind=="start"&&state.starts.identity(thread).is_some_and(|(turn,_,phase)|Some(&turn)==target.turn_id.as_ref()&&phase=="starting"){return Ok(false);}
- let process=state.turns.lock().await.get(thread).cloned();if let Some(process)=process.filter(|p|p.turn_id==target.turn_id){if process.cutoff_uncertain.load(Ordering::Acquire){return Err(stale());}if !process.alive.load(Ordering::Acquire){return Ok(true);}target.kind="turn".into();target.owner=format!("cursor:{}",process.turn_id.as_deref().unwrap_or(""));Ok(false)}else{Ok(true)}
+pub(crate) async fn remote_owned_child_ended(app:&AppHandle,target:&mut crate::remote::work::Target)->Result<bool,String>{let stale=||crate::remote::work::refused("stale_target");let thread=target.thread_id.as_deref().ok_or_else(stale)?;let state=app.state::<CursorState>();let turns=state.turns.lock().await;
+ if target.kind=="start"&&state.starts.identity(thread).is_some_and(|(turn,_,_)|Some(&turn)==target.turn_id.as_ref()){return Ok(false);}
+ let process=turns.get(thread).cloned();if let Some(process)=process.filter(|p|p.turn_id==target.turn_id){if process.cutoff_uncertain.load(Ordering::Acquire){return Err(stale());}if !process.alive.load(Ordering::Acquire){return Ok(true);}target.kind="turn".into();target.owner=format!("cursor:{}",process.turn_id.as_deref().unwrap_or(""));Ok(false)}else{Ok(true)}
 }
 
 pub(crate) fn remote_row_gate<T>(app:&AppHandle,thread:&str,op:&str,commit:impl FnOnce()->Result<T,String>)->Result<T,String>{
  let state=app.state::<CursorState>();let turns=state.turns.try_lock().map_err(|_|crate::remote::work::refused("busy"))?;
- if op!="thread.rename"&&turns.get(thread).is_some_and(|p|p.alive.load(Ordering::Acquire)||op=="agents.accept"&&p.cutoff_uncertain.load(Ordering::Acquire)){return Err(crate::remote::work::refused("busy"));}
+ if op!="thread.rename"&&turns.get(thread).is_some_and(|p|p.alive.load(Ordering::Acquire)||p.cutoff_uncertain.load(Ordering::Acquire)){return Err(crate::remote::work::refused("busy"));}
  state.starts.row_gate(thread,op,commit)
 }
 

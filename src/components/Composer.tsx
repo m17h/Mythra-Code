@@ -243,6 +243,8 @@ export const Composer = forwardRef<ComposerHandle, {
    * not. Stop stays offered so the crew can always be cut off from one place.
    */
   childrenRunning?: boolean;
+  /** Replaces the between-turns Stop description when it stops something other than sub-agents. */
+  stopLabel?: string;
   /** One line about work this conversation is waiting on. */
   statusLine?: ReactNode;
   /**
@@ -984,8 +986,8 @@ export const Composer = forwardRef<ComposerHandle, {
             <button
               className="stop-button"
               onClick={props.onStop}
-              title={props.running ? "Stop the active task and its sub-agents (Esc)" : "Stop the sub-agents still running for this thread (Esc)"}
-              aria-label={props.running ? "Stop the active task and its sub-agents" : "Stop the sub-agents still running for this thread"}
+              title={props.running ? "Stop the active task and its sub-agents (Esc)" : `${props.stopLabel ?? "Stop the sub-agents still running for this thread"} (Esc)`}
+              aria-label={props.running ? "Stop the active task and its sub-agents" : props.stopLabel ?? "Stop the sub-agents still running for this thread"}
             >
               <CircleStop size={17} />
             </button>
