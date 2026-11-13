@@ -28,6 +28,9 @@
 .settings-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
 .settings-search > svg { justify-self: center; color: var(--muted-2); }
 .settings-search input { min-width: 0; height: 100%; padding: 0; border: 0; color: var(--text); background: transparent; font: inherit; font-size: var(--fs-ui); outline: none; }
+/* The wrapper owns the focus ring. Outrank the global input:focus-visible
+   rule regardless of stylesheet order, including browsers without it. */
+.settings-search input:focus { outline: none; }
 .settings-search input::placeholder { color: var(--muted-2); }
 .settings-search-clear { display: grid; place-items: center; width: 24px; height: 24px; margin-right: 3px; border: 0; border-radius: var(--r-xs); color: var(--muted-2); background: transparent; cursor: pointer; }
 .settings-search-clear:hover { color: var(--text); background: rgba(255,255,255,.06); }
