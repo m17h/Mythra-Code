@@ -21,7 +21,8 @@ import { loadStored, storeValue, subscribeRemoteStateAdoption } from "./storage"
  * can say honestly that earlier history was trimmed.
  */
 
-export const MAX_MAILBOX_TEXT = 4_000;
+/** Match MAX_MESSAGE_BYTES / MAX_PROMPT_BYTES in agents.rs, including Unicode. */
+export const MAX_MAILBOX_TEXT_BYTES = 32_768;
 export const MAX_MAILBOX_MESSAGES = 50;
 export const MAX_UNREAD_FOR_PARENT = 20;
 export const MAX_QUEUED_FOR_CHILD = 8;
@@ -110,6 +111,22 @@ function boundedText(value: unknown, limit: number): string {
   return typeof value === "string" ? value.slice(0, limit) : "";
 }
 
+/** Preserve every admitted message on reload; trim oversized stored data only
+ * at a complete code point, using the same UTF-8 budget as native admission. */
+function boundedMailboxText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  let bytes = 0;
+  let end = 0;
+  for (const character of value) {
+    const point = character.codePointAt(0)!;
+    const size = point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    if (bytes + size > MAX_MAILBOX_TEXT_BYTES) break;
+    bytes += size;
+    end += character.length;
+  }
+  return value.slice(0, end);
+}
+
 function finiteCount(value: unknown, fallback = 0): number {
   const number = Number(value);
   return Number.isSafeInteger(number) && number >= 0 ? number : fallback;
@@ -125,13 +142,19 @@ function sanitizeMessage(candidate: unknown): ChildMailMessage | null {
   const entry = candidate as Record<string, unknown>;
   const id = typeof entry.id === "string" && MESSAGE_ID.test(entry.id) && Number(entry.id.slice(1)) > 0 ? entry.id : "";
   const direction = entry.direction === "toParent" || entry.direction === "toChild" ? entry.direction : null;
-  const text = boundedText(entry.text, MAX_MAILBOX_TEXT);
+  const text = boundedMailboxText(entry.text);
   if (!id || !direction || !text.trim()) return null;
+  const textTruncated = entry.textTruncated === true || (typeof entry.text === "string" && entry.text !== text);
   const kind = direction === "toChild" ? "guidance" : entry.kind === "question" ? "question" : "update";
   let messageState: ChildMailMessage["state"];
   let reason = boundedText(entry.reason, MAX_REASON) || undefined;
   if (direction === "toParent") {
     messageState = entry.state === "read" ? "read" : "unread";
+  } else if (entry.state === "queued" && textTruncated) {
+    // An incomplete instruction is safe to display, never to execute. This
+    // also covers older app versions that persisted a shortened queued body.
+    messageState = "failed";
+    reason = "This stored guidance was shortened before delivery; it was not sent. Resend the complete instruction if it is still needed.";
   } else if (entry.state === "delivering") {
     // The renderer was reloaded while a provider call was in flight. Its
     // outcome is unknown; never retry it silently and never claim delivery.
@@ -160,7 +183,7 @@ function sanitizeMessage(candidate: unknown): ChildMailMessage | null {
     ...(settledAt ? { settledAt } : {}),
     ...(answeredAt ? { answeredAt } : {}),
     ...(closedAt ? { closedAt } : {}),
-    ...(entry.textTruncated === true || (typeof entry.text === "string" && entry.text.length > MAX_MAILBOX_TEXT) ? { textTruncated: true } : {}),
+    ...(textTruncated ? { textTruncated: true } : {}),
     ...(replyTo ? { replyTo } : {}),
     ...(reason ? { reason } : {}),
     ...(uncertain ? { uncertain: true } : {}),
@@ -180,18 +203,27 @@ export function sanitizeChildAgentMailboxes(stored: unknown): MailboxState {
     const ids = new Set<string>();
     let dropped = finiteCount(entry.dropped);
     let highest = 0;
-    // Guidance interrupted mid-delivery by a reload is uncertain; anything
-    // queued after it must not be sent automatically across that gap.
-    let reloadUncertainSeq = Infinity;
+    // Interrupted or incomplete guidance must not be followed automatically
+    // by later queued instructions that may depend on the missing guidance.
+    let deliveryBarrierSeq = Infinity;
+    let recoveredUndeliveredSeq = 0;
     for (const candidateMessage of Array.isArray(entry.messages) ? entry.messages : []) {
       // A damaged message body still spent its ID. Preserve the high-water
       // mark before rejecting it, so recovery cannot reuse that identity.
       if (candidateMessage && typeof candidateMessage === "object") {
-        const candidateId = (candidateMessage as Record<string, unknown>).id;
+        const raw = candidateMessage as Record<string, unknown>;
+        const candidateId = raw.id;
         if (typeof candidateId === "string" && MESSAGE_ID.test(candidateId)) {
           highest = Math.max(highest, Number(candidateId.slice(1)));
-          if ((candidateMessage as Record<string, unknown>).state === "delivering") {
-            reloadUncertainSeq = Math.min(reloadUncertainSeq, Number(candidateId.slice(1)));
+          // Detect the gap even when a damaged body's bounded prefix is
+          // empty/whitespace and sanitizeMessage must discard the row.
+          const incompleteQueued = raw.direction === "toChild" && raw.state === "queued"
+            && (raw.textTruncated === true || (typeof raw.text === "string" && boundedMailboxText(raw.text) !== raw.text));
+          if (raw.state === "delivering" || incompleteQueued) {
+            deliveryBarrierSeq = Math.min(deliveryBarrierSeq, Number(candidateId.slice(1)));
+            // The earliest gap holds dependent work; the latest failed ID
+            // invalidates review tokens even if several damaged rows vanish.
+            recoveredUndeliveredSeq = Math.max(recoveredUndeliveredSeq, Number(candidateId.slice(1)));
           }
         }
       }
@@ -205,9 +237,9 @@ export function sanitizeChildAgentMailboxes(stored: unknown): MailboxState {
     const answers = new Map(messages.filter((message) => message.direction === "toChild" && message.state === "delivered" && message.replyTo)
       .map((message) => [message.replyTo!, message.settledAt || message.createdAt || 1]));
     const held = messages.map((message) => message.direction === "toChild" && message.state === "queued"
-      && Number(message.id.slice(1)) > reloadUncertainSeq
+      && Number(message.id.slice(1)) > deliveryBarrierSeq
       ? { ...message, state: "failed" as const, reason: HELD_REASON, settledAt: Date.now() } : message);
-    const undeliveredSeq = Math.max(finiteCount(entry.undeliveredSeq), ...held
+    const undeliveredSeq = Math.max(finiteCount(entry.undeliveredSeq), recoveredUndeliveredSeq, ...held
       .filter((message) => message.direction === "toChild" && (message.state === "failed" || message.state === "cancelled"))
       .map((message) => Number(message.id.slice(1))));
     const resolvedThroughSeq = finiteCount(entry.resolvedThroughSeq);
@@ -412,11 +444,14 @@ function requestRetry(
 }
 
 function trimmedMessageText(text: string): string {
+  // Admission applies to the caller's complete payload, just as it does in
+  // agents.rs. Trimming only normalizes the text that is persisted afterward.
+  const bytes = new TextEncoder().encode(text).byteLength;
+  if (bytes > MAX_MAILBOX_TEXT_BYTES) {
+    throw new Error(`The message is too long (${bytes} UTF-8 bytes); the limit is ${MAX_MAILBOX_TEXT_BYTES}. This message was not saved or sent. Summarize, or point at files in the workspace.`);
+  }
   const value = text.trim();
   if (!value) throw new Error("The message cannot be empty.");
-  if (value.length > MAX_MAILBOX_TEXT) {
-    throw new Error(`The message is too long (${value.length} characters); the limit is ${MAX_MAILBOX_TEXT}. Summarize, or point at files in the workspace.`);
-  }
   return value;
 }
 
