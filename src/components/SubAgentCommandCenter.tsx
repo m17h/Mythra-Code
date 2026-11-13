@@ -648,9 +648,9 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
     [readiness, targets],
   );
   const enabledCount = targets.filter((target) => target.enabled).length;
-  // The roster is a menu and the limit is a budget. A crew of five destinations
-  // with a limit of two is a legitimate configuration: the model picks two of
-  // the five to run at a time.
+  // Each destination is one worker slot and the limit is a separate total
+  // budget. A crew of five slots with a limit of two is a legitimate
+  // configuration: at most two of the five run at a time, one task per slot.
   const crewSize = childAgentCrewSize({ enabled: hasRoster, targets });
   const crewCeiling = Math.max(1, enabledCount);
   const dimmed = !delegationOn;
@@ -1005,7 +1005,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
       ...policy,
       // Adding a worker is a clear statement of intent; turning the switches on
       // for the user avoids a destination that silently does nothing. The
-      // parallel limit is left alone: adding a destination widens the menu, and
+      // parallel limit is left alone: adding a destination adds a worker slot, and
       // only a limit already tracking crew size grows with it.
       enabled: true,
       maxConcurrent: crewSafeConcurrency(requestedMax, nextChildAgents),
@@ -1528,7 +1528,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                 <small>
                   {editable && !runLocked
                     ? crewSize > 0
-                      ? `How many sub-agents may run at once (1–${MAX_SUBAGENT_CONCURRENCY}), chosen from ${crewSize} configured sub-agent${crewSize === 1 ? "" : "s"}. Adding or removing sub-agents adjusts this limit.`
+                      ? `Total sub-agents that may run at once (1–${crewCeiling}) across ${enabledCount} enabled sub-agent${enabledCount === 1 ? "" : "s"}. Each configured sub-agent is one worker that runs one task at a time. Add another entry for another worker on the same model.`
                       : `How many sub-agents may run at once (1–${MAX_SUBAGENT_CONCURRENCY}).`
                     : isChild
                       ? "A sub-agent works alone."

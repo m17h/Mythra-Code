@@ -46,6 +46,18 @@ export interface ChildAgentRequest {
   terminalScope?: string;
 }
 
+/** Durable child ownership used only when rebuilding a lost native session. */
+export interface RecoveredChildAgent {
+  childId: string;
+  targetId?: string;
+  provider?: Provider;
+  model?: string;
+  activationId?: string;
+  retiringActivationIds?: string[];
+  uncertainActivationIds?: string[];
+  active: boolean;
+}
+
 export async function startChildAgentSession(
   policy: ChildAgentPolicy,
   knownChildren: string[] = [],
@@ -53,6 +65,7 @@ export async function startChildAgentSession(
   projectContext?: ProjectBridgeContext,
   /** Notes already narrowed to this crew; only a managed root carries them. */
   modelGuidance: SubagentModelGuidance[] = [],
+  recoveredChildren: RecoveredChildAgent[] = [],
 ): Promise<ChildAgentBridgeLaunch> {
   const guidance = projectContext?.childThread || projectContext?.nativeDelegation ? [] : modelGuidance;
   return invoke<ChildAgentBridgeLaunch>("child_agent_session_start", {
@@ -60,6 +73,7 @@ export async function startChildAgentSession(
       ...childAgentSessionOptions(policy, knownChildren),
       ...(guidance.length ? { modelGuidance: guidance.map(({ provider, model, note }) => ({ provider, model, note })) } : {}),
       finishedChildren,
+      recoveredChildren,
       permission: policy.permission,
       ...projectContext,
       // Root conversations and child mailbox authority are separate scopes.
@@ -166,25 +180,84 @@ export async function respondToChildAgentRequest(
 
 /**
  * Release a child's concurrency slot once its turn reaches a terminal state.
- * A follow-up turn carries the activation token its reservation returned; a
- * missing or older token can never release a newer follow-up's slot.
+ * A follow-up turn carries its activation token; a missing or older token can
+ * never release a newer follow-up's slot. With a token, success also means the
+ * backend retired that exact attempt: it holds no slot, and a late admission
+ * of it is refused, whether or not it had been admitted.
  */
-export async function reportChildAgentFinished(sessionId: string, childThreadId: string, activationId?: string): Promise<void> {
-  await invoke("child_agent_finished", { sessionId, childThreadId, activationId: activationId ?? null });
+export async function reportChildAgentFinished(sessionId: string, childThreadId: string, activationId?: string): Promise<boolean> {
+  const result = await waitForReservationReply(
+    invoke<{ released?: unknown } | null>("child_agent_finished", { sessionId, childThreadId, activationId: activationId ?? null }),
+  );
+  if (typeof result?.released !== "boolean") {
+    throw new Error("Mythra Code did not confirm this exact sub-agent reservation was released.");
+  }
+  // Whether a slot was freed by this call; false is still a settled release.
+  return result.released;
+}
+
+/** The caller must retain guidance and retire its token before another admission. */
+export class ChildAgentAdmissionUnconfirmedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChildAgentAdmissionUnconfirmedError";
+  }
+}
+
+/**
+ * Bound only bridge accounting IPC, never a provider request. Giving up this
+ * wait cannot cancel native admission; the caller retains the exact token
+ * until retirement is acknowledged. A late reply has no continuation that
+ * could dispatch a prompt or reopen the retired attempt.
+ */
+function waitForReservationReply<T>(request: Promise<T>, signal?: AbortSignal, timeoutReason?: () => Error): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (result: { value: T } | { reason: unknown }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      if ("reason" in result) reject(result.reason);
+      else resolve(result.value);
+    };
+    const abort = () => finish({ reason: new Error("The sub-agent reservation wait was cancelled before provider dispatch.") });
+    const timer = setTimeout(() => finish({ reason: timeoutReason?.()
+      ?? new Error("The sub-agent reservation confirmation timed out; its exact token remains owned until release is confirmed.") }), 15_000);
+    signal?.addEventListener("abort", abort, { once: true });
+    // Attach both handlers even after cancellation: a late native failure
+    // must be observed, but its result must never resume the caller.
+    request.then((value) => finish({ value }), (reason: unknown) => finish({ reason }));
+    if (signal?.aborted) abort();
+  });
 }
 
 /**
  * Take a live concurrency slot for an idle owned child's follow-up turn. The
- * backend refuses when the parent's budget is full, its session is gone, or
- * the child still holds a slot. Resolves with the activation token that
- * alone can release this reservation.
+ * backend refuses when the parent's budget is full, its session is gone, the
+ * child still holds a slot, or the child's own worker slot is busy, removed,
+ * or now runs a different provider/model. `slot` is the child's durable,
+ * spawn-time destination identity; a slot the backend recorded wins.
+ *
+ * `activationId` is chosen and durably persisted by the caller before this
+ * call, so a lost or malformed reply never strands an admission: releasing
+ * that same token always settles it. Never retry this call blindly; any
+ * failure is settled by releasing the token instead.
  */
-export async function reactivateChildAgent(sessionId: string, childThreadId: string): Promise<string> {
-  const result = await invoke<{ activationId?: unknown }>("child_agent_reactivate", { sessionId, childThreadId });
-  if (typeof result?.activationId !== "string" || !result.activationId) {
-    throw new Error("Mythra Code did not return a sub-agent activation token.");
+export async function reactivateChildAgent(
+  sessionId: string,
+  childThreadId: string,
+  slot: { targetId: string; provider: Provider; model: string },
+  activationId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw new Error("The sub-agent reservation wait was cancelled before provider dispatch.");
+  const result = await waitForReservationReply(invoke<{ activationId?: unknown }>("child_agent_reactivate", {
+    sessionId, childThreadId, targetId: slot.targetId, provider: slot.provider, model: slot.model, activationId,
+  }), signal, () => new ChildAgentAdmissionUnconfirmedError("The sub-agent activation acknowledgement timed out. No instruction was sent; its exact reservation must be released first."));
+  if (result?.activationId !== activationId) {
+    throw new ChildAgentAdmissionUnconfirmedError("Mythra Code did not confirm this sub-agent activation. No instruction was sent; its exact reservation must be released first.");
   }
-  return result.activationId;
 }
 
 export function onChildAgentRequest(handler: (request: ChildAgentRequest) => void): Promise<UnlistenFn> {

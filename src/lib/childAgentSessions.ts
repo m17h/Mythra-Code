@@ -4,12 +4,15 @@ import {
   startChildAgentSession,
   type ChildAgentBridgeLaunch,
   type ProjectBridgeContext,
+  type RecoveredChildAgent,
 } from "./agentBridge";
 import {
   childAgentPolicyFor,
   childAgentSessionOptions,
   readyChildAgentTargets,
   childAgentPolicyForThread,
+  childAgentSlotActivationId,
+  isChildActive,
   modelGuidanceForTargets,
   sanitizeSubagentModelGuidance,
   subagentModelGuidanceKey,
@@ -18,6 +21,7 @@ import {
   type ChildAgentReadiness,
 } from "./childAgents";
 import type { AppSettings, PermissionMode, Provider, SubagentModelGuidance } from "../types";
+import { useTaskStore } from "./taskStore";
 
 /**
  * Owns the lifetime of a root thread's delegation bridge.
@@ -423,12 +427,47 @@ async function ensureChildAgentBridgeOnce(
     const promoting = input.promoteStagedEdits === true;
     const authority = authorityOf(policy.targets.length > 0);
     const allowed = allowedAuthorities(policy.targets.length > 0);
+    // A fresh native runtime has no slot ledger. Restore exact identities from
+    // durable links rather than assigning old children to today's roster. A
+    // pending activation or live renderer task overrides an older terminal
+    // marker; missing terminal evidence remains occupied after a reload.
+    const statuses = useTaskStore.getState().statuses;
+    const recoveredChildren: RecoveredChildAgent[] = Object.values(input.links)
+      .filter((link) => policy.rootThreadId && link.rootThreadId === policy.rootThreadId)
+      .map((link) => {
+        // A user turn can outlive a retired parent activation. Recover its
+        // own durable identity so late cleanup of the parent's token cannot
+        // free the user's newer work, and its own completion can release it.
+        const activationId = childAgentSlotActivationId(link);
+        return {
+          childId: link.childThreadId,
+          targetId: link.targetId,
+          provider: link.provider,
+          model: link.model,
+          active: link.activationPending === true || isChildActive(statuses[link.childThreadId] ?? "idle") || !link.terminalStatus,
+          ...(activationId ? { activationId } : {}),
+          ...(link.retiringActivationIds?.length ? { retiringActivationIds: link.retiringActivationIds } : {}),
+          ...(link.uncertainActivationIds?.length ? { uncertainActivationIds: link.uncertainActivationIds } : {}),
+        };
+      });
+    const knownChildren = [...new Set([...known, ...recoveredChildren.map((child) => child.childId)])];
+    // A completed current revision cannot finish an older dispatched request
+    // whose outcome is still unknown. Native recovery retains these owners
+    // separately so cleaning either generation never frees the other.
+    const activeChildren = new Set(recoveredChildren
+      .filter((child) => child.active || child.uncertainActivationIds?.length)
+      .map((child) => child.childId));
+    const finishedChildren = [...new Set([
+      ...finished,
+      ...recoveredChildren.filter((child) => !child.active && !child.uncertainActivationIds?.length).map((child) => child.childId),
+    ])].filter((childId) => !activeChildren.has(childId));
     // Everything the native start receives. Child sessions keep their own
     // per-invocation cancellation and are never shared.
     const request = childThread ? undefined : JSON.stringify({
       context: contextIdentityFor(policy, guidance),
-      options: childAgentSessionOptions(policy, known),
-      finished,
+      options: childAgentSessionOptions(policy, knownChildren),
+      finished: finishedChildren,
+      recoveredChildren,
       permission: policy.permission,
     });
     const inFlight = request ? pendingRegistrations.get(sessionId) : undefined;
@@ -450,13 +489,13 @@ async function ensureChildAgentBridgeOnce(
     const started = queueSessionOperation(sessionId, async () => {
       const current = () => invocationCurrent() && sessionRegistrations.get(sessionId) === registration;
       if (!current()) throw new Error("This project bridge registration was cancelled.");
-      // Keep the existing call shape for projectless roots. A projectless
-      // managed child still needs its child scope and parent mailbox flags.
-      const launch = input.projectPath || projectContext.childThread
-        ? await startChildAgentSession(policy, known, finished, projectContext, ...(guidance.length ? [guidance] : []))
-        : guidance.length
-          ? await startChildAgentSession(policy, known, finished, undefined, guidance)
-          : await startChildAgentSession(policy, known, ...(finished.length ? [finished] : []));
+      // Recovery is needed even for a temporarily proposal-only registration:
+      // turning delegation back on must not forget children already running.
+      const launch = await startChildAgentSession(
+        policy, knownChildren, finishedChildren,
+        input.projectPath || projectContext.childThread ? projectContext : undefined,
+        guidance, recoveredChildren,
+      );
       if (!current()) {
         // This operation still owns the native session until the next queued
         // start/end. Retire it here, before a newer registration can reach Rust.
