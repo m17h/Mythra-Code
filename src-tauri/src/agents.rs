@@ -74,8 +74,9 @@ const TOOL_PROPOSE_SETTINGS: &str = "propose_agent_settings";
 /// they carry no destination argument, so a child can address nobody else.
 const TOOL_MESSAGE_PARENT: &str = "message_parent";
 const TOOL_READ_PARENT: &str = "read_parent_messages";
-/// Mailbox text limits. The renderer enforces a matching character budget.
-const MAX_MESSAGE_BYTES: usize = 16_384;
+/// Match the renderer's MAX_MAILBOX_TEXT_BYTES, using UTF-8 bytes throughout.
+/// Follow-up instructions have the same budget as an initial child task.
+const MAX_MESSAGE_BYTES: usize = MAX_PROMPT_BYTES;
 const MAX_ACCEPT_NOTE_BYTES: usize = 1_600;
 const MAX_READ_WAIT_SECONDS: f64 = 30.0;
 /// Saves the command behind the project's top-bar Run button. Every project
@@ -1296,7 +1297,8 @@ pub(super) fn tool_catalog(
                     "target": target_property,
                     "prompt": {
                         "type": "string",
-                        "description": "The complete, self-contained task for the child. It does not see this conversation.",
+                        "maxLength": MAX_PROMPT_BYTES,
+                        "description": format!("The complete, self-contained task for the child. It does not see this conversation. Maximum {MAX_PROMPT_BYTES} UTF-8 bytes; non-ASCII characters may use multiple bytes. Keep larger reference material in workspace files."),
                     },
                     "title": {
                         "type": "string",
@@ -1359,7 +1361,7 @@ pub(super) fn tool_catalog(
                 "type": "object",
                 "properties": {
                     "childId": { "type": "string" },
-                    "message": { "type": "string", "description": "The guidance, answer, or follow-up task. The child keeps its own conversation history but never sees yours." },
+                    "message": { "type": "string", "maxLength": MAX_MESSAGE_BYTES, "description": format!("The guidance, answer, or follow-up task. The child keeps its own conversation history but never sees yours. Maximum {MAX_MESSAGE_BYTES} UTF-8 bytes; non-ASCII characters may use multiple bytes. Send a complete instruction in one message; keep larger reference material in workspace files.") },
                     "replyTo": { "type": "string", "description": "Optional id of the child's message you are answering, e.g. m3." },
                     "clientRequestId": { "type": "string", "maxLength": 80, "description": "Optional stable identifier for this message. Reuse only when retrying the same uncertain send; use a new identifier for an intentional new instruction, even if its text is identical. Deduplication lasts while the message remains in bounded history." },
                 },
@@ -1543,7 +1545,7 @@ fn parent_messaging_tools() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "message": { "type": "string", "description": "Self-contained text; the parent does not see your conversation." },
+                    "message": { "type": "string", "maxLength": MAX_MESSAGE_BYTES, "description": format!("Self-contained text; the parent does not see your conversation. Maximum {MAX_MESSAGE_BYTES} UTF-8 bytes; non-ASCII characters may use multiple bytes. Keep larger reference material in workspace files.") },
                     "kind": { "type": "string", "enum": ["question", "update"], "default": "update", "description": "\"question\" for anything that needs the parent's reply or action; \"update\" for passive progress. Omitted means \"update\"." },
                     "clientRequestId": { "type": "string", "maxLength": 80, "description": "Optional stable identifier for this message. Reuse on retries of the same send; use a new identifier for a new update/question. Deduplication lasts while the message remains in bounded history." },
                 },
@@ -1894,7 +1896,7 @@ fn validate_mailbox_text(value: Option<&Value>, key: &str) -> Result<(), String>
     }
     if text.len() > MAX_MESSAGE_BYTES {
         return Err(format!(
-            "`{key}` is too long ({} bytes); the limit is {MAX_MESSAGE_BYTES}. Summarize, or point at files in the workspace.",
+            "`{key}` is too long ({} UTF-8 bytes); the limit is {MAX_MESSAGE_BYTES}. This message was not saved or sent. Summarize, or point at files in the workspace.",
             text.len()
         ));
     }

@@ -638,6 +638,7 @@ function HostAgents({ device, name, target, revision, running, crew, onClose }: 
       {messages?.length ? <details><summary>Messages</summary>{messages.map((message) => <div key={message.id}>
         <small>{message.direction === "toParent" ? `From this agent · ${message.kind}` : "To this agent"}</small>
         <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{message.text}</p>
+        {message.textTruncated && <small>Message preview shortened.</small>}
       </div>)}</details> : null}
       {worker?.canStop && replacements.length > 0 && <details><summary>Replace on another model</summary>{replacements.map((entry) => <button key={entry.id} type="button" className="secondary-button" onClick={() => {
         void confirmDialog(`Stop “${worker.title}” on ${name} and restart its task with ${entry.label || entry.id}?`).then((confirmed) => { if (confirmed) run("agents.replace", id, { targetId: entry.id }); });

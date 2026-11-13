@@ -73,12 +73,17 @@ function sumAmounts(rows: WireUsageAmounts[]): WireUsageAmounts {
   return result;
 }
 function mailbox(id: string, raw: ChildMailbox, limit: number): WireMailbox {
-  return { agentId: id, dropped: number(raw.dropped), truncated: raw.messages.length > limit, messages: raw.messages.slice(-limit).map((row) => ({
-    id: row.id, direction: row.direction, kind: row.kind, text: text(row.text, 4000), state: row.state, createdAt: number(row.createdAt),
-    ...(finite(row.answeredAt) ? { answeredAt: row.answeredAt } : {}), ...(finite(row.closedAt) ? { closedAt: row.closedAt } : {}),
-    ...(finite(row.settledAt) ? { settledAt: row.settledAt } : {}), ...(row.uncertain ? { uncertain: true } : {}),
-    ...(row.replyTo ? { replyTo: text(row.replyTo, 128) } : {}), ...(row.via ? { via: row.via } : {}),
-  })) };
+  return { agentId: id, dropped: number(raw.dropped), truncated: raw.messages.length > limit, messages: raw.messages.slice(-limit).map((row) => {
+    // Keep the existing preview bound without splitting a UTF-16 pair on the wire.
+    const preview = text(row.text, 4000).replace(/[\uD800-\uDBFF]$/, "");
+    return {
+      id: row.id, direction: row.direction, kind: row.kind, text: preview, state: row.state, createdAt: number(row.createdAt),
+      ...(row.textTruncated || preview !== row.text ? { textTruncated: true } : {}),
+      ...(finite(row.answeredAt) ? { answeredAt: row.answeredAt } : {}), ...(finite(row.closedAt) ? { closedAt: row.closedAt } : {}),
+      ...(finite(row.settledAt) ? { settledAt: row.settledAt } : {}), ...(row.uncertain ? { uncertain: true } : {}),
+      ...(row.replyTo ? { replyTo: text(row.replyTo, 128) } : {}), ...(row.via ? { via: row.via } : {}),
+    };
+  }) };
 }
 const identity = (worker: SubAgentWorker) => JSON.stringify([worker.id, worker.kind, worker.createdAt, worker.activationId, worker.resultRevision, worker.manualAttemptId, worker.reviewToken, worker.status, worker.review, worker.canStop]);
 export class HostResources {
