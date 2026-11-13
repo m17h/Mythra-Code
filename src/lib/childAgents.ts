@@ -24,8 +24,9 @@ export const MAX_SUBAGENT_MODEL_GUIDANCE = 40;
 export const MAX_SUBAGENT_MODEL_GUIDANCE_NOTE = 400;
 /**
  * Most children one thread may run at once. Numerically the same as the
- * destination ceiling today, but a different rule: a roster of destinations is
- * a menu, while concurrency is a live budget.
+ * destination ceiling today, but a different rule: each destination is one
+ * worker slot (at most one live child at a time), while concurrency is the
+ * separate total budget across all slots.
  */
 export const MAX_SUBAGENT_CONCURRENCY = 24;
 export const CHILD_AGENT_REASONING_EFFORTS: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
@@ -88,6 +89,7 @@ export interface ChildAgentLink {
   rootThreadId: string;
   /** Bridge session that spawned this child; its concurrency slot owner. */
   sessionId: string;
+  /** Worker slot (destination) this child started on; follow-ups reacquire only it. */
   targetId: string;
   provider: Provider;
   model: string;
@@ -125,11 +127,27 @@ export interface ChildAgentLink {
   /** Completed follow-up turns started on this same conversation. */
   followUps?: number;
   /**
-   * Backend token for the concurrency slot of the latest parent-started
-   * follow-up. Releases carry it so a stale completion cannot free a newer
-   * turn's slot. Initial spawn slots are unversioned.
+   * Token for the concurrency slot of the latest parent-started follow-up.
+   * The renderer chooses it and persists it before asking the backend to
+   * admit it, so a lost reply can still be released. Releases carry it so a
+   * stale completion cannot free a newer turn's slot. Initial spawn slots are
+   * unversioned; legacy links carry backend-generated tokens.
    */
   activationId?: string;
+  /**
+   * Slot tokens whose backend release is not yet confirmed, including
+   * completed turns and attempts that never dispatched or were replaced.
+   * Kept until that exact release succeeds, so a reload or failed IPC cannot
+   * forget a slot the backend may still hold. New follow-ups wait meanwhile.
+   */
+  retiringActivationIds?: string[];
+  /**
+   * Older dispatched follow-ups whose outcome remains unknown after newer
+   * work took over this conversation. They still occupy its original slot;
+   * only matching terminal evidence or a confirmed whole-thread cutoff may
+   * move these exact tokens into retirement.
+   */
+  uncertainActivationIds?: string[];
   /** Last settled provider turn before reserving a follow-up. */
   activationPreviousTurnId?: string;
   /** Exact provider turn acknowledged for this activation, once known. */
@@ -159,6 +177,16 @@ export interface ChildAgentLink {
    * Lets Stop target exactly that start before any turn ID exists.
    */
   activationStartRequestId?: string;
+}
+
+/**
+ * Exact slot generation represented by this result revision. A user-typed
+ * turn retains the last parent activation as history, but owns its separate
+ * persisted attempt. A preparing parent follow-up takes ownership back before
+ * dispatch clears that older manual marker.
+ */
+export function childAgentSlotActivationId(link: ChildAgentLink): string | undefined {
+  return !link.activationPending && link.manualAttemptId ? link.manualAttemptId : link.activationId;
 }
 
 /**
@@ -200,10 +228,10 @@ export function childLifecycle(status: TaskStatus): string {
 
 /** Preserve a persisted outcome when no task from this app process exists. */
 export function childLifecycleForLink(link: ChildAgentLink, status: TaskStatus): string {
-  // A reserved or ambiguous activation cannot inherit the previous turn's
-  // terminal label, especially after renderer reload. Only the owning hook's
-  // matching runtime evidence can clear this durable pending boundary.
-  if (link.activationPending && !isChildActive(status)) return "unknown";
+  // Reserved or superseded ambiguous work cannot inherit another turn's
+  // terminal label, especially after renderer reload. Only matching runtime
+  // evidence or a confirmed cutoff can clear these durable boundaries.
+  if ((link.activationPending || link.uncertainActivationIds?.length) && !isChildActive(status)) return "unknown";
   if (status !== "idle") return childLifecycle(status);
   // A webview reload loses local status while native processes keep running.
   // Missing state is not proof of either completion or cancellation.
@@ -517,10 +545,12 @@ export function childAgentCrewSize(childAgents: ChildAgentSettings): number {
 /**
  * The live budget: how many children may run at once, never counting the root.
  *
- * Deliberately independent of how many destinations are configured. A roster is
- * a menu the model chooses from; the budget is what it may hold open at once,
- * and the two are different rules. Flooring the budget at the roster size made
- * a limit of 2 impossible to express for anyone with three destinations
+ * Deliberately independent of how many destinations are configured. Each
+ * destination is one worker slot that runs at most one child at a time (the
+ * backend enforces this per slot, so two Sol slots never admit a third Sol
+ * child and idle Opus slots never become Sol capacity); the budget is the
+ * separate cap on all slots together. Flooring the budget at the roster size
+ * made a limit of 2 impossible to express for anyone with three destinations
  * available — the stepper refused to go below 3 and the frozen policy really
  * did allow a third child.
  *
@@ -535,9 +565,10 @@ export function safeSubagentConcurrency(requested: unknown): number {
 /**
  * Clamp the live budget to the enabled crew the user can actually see.
  *
- * The user may keep more destinations available than they run concurrently,
- * but two configured workers must never retain a stale/default budget of three
- * and allow an unnamed extra child to appear.
+ * The user may keep more worker slots than they run concurrently, but two
+ * configured workers must never retain a stale/default budget of three. Per
+ * slot occupancy is enforced separately at admission; this clamp only keeps
+ * the total from promising more parallelism than there are slots.
  */
 export function crewSafeConcurrency(requested: unknown, childAgents: ChildAgentSettings): number {
   const enabledCrew = childAgents.targets.filter((target) => target.enabled).length;
@@ -817,6 +848,17 @@ export function sanitizeChildAgentLinks(stored: unknown): Record<string, ChildAg
     // decides which conversations are roots, so a self or reversed record would
     // let a true root be reclassified into the Sub-agents inbox.
     if (!canOwnThread(result, entry.rootThreadId, childThreadId)) continue;
+    // Cleanup accepts opaque slot tokens, including legacy manual attempts.
+    // Preserve their exact spelling and native UTF-8 size bound. These are
+    // unresolved ownership identities, not a history cache: even the oldest
+    // valid token may still name a held slot, so only deduplicate them.
+    const slotTokens = (value: unknown): string[] => Array.isArray(value)
+      ? [...new Set(value.filter((token): token is string =>
+        typeof token === "string" && token.trim().length > 0
+        && new TextEncoder().encode(token).length <= 200))]
+      : [];
+    const retiringActivationIds = slotTokens(entry.retiringActivationIds);
+    const uncertainActivationIds = slotTokens(entry.uncertainActivationIds);
     result[childThreadId] = {
       childThreadId,
       rootThreadId: entry.rootThreadId,
@@ -858,6 +900,8 @@ export function sanitizeChildAgentLinks(stored: unknown): Record<string, ChildAg
         ? { followUps: Math.min(entry.followUps, 10_000) } : {}),
       ...(typeof entry.activationId === "string" && /^[0-9a-f-]{36}$/.test(entry.activationId)
         ? { activationId: entry.activationId } : {}),
+      ...(retiringActivationIds.length ? { retiringActivationIds } : {}),
+      ...(uncertainActivationIds.length ? { uncertainActivationIds } : {}),
       ...(sanitizeText(entry.activationPreviousTurnId, 200)
         ? { activationPreviousTurnId: sanitizeText(entry.activationPreviousTurnId, 200) } : {}),
       ...(sanitizeText(entry.activationTurnId, 200)

@@ -97,7 +97,7 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
       <div className="worker-roster-head">
         <span>
           <strong>Sub-agents</strong>
-          <small>Each one is a named choice the model can delegate to.</small>
+          <small>Each entry is one worker that runs one task at a time.</small>
         </span>
         <span className="worker-roster-count">{value.targets.length} of {MAX_CHILD_AGENT_TARGETS}</span>
       </div>

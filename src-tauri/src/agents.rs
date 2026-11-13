@@ -383,6 +383,28 @@ pub(super) fn validate_targets(targets: &[ChildAgentTarget]) -> Result<(), Strin
     Ok(())
 }
 
+/// The approved worker slot a child was started on. Each configured
+/// destination is exactly one slot, so identical-model entries stay distinct.
+/// Frozen at the child's first claim: follow-ups reacquire this same slot and
+/// may never borrow another destination's capacity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ChildSlot {
+    pub target_id: String,
+    pub provider: String,
+    /// Resolved model identity, exactly as the session's targets carry it.
+    pub model: String,
+}
+
+impl ChildSlot {
+    fn of(target: &ChildAgentTarget) -> Self {
+        Self {
+            target_id: target.id.clone(),
+            provider: target.provider.clone(),
+            model: target.model.clone(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct SessionRuntime {
     /// Children currently running, plus reservations for spawns the webview
@@ -393,13 +415,160 @@ pub(super) struct SessionRuntime {
     /// completion may release it; initial/legacy completions have no token.
     /// Entries exist only for live follow-ups, bounded by the live-slot budget.
     activations: HashMap<String, String>,
-    reserved: usize,
+    /// Additional positive owners after renderer ownership changed: earlier
+    /// uncertain dispatches or a recovered manual turn alongside the native
+    /// current generation. They share the child's original slot, but every
+    /// exact token must settle before that slot can be freed.
+    uncertain_activations: HashMap<String, HashSet<String>>,
+    /// Unclaimed initial-spawn reservations, keyed by the worker slot
+    /// (destination id) they were admitted on.
+    reserved: HashMap<String, ChildSlot>,
+    /// Worker slot ownership of every child this runtime admitted. It outlives
+    /// liveness: a released child keeps its slot identity for follow-ups.
+    slots: HashMap<String, ChildSlot>,
     /// Every child ever spawned in this session; cancel/collect are refused
     /// for ids that did not come from it.
     pub(super) known: HashSet<String>,
     /// Completion can beat the spawn relay response for very short turns.
     /// Remember it so the late response cannot resurrect a released slot.
     pub(super) finished: HashSet<String>,
+}
+
+impl SessionRuntime {
+    fn has_activation_ownership(&self, child_id: &str) -> bool {
+        self.activations.contains_key(child_id)
+            || self.uncertain_activations.get(child_id).is_some_and(|tokens| !tokens.is_empty())
+    }
+
+    fn reserved_total(&self) -> usize {
+        self.reserved.len()
+    }
+
+    fn reserve_slot(&mut self, slot: ChildSlot) {
+        self.reserved.insert(slot.target_id.clone(), slot);
+    }
+
+    /// Return one anonymous reservation of this slot; false if none was held.
+    fn unreserve_slot(&mut self, target_id: &str) -> bool {
+        self.reserved.remove(target_id).is_some()
+    }
+
+    /// What currently holds a worker slot, if anything. A slot is held by an
+    /// unclaimed spawn reservation, or by any live (running, starting or
+    /// uncertain) child admitted on it. `except` is the child asking to reuse
+    /// its own slot, which must already be released to get this far.
+    fn slot_holder(&self, target_id: &str, except: Option<&str>) -> Option<String> {
+        if self.reserved.contains_key(target_id) {
+            return Some("a sub-agent that is still starting".to_string());
+        }
+        self.live
+            .iter()
+            .filter(|child| Some(child.as_str()) != except)
+            .find(|child| self.slots.get(*child).is_some_and(|slot| slot.target_id == target_id))
+            .map(|child| format!("`{child}`"))
+    }
+
+    /// Destinations of `targets` that could admit new work right now.
+    fn free_slots<'a>(&self, targets: &'a [ChildAgentTarget]) -> Vec<&'a str> {
+        targets
+            .iter()
+            .filter(|target| self.slot_holder(&target.id, None).is_none())
+            .map(|target| target.id.as_str())
+            .collect()
+    }
+
+    /// Rotation must not make still-running old workers disappear from the
+    /// approved crew. Unknown legacy ownership also cannot safely be assigned
+    /// to some currently idle destination.
+    fn incompatible_live_slot(&self, targets: &[ChildAgentTarget]) -> Option<String> {
+        let mut occupied = HashSet::new();
+        for child in &self.live {
+            let Some(slot) = self.slots.get(child) else {
+                return Some(format!("`{child}` has no confirmed original worker slot"));
+            };
+            if !targets.iter().any(|target| ChildSlot::of(target) == *slot) {
+                return Some(format!("`{child}` still owns a worker slot from an earlier crew"));
+            }
+            if !occupied.insert(slot.target_id.as_str()) {
+                return Some(format!("worker slot `{}` still has overlapping earlier work", slot.target_id));
+            }
+        }
+        self.reserved.values().find(|slot| occupied.contains(slot.target_id.as_str())
+            || !targets.iter().any(|target| ChildSlot::of(target) == **slot))
+            .map(|_| "a worker from an earlier crew is still starting".to_string())
+    }
+}
+
+/// Model-readable worker slots. Renderer evidence can add positive occupancy
+/// for user-typed work, but can never remove native reservations or liveness.
+/// This temporary view is deliberately separate from the admission ledger.
+fn worker_slot_report(
+    session: &ChildAgentSession,
+    runtime: &SessionRuntime,
+    renderer_occupants: Option<&Value>,
+    renderer_blocked: Option<&Value>,
+) -> Value {
+    let mut reported = SessionRuntime {
+        live: runtime.live.clone(),
+        reserved: runtime.reserved.clone(),
+        slots: runtime.slots.clone(),
+        ..Default::default()
+    };
+    let mut identity_mismatch = None;
+    if let Some(occupants) = renderer_occupants.and_then(Value::as_array) {
+        for occupant in occupants {
+            let Some(child_id) = occupant.get("childId").and_then(Value::as_str)
+                .filter(|child| runtime.known.contains(*child)) else { continue; };
+            // Before initial claim this child is not known: its anonymous
+            // reservation already counts. After claim the live-id set dedups
+            // it. Completed children manually reopened count once again here.
+            reported.live.insert(child_id.to_string());
+            if let Some(slot) = runtime.slots.get(child_id) {
+                if occupant.get("targetId").and_then(Value::as_str) != Some(slot.target_id.as_str())
+                    || occupant.get("provider").and_then(Value::as_str) != Some(slot.provider.as_str())
+                    || occupant.get("model").and_then(Value::as_str) != Some(slot.model.as_str())
+                {
+                    identity_mismatch = Some(format!("`{child_id}` has conflicting worker-slot ownership"));
+                }
+            }
+            // Unknown legacy identities stay unknown; a renderer status
+            // report must not assign them an arbitrary currently free slot.
+        }
+    }
+    let admission_blocked = reported.incompatible_live_slot(&session.targets)
+        .or(identity_mismatch)
+        .or_else(|| renderer_blocked.and_then(Value::as_str)
+            .filter(|reason| !reason.trim().is_empty()).map(str::to_owned));
+    let slots = session
+        .targets
+        .iter()
+        .map(|target| {
+            let model = if target.model.is_empty() { "provider default" } else { target.model.as_str() };
+            let mut entry = json!({
+                "target": target.id,
+                "provider": target.provider,
+                "model": model,
+                "state": if admission_blocked.is_some() { "blocked" } else { "free" },
+            });
+            if reported.reserved.contains_key(&target.id) {
+                entry["state"] = json!("starting");
+            } else if let Some(child) = reported.live.iter().find(|child| {
+                reported.slots.get(*child).is_some_and(|slot| slot.target_id == target.id)
+            }) {
+                entry["state"] = json!("busy");
+                entry["childId"] = json!(child);
+            }
+            entry
+        })
+        .collect::<Vec<_>>();
+    let active = reported.live.len() + reported.reserved_total();
+    json!({
+        "workerSlots": slots,
+        "parallelLimit": session.max_concurrent,
+        "activeWorkers": active,
+        "admissionBlocked": admission_blocked,
+        "slotRule": "Each destination is one worker slot: at most one child (new or continued) may run on it at a time, and at most parallelLimit children may run in total. A busy slot frees when its child's turn settles. A blocked slot must wait for admissionBlocked ownership to settle; spawn only on a free slot when the parallel limit allows, or wait.",
+    })
 }
 
 pub(super) fn record_spawned_child(runtime: &mut SessionRuntime, value: &Value) {
@@ -409,7 +578,7 @@ pub(super) fn record_spawned_child(runtime: &mut SessionRuntime, value: &Value) 
     runtime.known.insert(child_id.to_string());
     // An initial spawn acknowledgement can arrive after that child's next
     // turn already reserved a slot. It describes the old turn, not this one.
-    if runtime.activations.contains_key(child_id) {
+    if runtime.has_activation_ownership(child_id) {
         return;
     }
     // An ambiguous provider start/cutoff still owns work until a confirmed
@@ -425,37 +594,127 @@ pub(super) fn record_spawned_child(runtime: &mut SessionRuntime, value: &Value) 
     }
 }
 
-pub(super) fn record_finished_child(runtime: &mut SessionRuntime, child_id: &str) {
-    if runtime.activations.contains_key(child_id) {
-        return;
+/// Returns whether a live slot was actually freed.
+pub(super) fn record_finished_child(runtime: &mut SessionRuntime, child_id: &str) -> bool {
+    if runtime.has_activation_ownership(child_id) {
+        return false;
     }
-    runtime.live.remove(child_id);
+    let freed = runtime.live.remove(child_id);
     // A claimed initial start is live before its acknowledgment. Remember
     // every finish so that acknowledgment cannot resurrect a released slot.
     runtime.finished.insert(child_id.to_string());
+    freed
 }
 
-fn record_finished_activation(runtime: &mut SessionRuntime, child_id: &str, activation_id: &str) {
+/// Settle only this exact generation; return whether it freed the child's
+/// last live ownership. Other current or uncertain generations keep the slot.
+fn record_finished_activation(runtime: &mut SessionRuntime, child_id: &str, activation_id: &str) -> bool {
+    let mut settled = false;
     if runtime.activations.get(child_id).map(String::as_str) == Some(activation_id) {
         runtime.activations.remove(child_id);
-        runtime.live.remove(child_id);
-        runtime.finished.insert(child_id.to_string());
+        settled = true;
     }
+    if let Some(tokens) = runtime.uncertain_activations.get_mut(child_id) {
+        settled |= tokens.remove(activation_id);
+        if tokens.is_empty() {
+            runtime.uncertain_activations.remove(child_id);
+        }
+    }
+    if settled && !runtime.has_activation_ownership(child_id) {
+        let freed = runtime.live.remove(child_id);
+        runtime.finished.insert(child_id.to_string());
+        return freed;
+    }
+    false
 }
 
 pub(super) async fn rearm_child_runtime(
     previous: Option<Arc<Mutex<SessionRuntime>>>,
     known: &[String],
     finished: &[String],
+    recovered: &[RecoveredChildAgent],
+    retired_activations: &HashSet<String>,
 ) -> Arc<Mutex<SessionRuntime>> {
+    let fresh = previous.is_none();
     let runtime = previous.unwrap_or_default();
     {
         let mut accounting = runtime.lock().await;
         // Ownership outlives the live concurrency budget. Silently truncating
         // retained children makes later conversations foreign after recovery.
         accounting.known.extend(known.iter().cloned());
-        for child in finished {
-            record_finished_child(&mut accounting, child);
+        // Positive uncertainty survives renderer replacement even when the
+        // native runtime did. It adds owners without replacing the current
+        // generation; retired exact attempts can never be restored here.
+        for child in recovered {
+            if !fresh && child.active {
+                if let Some(token) = child.activation_id.as_ref().filter(|token| {
+                    !retired_activations.contains(&retired_activation_key(&child.child_id, token))
+                }) {
+                    match accounting.activations.get(&child.child_id) {
+                        None => {
+                            accounting.activations.insert(child.child_id.clone(), token.clone());
+                        }
+                        Some(current) if current != token => {
+                            // Never replace native A with recovered manual M.
+                            // Keep both positive owners until exact releases
+                            // settle each, regardless of completion order.
+                            accounting.uncertain_activations.entry(child.child_id.clone())
+                                .or_default().insert(token.clone());
+                        }
+                        Some(_) => {}
+                    }
+                    accounting.live.insert(child.child_id.clone());
+                    accounting.finished.remove(&child.child_id);
+                }
+            }
+            for token in &child.uncertain_activation_ids {
+                if !retired_activations.contains(&retired_activation_key(&child.child_id, token)) {
+                    accounting.uncertain_activations.entry(child.child_id.clone())
+                        .or_default().insert(token.clone());
+                    accounting.live.insert(child.child_id.clone());
+                    accounting.finished.remove(&child.child_id);
+                }
+            }
+        }
+        if fresh {
+            // Renderer recovery is a snapshot, never authority to overwrite
+            // live native generations on a mere registration rotation.
+            for child in known {
+                let saved = recovered.iter().find(|saved| &saved.child_id == child);
+                // A recovered token names this exact live owner. Newer manual
+                // work has its own attempt token, so an already retired
+                // follow-up must not become an anonymous hold.
+                let active = saved.map(|saved| saved.active && !saved.activation_id.as_ref()
+                    .is_some_and(|token| retired_activations.contains(&retired_activation_key(child, token))))
+                    .unwrap_or_else(|| !finished.contains(child));
+                if let Some(saved) = saved {
+                    if let Some(slot) = saved.slot() {
+                        accounting.slots.insert(child.clone(), slot);
+                    }
+                    if active {
+                        if let Some(token) = saved.activation_id.as_ref() {
+                            accounting.activations.insert(child.clone(), token.clone());
+                        }
+                    }
+                }
+                if active {
+                    accounting.live.insert(child.clone());
+                } else {
+                    record_finished_child(&mut accounting, child);
+                }
+            }
+        } else {
+            // A renderer replacement may carry a durable retirement whose
+            // IPC acknowledgement was lost. Settle only that exact native
+            // generation; a newer activation or manual owner stays live.
+            for child in recovered {
+                for token in &child.retiring_activation_ids {
+                    record_finished_activation(&mut accounting, &child.child_id, token);
+                }
+            }
+            for child in finished {
+                record_finished_child(&mut accounting, child);
+            }
         }
     }
     runtime
@@ -538,6 +797,8 @@ type RelayPayload = Result<Value, String>;
 #[derive(Clone)]
 struct SpawnRelay {
     session: Arc<ChildAgentSession>,
+    /// The worker slot this spawn reserved at admission. Never re-chosen.
+    slot: ChildSlot,
     /// Set only by the pre-dispatch claim under the pending-registry mutex.
     /// A claim converts the anonymous reservation into this child's live slot.
     child_id: Option<String>,
@@ -588,7 +849,39 @@ pub(super) struct ChildAgentState {
     sessions: SessionMap,
     pending: PendingRelays,
     retired_spawn_receipts: Mutex<HashMap<String, RetiredSpawnReceipt>>,
+    /// Follow-up activation tokens the renderer has released, per bridge
+    /// session id. Kept outside the session runtime so a late or duplicate
+    /// admission can never resurrect a retired attempt, even if its session
+    /// was ended and registered again. Entries live for this backend's entire
+    /// lifetime: neither IPC delivery nor a duplicate invocation has a proven
+    /// age bound that would make eviction safe. Lock order: runtime, then this.
+    retired_activations: Mutex<HashMap<String, HashSet<String>>>,
     server: Mutex<Option<BridgeServer>>,
+}
+
+fn retired_activation_key(child_id: &str, token: &str) -> String {
+    format!("{child_id}\u{0}{token}")
+}
+
+/// Caller-chosen follow-up tokens use the renderer's UUID spelling.
+fn valid_activation_token(token: &str) -> bool {
+    token.len() == 36 && token.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f' | b'-'))
+}
+
+async fn retire_activation(state: &ChildAgentState, session_id: &str, child_id: &str, token: &str) {
+    let key = retired_activation_key(child_id, token);
+    let mut retired = state.retired_activations.lock().await;
+    retired.entry(session_id.to_string()).or_default().insert(key);
+}
+
+async fn activation_retired(state: &ChildAgentState, session_id: &str, child_id: &str, token: &str) -> bool {
+    let key = retired_activation_key(child_id, token);
+    state
+        .retired_activations
+        .lock()
+        .await
+        .get(session_id)
+        .is_some_and(|tokens| tokens.contains(&key))
 }
 
 /** Only backend-created private MCP configs may be handed to Claude Code. */
@@ -821,6 +1114,11 @@ pub(super) struct ChildAgentSessionOptions {
     known_children: Vec<String>,
     #[serde(default)]
     finished_children: Vec<String>,
+    /// Durable ownership snapshot used only when native accounting has not
+    /// survived. Omission leaves nonterminal legacy children conservatively
+    /// live with unknown slots until confirmed completion or cancellation.
+    #[serde(default)]
+    recovered_children: Vec<RecoveredChildAgent>,
     /// Set by the app's project execution context, never by tool arguments.
     #[serde(default)]
     project_path: Option<String>,
@@ -840,6 +1138,34 @@ pub(super) struct ChildAgentSessionOptions {
     /// Actual provider supplied by the app, not by model tool arguments.
     #[serde(default)]
     provider: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RecoveredChildAgent {
+    child_id: String,
+    target_id: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    active: bool,
+    activation_id: Option<String>,
+    /// Durable release intents awaiting acknowledgement from this backend.
+    #[serde(default)]
+    retiring_activation_ids: Vec<String>,
+    /// Dispatched older owners without proof of terminal/cutoff completion.
+    /// Independent of the current/manual activation named above.
+    #[serde(default)]
+    uncertain_activation_ids: Vec<String>,
+}
+
+impl RecoveredChildAgent {
+    fn slot(&self) -> Option<ChildSlot> {
+        Some(ChildSlot {
+            target_id: self.target_id.clone()?,
+            provider: self.provider.clone()?,
+            model: self.model.clone()?,
+        })
+    }
 }
 
 fn default_bridge_permission() -> String {
@@ -946,18 +1272,19 @@ pub(super) fn tool_catalog(
     let target_property = json!({
         "type": "string",
         "enum": ids,
-        "description": format!("Which approved destination runs this child.\n{roster}"),
+        "description": format!("Which approved worker slot runs this child. Each destination is one slot that runs at most one child at a time; pick a free one (see `{TOOL_STATUS}` workerSlots).\n{roster}"),
     });
     let child_plural = if max_concurrent == 1 { "" } else { "s" };
 
-    let catalog = json!([
+    let mut catalog = json!([
         {
             "name": TOOL_SPAWN,
             "title": "Spawn a sub-agent",
             "description": format!(
                 "Mythra Code is the only permitted sub-agent system for this thread; provider-native task, team, and agent spawning is not allowed. \
                  Start a child agent on one of the destinations Mythra Code approved for this thread. \
-                 At most {max_concurrent} child agent{child_plural} may run concurrently. \
+                 Each destination below is one worker slot: it runs at most one child at a time, a continued child keeps its own slot, and a busy slot is never filled by another destination, even one with the same model. \
+                 Separately, at most {max_concurrent} child agent{child_plural} may run concurrently in total. A busy-slot or limit refusal starts nothing: use a free slot or wait for a child to finish. \
                  The child runs in the same workspace with the same permission policy, reports into the \
                  same conversation, and returns immediately with an id — use `{TOOL_COLLECT}` to wait for its result. \
                  A child can message you while it works; `{TOOL_STATUS}` and `{TOOL_COLLECT}` return its unread messages. \
@@ -1027,7 +1354,7 @@ pub(super) fn tool_catalog(
         {
             "name": TOOL_MESSAGE_AGENT,
             "title": "Message or continue a sub-agent",
-            "description": "Send guidance, an answer, or more work to one of your children on its existing conversation; never starts a new child. While the child is working, Mythra Code delivers the message live when its runtime accepts steering, otherwise it is queued and delivered at the child's next turn boundary. When the child has finished its turn and is awaiting your review, the message re-prompts it on the same conversation as soon as a concurrency slot is free, otherwise it waits in the queue. The result reports the real delivery state (delivered, started, queued, or refused) — never assume a queued message was read. Accepted children are closed, and a child the user stopped is never resumed by this tool; spawn a new child instead. Collect the child again after re-prompting it.",
+            "description": "Send guidance, an answer, or more work to one of your children on its existing conversation; never starts a new child. While the child is working, Mythra Code delivers the message live when its runtime accepts steering, otherwise it is queued and delivered at the child's next turn boundary. When the child has finished its turn and is awaiting your review, the message re-prompts it on the same conversation as soon as its own worker slot is free and the parallel limit allows, otherwise it waits in the queue. It never uses another destination's slot. The result reports the real delivery state (delivered, started, queued, or refused) — never assume a queued message was read. Accepted children are closed, and a child the user stopped is never resumed by this tool; spawn a new child instead. Collect the child again after re-prompting it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1168,7 +1495,8 @@ pub(super) fn tool_catalog(
                     tool["description"] = Value::String(format!(
                         "Mythra Code is the only permitted sub-agent system for this thread; provider-native task, team, and agent spawning is not allowed. \
                          Start a child agent on one of the destinations Mythra Code approved for this thread. \
-                         At most {max_concurrent} child agent{child_plural} may run concurrently. \
+                         Each destination below is one worker slot: it runs at most one child at a time, a continued child keeps its own slot, and a busy slot is never filled by another destination, even one with the same model. \
+                         Separately, at most {max_concurrent} child agent{child_plural} may run concurrently in total. A busy-slot or limit refusal starts nothing: use a free slot or wait for a child to finish. \
                          The child runs in the same workspace with the same permission policy, reports into the \
                          same conversation, and returns immediately with an id — use `{TOOL_COLLECT}` to wait for its result.\n\nDestinations:\n{roster}"
                     ));
@@ -1184,7 +1512,22 @@ pub(super) fn tool_catalog(
                 _ => {}
             }
         }
-        return Value::Array(tools);
+        catalog = Value::Array(tools);
+    }
+    // A large approved crew can exceed Claude's tool-description limit even
+    // before model notes. Keep every destination and its full policy in the
+    // target property's schema; only omit the duplicate top-level roster.
+    if let Some(spawn) = catalog.as_array_mut().expect("tool catalog is an array")
+        .iter_mut().find(|tool| tool["name"] == TOOL_SPAWN) {
+        if let Some(description) = spawn["description"].as_str() {
+            if tool_description_len(description) > SPAWN_DESCRIPTION_BUDGET {
+                if let Some((instructions, _)) = description.split_once("\n\nDestinations:\n") {
+                    spawn["description"] = Value::String(format!(
+                        "{instructions}\n\nThe target parameter lists every approved worker slot and its provider, model and reasoning policy."
+                    ));
+                }
+            }
+        }
     }
     catalog
 }
@@ -1415,6 +1758,7 @@ fn bridge_instructions(catalog: &Value, provider: &str) -> String {
     }
     if has(TOOL_SPAWN) {
         instructions.push("spawn_mythra_agent is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool.".into());
+        instructions.push("Each approved destination is one worker slot that runs at most one child at a time, separate from the overall parallel limit. A busy-slot or limit refusal starts nothing; choose a free slot from agent_status workerSlots or wait for a child to finish.".into());
         if has(TOOL_MESSAGE_AGENT) && has(TOOL_ACCEPT) {
             instructions.push("Read child questions and updates with agent_status or collect_agent. A collection can also return an unread question from another child. When a child needs your answer, use send_agent_message with its childId and question id as replyTo. For collectBeforeReply or an unknown phase, collect that child to confirm its work before replying. A question marked replyPending already has your reply on its way. Collect each result. Sign off successful work you are satisfied with using accept_agent and the exact reviewToken. For failed or cancelled work, review its result and send more guidance only when the child should continue working.".into());
         }
@@ -2169,9 +2513,12 @@ async fn relay_to_app_inner(
     session: &Arc<ChildAgentSession>,
     tool: &str,
     arguments: Value,
+    spawn_slot: Option<ChildSlot>,
 ) -> RelayOutcome {
-    let spawn = (tool == TOOL_SPAWN).then(|| SpawnRelay {
+    // Only a spawn admitted on a reserved worker slot carries accounting.
+    let spawn = spawn_slot.filter(|_| tool == TOOL_SPAWN).map(|slot| SpawnRelay {
         session: session.clone(),
+        slot,
         child_id: None,
     });
     // Every relay belongs to its exact token/context registration. An
@@ -2257,7 +2604,7 @@ async fn relay_to_app(
     if *session.ended.borrow() || *session.query_ended.borrow() {
         return Err("This sub-agent registration has ended.".into());
     }
-    match relay_to_app_inner(state, session, tool, arguments).await {
+    match relay_to_app_inner(state, session, tool, arguments, None).await {
         RelayOutcome::Answered(result, _) => result,
         RelayOutcome::TimedOut { request_id } => {
             state.pending.lock().await.remove(&request_id);
@@ -2281,9 +2628,17 @@ async fn settle_spawn_response(spawn: SpawnRelay, payload: RelayPayload) -> Rela
         // no provider started. Predispatch cleanup explicitly reports finish;
         // ambiguous failures keep this child's existing live ownership.
     } else {
-        runtime.reserved = runtime.reserved.saturating_sub(1);
+        runtime.unreserve_slot(&spawn.slot.target_id);
     }
     if let Ok(value) = &payload {
+        // An acknowledged child occupies the slot its spawn reserved. A slot
+        // already frozen for that child (a claim) is never re-chosen here.
+        if let Some(child_id) = value.get("childId").and_then(Value::as_str) {
+            runtime
+                .slots
+                .entry(child_id.to_string())
+                .or_insert_with(|| spawn.slot.clone());
+        }
         record_spawned_child(&mut runtime, value);
     }
     payload
@@ -2404,25 +2759,24 @@ async fn dispatch_tool(
             "activation": "Installed enabled servers are available to language_tool_query for all providers. Claude's built-in LSP integration updates on the next turn.",
         }));
     }
+    if tool == TOOL_STATUS {
+        // Native accounting always wins. Positive renderer occupancy adds
+        // user-typed/preparing/unknown work without freeing any native hold.
+        let mut result = relay_to_app(state, session, tool, arguments).await?;
+        if let Some(object) = result.as_object_mut() {
+            let renderer_occupants = object.remove("workerSlotOccupants");
+            let renderer_blocked = object.remove("workerSlotAdmissionBlocked");
+            let runtime = session.runtime.lock().await;
+            if let Value::Object(report) = worker_slot_report(
+                session, &runtime, renderer_occupants.as_ref(), renderer_blocked.as_ref(),
+            ) {
+                object.extend(report);
+            }
+        }
+        return Ok(result);
+    }
     if tool != TOOL_SPAWN {
         return relay_to_app(state, session, tool, arguments).await;
-    }
-
-    // Reserve a concurrency slot before the webview is asked to do anything,
-    // so two tool calls arriving together cannot both see the last free slot.
-    {
-        let mut runtime = session.runtime.lock().await;
-        if *session.ended.borrow() || *session.query_ended.borrow() {
-            return Err("This sub-agent registration has ended.".into());
-        }
-        if runtime.live.len() + runtime.reserved >= session.max_concurrent {
-            return Err(format!(
-                "This thread already has {} sub-agent{} running, which is its configured maximum. Wait for one to finish or cancel it first.",
-                session.max_concurrent,
-                if session.max_concurrent == 1 { "" } else { "s" }
-            ));
-        }
-        runtime.reserved += 1;
     }
 
     let target_id = arguments
@@ -2433,6 +2787,40 @@ async fn dispatch_tool(
         .target(target_id)
         .cloned()
         .expect("validate_tool_call accepted the destination");
+    let slot = ChildSlot::of(&target);
+    // Reserve this exact worker slot before the webview is asked to do
+    // anything, so two tool calls arriving together cannot both see it free.
+    // Each destination is one slot: a busy slot is never satisfied by another
+    // destination's idle capacity, even one with the same model.
+    {
+        let mut runtime = session.runtime.lock().await;
+        if *session.ended.borrow() || *session.query_ended.borrow() {
+            return Err("This sub-agent registration has ended.".into());
+        }
+        if let Some(reason) = runtime.incompatible_live_slot(&session.targets) {
+            return Err(format!("New sub-agent work must wait because {reason}. Collect or stop that work before using the current crew. Nothing was started."));
+        }
+        if let Some(holder) = runtime.slot_holder(&target.id, None) {
+            let free = runtime.free_slots(&session.targets);
+            let free = if free.is_empty() {
+                "No worker slot is free right now.".to_string()
+            } else {
+                format!("Free worker slots: {}.", free.iter().map(|id| format!("`{id}`")).collect::<Vec<_>>().join(", "))
+            };
+            return Err(format!(
+                "Worker slot `{}` is busy with {holder}; each destination runs at most one sub-agent at a time. {free} Use a free slot, or wait for that child to finish (collect_agent) and retry. Nothing was started.",
+                target.id
+            ));
+        }
+        if runtime.live.len() + runtime.reserved_total() >= session.max_concurrent {
+            return Err(format!(
+                "This thread already has {} sub-agent{} running, which is its configured parallel limit. Wait for one to finish or cancel it first. Nothing was started.",
+                session.max_concurrent,
+                if session.max_concurrent == 1 { "" } else { "s" }
+            ));
+        }
+        runtime.reserve_slot(slot.clone());
+    }
     let mut relayed = arguments.clone();
     if let Some(object) = relayed.as_object_mut() {
         object.insert("provider".into(), Value::String(target.provider.clone()));
@@ -2440,7 +2828,7 @@ async fn dispatch_tool(
         object.insert("label".into(), Value::String(target.label.clone()));
     }
 
-    match relay_to_app_inner(state, session, tool, relayed).await {
+    match relay_to_app_inner(state, session, tool, relayed, Some(slot.clone())).await {
         RelayOutcome::Answered(result, spawn) => {
             settle_spawn_response(spawn.expect("spawn relay carries accounting"), result).await
         }
@@ -2480,7 +2868,7 @@ async fn dispatch_tool(
                 // Only an unclaimed Waiting entry can be retired before this
                 // timeout transition. Preserve a claimed child's live slot.
                 return settle_spawn_response(abandoned.unwrap_or_else(|| SpawnRelay {
-                    session: session.clone(), child_id: None,
+                    session: session.clone(), slot, child_id: None,
                 }), error).await;
             }
 
@@ -2659,6 +3047,24 @@ pub(super) async fn child_agent_session_start(
         return Err("A sub-agent session needs a session identity.".into());
     }
     validate_targets(&options.targets)?;
+    let mut recovered_ids = HashSet::new();
+    for child in &options.recovered_children {
+        if child.child_id.trim().is_empty() || child.child_id.len() > 200
+            || !options.known_children.contains(&child.child_id)
+            || !recovered_ids.insert(child.child_id.as_str())
+            || child.activation_id.as_ref().is_some_and(|id| id.trim().is_empty() || id.len() > 200)
+            || child.retiring_activation_ids.iter().any(|id| id.trim().is_empty() || id.len() > 200)
+            || child.uncertain_activation_ids.iter().any(|id| id.trim().is_empty() || id.len() > 200)
+        {
+            return Err("Recovered sub-agents require unique known child identities and valid activation tokens.".into());
+        }
+        match (&child.target_id, &child.provider, &child.model) {
+            (None, None, None) => {},
+            (Some(target), Some(provider), Some(model)) if valid_target_id(target)
+                && agent_bridge_providers().contains(&provider.as_str()) && model.len() <= 128 => {},
+            _ => return Err("A recovered sub-agent has malformed worker-slot ownership.".into()),
+        }
+    }
     if !matches!(options.permission.as_str(), "ask" | "read-only" | "full") {
         return Err("Unknown language-tool permission mode.".into());
     }
@@ -2797,12 +3203,43 @@ pub(super) async fn child_agent_session_start(
     }
     // Late relay responses still hold the old session. Share its accounting
     // so reservations, live children and late answers survive re-registration.
+    let retired_activations: HashSet<String> = {
+        let mut retired = state.retired_activations.lock().await;
+        let tokens = retired.entry(options.session_id.clone()).or_default();
+        for child in &options.recovered_children {
+            tokens.extend(child.retiring_activation_ids.iter()
+                .map(|token| retired_activation_key(&child.child_id, token)));
+        }
+        // Recovery only needs the retirement state of the exact saved
+        // owners. Avoid copying the session's full lifetime token history on
+        // every registration while keeping that history authoritative here.
+        let mut relevant = HashSet::new();
+        for child in &options.recovered_children {
+            for token in child.activation_id.iter().chain(&child.uncertain_activation_ids) {
+                let key = retired_activation_key(&child.child_id, token);
+                if tokens.contains(&key) {
+                    relevant.insert(key);
+                }
+            }
+        }
+        relevant
+    };
+    // Revoke the old registration before yielding for its runtime. Otherwise
+    // an admission waiting on that mutex could slip between rearm's unlock
+    // and revocation, using an obsolete crew after accounting was refreshed.
+    let query_ended = rearm_query_cancellation(
+        sessions
+            .get(&options.session_id)
+            .map(|session| &session.query_ended),
+    );
     let runtime = rearm_child_runtime(
         sessions
             .get(&options.session_id)
             .map(|session| session.runtime.clone()),
         &options.known_children,
         &options.finished_children,
+        &options.recovered_children,
+        &retired_activations,
     )
     .await;
     let ended = if let Some(previous) = sessions.get(&options.session_id) {
@@ -2819,11 +3256,6 @@ pub(super) async fn child_agent_session_start(
     } else {
         watch::channel(false).0
     };
-    let query_ended = rearm_query_cancellation(
-        sessions
-            .get(&options.session_id)
-            .map(|session| &session.query_ended),
-    );
     let previous = sessions.insert(
         options.session_id.clone(),
         Arc::new(ChildAgentSession {
@@ -2971,21 +3403,24 @@ pub(super) async fn child_agent_claim_spawn(
             return Err("This initial spawn was already claimed by a different child.".into());
         }
         if !runtime.live.contains(claimed) || runtime.finished.contains(claimed)
-            || runtime.activations.contains_key(claimed) {
+            || runtime.has_activation_ownership(claimed) {
             return Err("This initial claim has already settled or been superseded; no provider turn may start.".into());
         }
         return Ok(());
     }
     if runtime.finished.contains(&child_thread_id) || runtime.live.contains(&child_thread_id)
-        || runtime.activations.contains_key(&child_thread_id) {
+        || runtime.has_activation_ownership(&child_thread_id)
+        || runtime.slots.get(&child_thread_id).is_some_and(|slot| *slot != spawn.slot) {
         return Err("This child already owns or settled different work; the initial start was refused.".into());
     }
-    if runtime.reserved == 0 {
-        return Err("This initial spawn no longer owns a concurrency reservation.".into());
+    // The reservation is converted, never transferred: this child takes the
+    // exact worker slot its spawn was admitted on.
+    if !runtime.unreserve_slot(&spawn.slot.target_id) {
+        return Err("This initial spawn no longer owns a worker-slot reservation.".into());
     }
-    runtime.reserved -= 1;
     runtime.known.insert(child_thread_id.clone());
     runtime.live.insert(child_thread_id.clone());
+    runtime.slots.insert(child_thread_id.clone(), spawn.slot.clone());
     spawn.child_id = Some(child_thread_id);
     Ok(())
 }
@@ -3187,23 +3622,41 @@ pub(super) async fn child_agent_respond(
 }
 
 /// Release a child's concurrency slot once its turn reaches a terminal state.
+///
+/// With an activation token this is also the settlement of that exact
+/// follow-up attempt, whether or not it was ever admitted: the token is
+/// retired first, so an admission still in flight can never take a slot
+/// afterwards, and is then released if it is the child's current activation.
+/// Success therefore means this attempt holds no slot and never will in this
+/// backend's lifetime. Other generations are never touched.
 #[tauri::command]
 pub(super) async fn child_agent_finished(
     state: State<'_, ChildAgentState>,
     session_id: String,
     child_thread_id: String,
     activation_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<Value, String> {
+    if let Some(token) = activation_id.as_deref() {
+        if token.trim().is_empty() || token.len() > 200 || child_thread_id.len() > 200 {
+            return Err("A sub-agent release named a malformed activation.".into());
+        }
+        // Retire before looking up the session: an admission either already
+        // holds the runtime lock (and is released below) or will see this.
+        retire_activation(&state, &session_id, &child_thread_id, token).await;
+    }
     let session = state.sessions.lock().await.get(&session_id).cloned();
+    let mut released = false;
     if let Some(session) = session {
         let mut runtime = session.runtime.lock().await;
-        if let Some(activation_id) = activation_id {
-            record_finished_activation(&mut runtime, &child_thread_id, &activation_id);
+        released = if let Some(activation_id) = activation_id {
+            record_finished_activation(&mut runtime, &child_thread_id, &activation_id)
         } else {
-            record_finished_child(&mut runtime, &child_thread_id);
-        }
+            record_finished_child(&mut runtime, &child_thread_id)
+        };
     }
-    Ok(())
+    // `released` reports whether a slot was freed now; false is still a
+    // settled outcome (nothing of this attempt holds a slot).
+    Ok(json!({ "released": released }))
 }
 
 /// Re-admit an idle owned child for a same-conversation follow-up turn.
@@ -3212,12 +3665,30 @@ pub(super) async fn child_agent_finished(
 /// spawn: a follow-up takes a live slot before any provider work starts, and
 /// `child_agent_finished` releases it only with the returned activation id,
 /// when the turn settles or never starts.
+///
+/// A follow-up reacquires the child's own original worker slot and nothing
+/// else. The renderer supplies the child's durable slot identity (its frozen
+/// destination id, provider and model); a slot this runtime recorded at the
+/// child's claim always wins and must agree. The slot must still be approved
+/// with that same provider/model, and no other live child may hold it.
+///
+/// The renderer names the activation token itself and persists it before
+/// this call, so a lost reply never leaves an admission it cannot release.
+/// Admission is idempotent for that exact token, and a token already retired
+/// by `child_agent_finished` is never admitted, however late it arrives.
 #[tauri::command]
 pub(super) async fn child_agent_reactivate(
     state: State<'_, ChildAgentState>,
     session_id: String,
     child_thread_id: String,
+    target_id: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    activation_id: Option<String>,
 ) -> Result<Value, String> {
+    if activation_id.as_deref().is_some_and(|token| !valid_activation_token(token)) {
+        return Err("This follow-up's activation token is malformed, so it was not admitted.".into());
+    }
     let session = state
         .sessions
         .lock()
@@ -3240,10 +3711,69 @@ pub(super) async fn child_agent_reactivate(
     if !runtime.known.contains(&child_thread_id) {
         return Err("That sub-agent was not spawned from this thread.".into());
     }
+    let supplied = match (target_id, provider, model) {
+        (Some(target_id), Some(provider), Some(model)) if valid_target_id(&target_id) => {
+            Some(ChildSlot { target_id, provider, model })
+        }
+        (None, None, None) => None,
+        _ => return Err("This sub-agent's worker-slot identity is malformed, so the follow-up was not started.".into()),
+    };
+    if let (Some(recorded), Some(supplied)) = (runtime.slots.get(&child_thread_id), &supplied) {
+        if recorded != supplied {
+            return Err("This sub-agent's recorded worker slot does not match its saved ownership, so the follow-up was not started. Spawn a new sub-agent on a free slot instead.".into());
+        }
+    }
+    if runtime.uncertain_activations.get(&child_thread_id).is_some_and(|tokens| !tokens.is_empty()) {
+        return Err("This sub-agent's follow-up must wait because earlier dispatched work has no confirmed completion or cutoff. Nothing was sent.".into());
+    }
+    if let Some(token) = activation_id.as_deref() {
+        // Checked under the runtime lock, which a concurrent release of this
+        // token also takes after retiring it: admission and retirement are
+        // ordered, never interleaved.
+        if activation_retired(&state, &session_id, &child_thread_id, token).await {
+            return Err("This follow-up attempt was already retired, so it was not admitted and nothing was sent. Its guidance stays queued for a new attempt.".into());
+        }
+        if runtime.activations.get(&child_thread_id).map(String::as_str) == Some(token) {
+            return Ok(json!({ "activationId": token, "replayed": true }));
+        }
+    }
     if runtime.live.contains(&child_thread_id) {
         return Err("That sub-agent already owns a live concurrency slot. Wait for its current turn's release before continuing it.".into());
     }
-    if runtime.live.len() + runtime.reserved >= session.max_concurrent {
+    let slot = match (runtime.slots.get(&child_thread_id), supplied) {
+        (Some(recorded), _) => recorded.clone(),
+        (None, Some(supplied)) => supplied,
+        (None, None) => {
+            return Err("This sub-agent has no recorded worker slot, so a follow-up cannot be admitted safely. Spawn a new sub-agent on a free slot, or continue it yourself from its conversation.".into());
+        }
+    };
+    // The child keeps its original slot; it never borrows a sibling's, even
+    // one with the same model, and never runs on a slot whose model changed.
+    match session.target(&slot.target_id) {
+        None => {
+            return Err(format!(
+                "This sub-agent's worker slot `{}` is no longer in this thread's approved crew, so it cannot be continued automatically. Spawn a new sub-agent on a current slot, or continue it yourself from its conversation.",
+                slot.target_id
+            ));
+        }
+        Some(target) if target.provider != slot.provider || target.model != slot.model => {
+            return Err(format!(
+                "Worker slot `{}` now runs a different provider or model than this sub-agent was started with, so it cannot be continued automatically. Spawn a new sub-agent on a current slot, or continue it yourself from its conversation.",
+                slot.target_id
+            ));
+        }
+        Some(_) => {}
+    }
+    if let Some(holder) = runtime.slot_holder(&slot.target_id, Some(&child_thread_id)) {
+        return Err(format!(
+            "Worker slot `{}` is busy with {holder}; this sub-agent continues when its own slot frees.",
+            slot.target_id
+        ));
+    }
+    if let Some(reason) = runtime.incompatible_live_slot(&session.targets) {
+        return Err(format!("This sub-agent's follow-up must wait because {reason}. Collect or stop that work before using the current crew."));
+    }
+    if runtime.live.len() + runtime.reserved_total() >= session.max_concurrent {
         return Err(format!(
             "This thread already has {} sub-agent{} running, which is its configured maximum.",
             session.max_concurrent,
@@ -3251,8 +3781,10 @@ pub(super) async fn child_agent_reactivate(
         ));
     }
     runtime.finished.remove(&child_thread_id);
-    let activation_id = uuid::Uuid::new_v4().to_string();
+    // Legacy callers without a token keep the backend-generated generation.
+    let activation_id = activation_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     runtime.activations.insert(child_thread_id.clone(), activation_id.clone());
+    runtime.slots.insert(child_thread_id.clone(), slot);
     runtime.live.insert(child_thread_id);
     Ok(json!({ "activationId": activation_id }))
 }

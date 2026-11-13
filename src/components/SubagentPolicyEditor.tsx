@@ -56,7 +56,7 @@ export function SubagentPolicyEditor({ policy, readiness, disabled, modelCatalog
           <span>
             <strong>Max running at once</strong>
             <small>{enabledSubAgents
-              ? `Choose from ${enabledSubAgents} enabled sub-agent${enabledSubAgents === 1 ? "" : "s"} below; only this many may run simultaneously.`
+              ? `Total that may run simultaneously across ${enabledSubAgents} enabled sub-agent${enabledSubAgents === 1 ? "" : "s"} below. Each entry is one worker that runs one task at a time. Add another entry for another worker on the same model.`
               : "Maximum simultaneous runs after sub-agents are added below."}</small>
           </span>
           <div className="number-stepper" aria-label="Maximum concurrent sub-agents">

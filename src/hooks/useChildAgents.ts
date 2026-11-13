@@ -4,6 +4,7 @@ import { latestCodexTurn, terminalTurnStatus } from "./useThreadHealth";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
   onChildAgentRequest,
+  ChildAgentAdmissionUnconfirmedError,
   claimChildAgentSpawn,
   isChildAgentRequestActive,
   reactivateChildAgent,
@@ -19,6 +20,7 @@ import {
   childAgentPolicyForThread,
   childAgentAutoCompactIssue,
   childAgentReasoningEffort,
+  childAgentSlotActivationId,
   childAgentTargetIssue,
   childLifecycle,
   childLifecycleForLink,
@@ -94,6 +96,7 @@ import {
 } from "../lib/parentRun";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
 import { sealStoppedTurn } from "../lib/stopTurnHistory";
+import { proveThreadWorkSettled } from "../lib/parentRunRecovery";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { SetPersisted } from "./usePersistedState";
@@ -469,6 +472,11 @@ async function recoverChildStatus(link: ChildAgentLink, assertCurrent: () => voi
     }
     recoveredTurnId = turn?.id;
   }
+  // A manual turn reopens a durable revision before dispatch. After reload,
+  // an older completed runtime turn cannot release that new revision's slot
+  // while its request may still be preparing or unconfirmed.
+  if (link.resultRevision && link.revisionBaseTurnId
+    && (!recoveredTurnId || recoveredTurnId === link.revisionBaseTurnId)) return "unknown";
   const store = useTaskStore.getState();
   const activeTurnId = store.tasks[childId]?.activeTurnId;
   if (activeTurnId && activeTurnId !== recoveredTurnId) return "running";
@@ -930,7 +938,7 @@ export function useChildAgents(context: ChildAgentContext): {
   /** Roots already reported finished, so a slot is released exactly once. */
   const releasedRef = useRef(new Set<string>());
   /** Pending slot releases keyed by child and activation, retried on failure. */
-  const releases = useRef(new Map<string, { link: ChildAgentLink; activationId?: string }>());
+  const releases = useRef(new Map<string, { link: ChildAgentLink; activationId?: string; onReleased?: (freed: boolean) => void }>());
   const releasing = useRef(new Set<string>());
   /** Latest release attempt per child; a follow-up reservation awaits it. */
   const releaseAttemptsRef = useRef(new Map<string, Promise<void>>());
@@ -940,12 +948,14 @@ export function useChildAgents(context: ChildAgentContext): {
   const releaseFailuresRef = useRef(new Map<string, string>());
   /** A pump can retry before the backoff expires; keep only its latest timer. */
   const releaseRetryTimersRef = useRef(new Map<string, ReturnType<typeof window.setTimeout>>());
-  const releaseSlot = useCallback((link: ChildAgentLink, activationId: string | undefined = link.activationId, attempt = 0) => {
+  const releaseSlot = useCallback((link: ChildAgentLink, activationId: string | undefined = link.activationId, attempt = 0, onReleased?: (freed: boolean) => void) => {
     const id = link.childThreadId;
     // An activation token releases only the follow-up it reserved; an
     // unversioned release covers the initial spawn slot alone.
     const key = `${id}\u0000${activationId ?? "initial"}`;
-    releases.current.set(key, { link, activationId });
+    // Retries and pump re-sends keep the confirmation callback of the
+    // original request; it runs only after the backend accepted the release.
+    releases.current.set(key, { link, activationId, onReleased: onReleased ?? releases.current.get(key)?.onReleased });
     if (releasing.current.has(key)) return;
     const pendingRetry = releaseRetryTimersRef.current.get(key);
     if (pendingRetry !== undefined) {
@@ -953,11 +963,19 @@ export function useChildAgents(context: ChildAgentContext): {
       releaseRetryTimersRef.current.delete(key);
     }
     releasing.current.add(key);
-    const request = reportChildAgentFinished(link.sessionId, id, activationId).then(() => {
+    const request = reportChildAgentFinished(link.sessionId, id, activationId).then((freed) => {
+      const confirmed = releases.current.get(key)?.onReleased;
       releases.current.delete(key);
       releaseFailuresRef.current.delete(key);
+      // A confirmation callback decides whether to pump: retiring a token
+      // that was never admitted frees nothing and must not re-trigger the
+      // attempt that was just refused.
+      if (confirmed) {
+        if (lifecycleRef.current.mounted) confirmed(freed);
+        return;
+      }
       // A freed slot may let queued follow-ups in this session start.
-      schedulePumpRef.current(link.sessionId);
+      if (freed) schedulePumpRef.current(link.sessionId);
     }).catch((reason) => {
       // Never swallow silently: keep it visible and retry a few times with
       // backoff. Later pumps still retry after the bounded attempts end.
@@ -985,6 +1003,8 @@ export function useChildAgents(context: ChildAgentContext): {
    * the concurrency check. Entries are dropped once the link map has them.
    */
   const pendingChildrenRef = useRef<Map<string, Set<string>>>(new Map());
+  /** Worker slot of each initial-spawn reservation before its child is identified. */
+  const pendingSpawnSlotsRef = useRef(new Map<string, { sessionId: string; targetId: string; provider: Provider; model: string }>());
   /** Links written by a spawn response before React has rendered persistence. */
   const pendingLinksRef = useRef<Map<string, ChildAgentLink>>(new Map());
   /** A spawn is already assigned before the provider identifies its child. */
@@ -1008,6 +1028,18 @@ export function useChildAgents(context: ChildAgentContext): {
   const provisionalOwnersRef = useRef(new Map<string, { rootThreadId: string; sessionId: string }>());
   /** Children whose same-conversation follow-up is being started. */
   const followUpsInFlightRef = useRef(new Set<string>());
+  /** Stop/detach cancels only admission waiting, never an uncertain provider request. */
+  const followUpPreparationsRef = useRef(new Map<string, AbortController>());
+  /** Unconfirmed admission may retry twice, then keeps that exact batch paused. */
+  const admissionRetriesRef = useRef(new Map<string, {
+    batch: string; failures: number; retryAt: number; reason: string; timer?: ReturnType<typeof window.setTimeout>;
+    createdAt: number; revision: number; runGeneration: number; rootGeneration: number; childGeneration: number; rendererGeneration: number;
+  }>());
+  const clearAdmissionRetry = useCallback((childId: string) => {
+    const retry = admissionRetriesRef.current.get(childId);
+    if (retry?.timer !== undefined) window.clearTimeout(retry.timer);
+    admissionRetriesRef.current.delete(childId);
+  }, []);
   const remoteAcceptancesRef = useRef(new Set<string>());
   const remoteStopsRef = useRef(new Set<string>());
   /** Active mailbox waits and their current-turn guards, by child. */
@@ -1160,6 +1192,48 @@ export function useChildAgents(context: ChildAgentContext): {
     return { ...links, ...Object.fromEntries(pendingLinksRef.current) };
   }, []);
 
+  /** Children whose queued guidance waits only for a token retirement. */
+  const waitingOnRetirementRef = useRef(new Set<string>());
+  /**
+   * Retire an exact token only after terminal/cutoff evidence, or proof this
+   * attempt sent nothing to its provider, whether or not native admitted it.
+   * The durable marker is written before the release and removed only after
+   * the backend confirms that exact retirement, so neither a failed IPC nor a
+   * reload can forget a slot the backend may still hold. The backend frees
+   * only that generation and refuses any late admission of it.
+   */
+  const retireActivationToken = useCallback((link: ChildAgentLink, token: string) => {
+    const id = link.childThreadId;
+    const sameChild = (current: ChildAgentLink) => current.createdAt === link.createdAt
+      && current.sessionId === link.sessionId && current.rootThreadId === link.rootThreadId;
+    updateLink(id, (current) => !sameChild(current) || current.retiringActivationIds?.includes(token) ? current
+      : { ...current, retiringActivationIds: [...(current.retiringActivationIds ?? []), token] });
+    releaseSlot({ ...link, activationId: token }, token, 0, (freed) => {
+      updateLink(id, (current) => {
+        if (!sameChild(current) || !current.retiringActivationIds?.includes(token)) return current;
+        const remaining = current.retiringActivationIds.filter((entry) => entry !== token);
+        const { retiringActivationIds: _retiring, ...rest } = current;
+        return remaining.length ? { ...rest, retiringActivationIds: remaining } : rest;
+      });
+      // Only a token the backend had admitted (its reply was lost) frees a
+      // slot others may be waiting for. A refused token changes nothing, so
+      // it re-pumps only guidance that was parked on this retirement itself;
+      // the refusal that retired it never re-triggers its own attempt.
+      const parked = waitingOnRetirementRef.current.delete(id);
+      if (freed || parked) schedulePumpRef.current(link.sessionId);
+    });
+  }, [releaseSlot, updateLink]);
+
+  /** Supersession proves no cutoff: retain possibly dispatched older work. */
+  const rememberUncertainActivation = useCallback((link: ChildAgentLink, token: string) => {
+    const current = linksIncludingPending(contextRef.current.links)[link.childThreadId];
+    if (!current || current.createdAt !== link.createdAt || current.sessionId !== link.sessionId || current.rootThreadId !== link.rootThreadId
+      || current.retiringActivationIds?.includes(token)) return;
+    supersededUncertainRef.current.set(link.childThreadId, token);
+    updateLink(link.childThreadId, (latest) => latest.uncertainActivationIds?.includes(token) ? latest
+      : { ...latest, uncertainActivationIds: [...(latest.uncertainActivationIds ?? []), token] });
+  }, [linksIncludingPending, updateLink]);
+
   /** Authority comes from this root's captured crew, never the global toggle. */
   const assertParentCollaboration = useCallback((link: ChildAgentLink, sessionId = link.sessionId): void => {
     const policy = childAgentPolicyForSession(contextRef.current.policies, sessionId);
@@ -1192,7 +1266,7 @@ export function useChildAgents(context: ChildAgentContext): {
     // token now (a same-renderer preparation refuses on the new revision).
     const staleToken = link.activationPending && link.activationDispatched === false
       && !followUpsInFlightRef.current.has(threadId) && !pendingActivationsRef.current.has(threadId) ? link.activationId : undefined;
-    if (staleToken) releaseSlot(link, staleToken);
+    if (staleToken) retireActivationToken(link, staleToken);
     updateLink(threadId, (current) => {
       // The user took this conversation over, so its next result is theirs.
       const { acceptedAt: _accepted, acceptedBy: _by, acceptNote: _note, stopOrigin: _stop,
@@ -1207,7 +1281,7 @@ export function useChildAgents(context: ChildAgentContext): {
       return { ...(cleared as unknown as ChildAgentLink), resultRevision: revision, manualAttemptId: attemptId,
         ...(task?.lastCompletedTurnId ?? current.activationTurnId ? { revisionBaseTurnId: task?.lastCompletedTurnId ?? current.activationTurnId } : {}) };
     });
-  }, [linksIncludingPending, notifyModeLockChanged, releaseSlot, updateLink]);
+  }, [linksIncludingPending, notifyModeLockChanged, retireActivationToken, updateLink]);
 
   /** The explicit attempt reached dispatch (no-op) or was refused before any provider request. */
   const settleExplicitChildStart = useCallback((threadId: string, attemptId: string, dispatched: boolean): void => {
@@ -1216,6 +1290,9 @@ export function useChildAgents(context: ChildAgentContext): {
     explicitStartsRef.current.delete(threadId);
     parentEvidenceChangedRef.current();
     notifyModeLockChanged();
+    // A refused manual preparation can free a slot without changing task
+    // status. Wake guidance waiting on that reservation after rollback below.
+    schedulePumpRef.current(noted.before.sessionId);
     // Refused before any provider request: restore the pre-attempt record,
     // unless real work happened since (active now, or a newer completed
     // turn). If the refusal left a visible error/interruption on the task,
@@ -1269,6 +1346,77 @@ export function useChildAgents(context: ChildAgentContext): {
     };
   }, [linksIncludingPending]);
 
+  const uncertainRecoveriesRef = useRef(new Map<string, { boundary: string; promise: Promise<boolean> }>());
+  /** Only whole-thread native proof can settle work a newer turn superseded. */
+  const recoverUncertainActivations = useCallback((observed: ChildAgentLink): Promise<boolean> => {
+    const id = observed.childThreadId;
+    const task = useTaskStore.getState().tasks[id];
+    const boundary = JSON.stringify([observed.createdAt, observed.activationId, observed.activationPending, observed.manualAttemptId,
+      observed.resultRevision, observed.uncertainActivationIds, taskStatusOf(id), task?.activeTurnId, task?.lastCompletedTurnId]);
+    const existing = uncertainRecoveriesRef.current.get(id);
+    if (existing) {
+      if (existing.boundary === boundary) return existing.promise;
+      // A finish/new turn arrived while the earlier probe was reading. Give
+      // that changed boundary one probe after the old reader releases its
+      // key; otherwise a missed completion would require a manual Stop.
+      return existing.promise.then(() => {
+        if (!lifecycleRef.current.mounted) return false;
+        const current = linksIncludingPending(contextRef.current.links)[id];
+        return current ? recoverUncertainActivations(current) : false;
+      });
+    }
+    const tokens = observed.uncertainActivationIds ?? [];
+    if (!tokens.length) return Promise.resolve(true);
+    const assertObserved = childObservationGuard(observed);
+    const isCurrent = () => {
+      if (followUpsInFlightRef.current.has(id) || initialStartPending(observed)
+        || explicitStartsRef.current.has(id) || remoteStopsRef.current.has(id)) return false;
+      const current = linksIncludingPending(contextRef.current.links)[id];
+      if (JSON.stringify(current?.uncertainActivationIds ?? []) !== JSON.stringify(tokens)) return false;
+      try { assertObserved(); return true; } catch { return false; }
+    };
+    const probe = (async () => {
+      const proof = await proveThreadWorkSettled(id, observed.provider, isCurrent);
+      if (!proof.settled || !isCurrent()) return false;
+      // Write every exact retirement before dropping uncertain ownership.
+      // A lost release acknowledgement still survives the next reload.
+      const currentToken = childAgentSlotActivationId(observed);
+      for (const token of new Set([...tokens, ...(currentToken ? [currentToken] : [])])) retireActivationToken(observed, token);
+      const localTerminal = confirmedLocalTerminal(id);
+      const localOwnTerminal = localTerminal && (!observed.resultRevision || !observed.revisionBaseTurnId
+        || task?.lastCompletedTurnId !== observed.revisionBaseTurnId);
+      // Inactivity proves the work ended, not that it completed successfully.
+      // Preserve a real current outcome; seal an otherwise unknown revision
+      // as failed so idle/stale renderer markers cannot keep a phantom slot.
+      const terminalStatus = observed.terminalStatus
+        ?? (localOwnTerminal ? childLifecycle(localOwnTerminal) as "completed" | "cancelled" | "failed" : "failed");
+      const settledStatus: TaskStatus = terminalStatus === "completed" ? "completed" : terminalStatus === "cancelled" ? "interrupted" : "error";
+      pendingActivationsRef.current.delete(id);
+      releasedRef.current.add(id);
+      updateLink(id, (current) => {
+        const remaining = current.uncertainActivationIds?.filter((token) => !tokens.includes(token)) ?? [];
+        const { uncertainActivationIds: _uncertain, ...settled } = current;
+        return { ...settled, terminalStatus, finishedAt: current.finishedAt ?? Date.now(), activationPending: false,
+          ...(remaining.length ? { uncertainActivationIds: remaining } : {}) };
+      });
+      supersededUncertainRef.current.delete(id);
+      if (task && (isChildActive(taskStatusOf(id)) || task.activeTurnId || task.pendingNativeActivationId)) {
+        useTaskStore.getState().completeTurn(id, undefined, settledStatus);
+      }
+      if (taskStatusOf(id) === "idle" || !localOwnTerminal) {
+        useTaskStore.getState().setTaskStatus(id, settledStatus,
+          terminalStatus === "failed" ? "The native runtime confirmed this work ended, but its final result was not confirmed." : undefined);
+      }
+      schedulePumpRef.current(observed.sessionId);
+      return true;
+    })();
+    uncertainRecoveriesRef.current.set(id, { boundary, promise: probe });
+    void probe.finally(() => {
+      if (uncertainRecoveriesRef.current.get(id)?.promise === probe) uncertainRecoveriesRef.current.delete(id);
+    }).catch(() => undefined);
+    return probe;
+  }, [childObservationGuard, initialStartPending, linksIncludingPending, retireActivationToken, updateLink]);
+
   /**
    * A follow-up reservation persisted by an earlier renderer that never
    * reached its provider request (activationDispatched === false) cannot be
@@ -1281,7 +1429,9 @@ export function useChildAgents(context: ChildAgentContext): {
     const token = link.activationId;
     if (!token || !link.activationPending || link.activationDispatched !== false
       || followUpsInFlightRef.current.has(id) || pendingActivationsRef.current.has(id)) return link;
-    releaseSlot(link, token);
+    // The token may never have been admitted (its reply was lost with the old
+    // renderer) or may still be arriving; retirement settles both exactly.
+    retireActivationToken(link, token);
     // The marker proves the parent follow-up never dispatched, not that no
     // user-typed work started meanwhile. Live work keeps its own (open)
     // outcome under a new revision; the old terminal record is never revived.
@@ -1293,16 +1443,21 @@ export function useChildAgents(context: ChildAgentContext): {
       const { terminalStatus: _terminal, finishedAt: _finished, activationTurnId: _turn, acceptedAt: _accepted,
         acceptedBy: _by, acceptNote: _note, ...reopened } = settled;
       return { ...reopened, resultRevision: (current.resultRevision ?? 0) + 1,
+        manualAttemptId: current.manualAttemptId ?? crypto.randomUUID(),
         ...(current.activationPreviousTurnId ? { revisionBaseTurnId: current.activationPreviousTurnId } : {}) };
     });
     void auditEvent("childAgent.followUpRetired", { childThreadId: id, reason: "undispatched-after-reload" }, link.rootThreadId);
     return linksIncludingPending(contextRef.current.links)[id] ?? link;
-  }, [linksIncludingPending, releaseSlot, updateLink]);
+  }, [linksIncludingPending, retireActivationToken, updateLink]);
 
   const recoverCurrentChild = useCallback(async (observed: ChildAgentLink): Promise<"running" | "unknown" | null> => {
     // A start this renderer is still preparing is not unconfirmed work yet.
     if (followUpsInFlightRef.current.has(observed.childThreadId) || initialStartPending(observed)) return null;
-    const link = retireUndispatchedActivation(observed);
+    let link = retireUndispatchedActivation(observed);
+    if (link.uncertainActivationIds?.length) {
+      if (!await recoverUncertainActivations(link)) return "unknown";
+      link = linksIncludingPending(contextRef.current.links)[link.childThreadId] ?? link;
+    }
     const assertCurrent = childObservationGuard(link);
     const recovering = recoveringChildrenRef.current;
     recovering.set(link.childThreadId, (recovering.get(link.childThreadId) ?? 0) + 1);
@@ -1313,7 +1468,7 @@ export function useChildAgents(context: ChildAgentContext): {
       if (remaining > 0) recovering.set(link.childThreadId, remaining);
       else recovering.delete(link.childThreadId);
     }
-  }, [childObservationGuard, initialStartPending, retireUndispatchedActivation]);
+  }, [childObservationGuard, initialStartPending, linksIncludingPending, recoverUncertainActivations, retireUndispatchedActivation]);
 
   const managedCutoffGuard = useCallback((link: ChildAgentLink): (() => void) => {
     const runGeneration = childRunGenerationRef.current.get(link.childThreadId) ?? 0;
@@ -1323,6 +1478,7 @@ export function useChildAgents(context: ChildAgentContext): {
       if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration
         || !current || current.createdAt !== link.createdAt || current.rootThreadId !== link.rootThreadId
         || current.sessionId !== link.sessionId || current.activationId !== link.activationId
+        || current.manualAttemptId !== link.manualAttemptId || current.resultRevision !== link.resultRevision
         || (childRunGenerationRef.current.get(link.childThreadId) ?? 0) !== runGeneration) {
         throw new Error("The sub-agent started different work while Stop was settling. Its current activation was preserved.");
       }
@@ -1334,6 +1490,7 @@ export function useChildAgents(context: ChildAgentContext): {
     const current = linksIncludingPending(contextRef.current.links)[link.childThreadId];
     if (!current || current.createdAt !== link.createdAt || current.rootThreadId !== link.rootThreadId
       || current.sessionId !== link.sessionId || current.activationId !== link.activationId
+      || current.manualAttemptId !== link.manualAttemptId || current.resultRevision !== link.resultRevision
       || link.activationTurnId && current.activationTurnId !== link.activationTurnId || current.activationPreviousTurnId !== link.activationPreviousTurnId) {
       throw new Error("The sub-agent started different work while Stop was settling. Its current slot was preserved.");
     }
@@ -1341,14 +1498,23 @@ export function useChildAgents(context: ChildAgentContext): {
     pendingActivationsRef.current.delete(id);
     releasedRef.current.add(id);
     const terminalStatus = status === "interrupted" ? "cancelled" : status === "error" ? "failed" : "completed";
-    updateLink(id, (latest) => ({ ...latest, activationPending: false, terminalStatus, finishedAt: latest.finishedAt ?? Date.now() }));
-    releaseSlot(current);
+    const slotToken = childAgentSlotActivationId(current);
+    if (slotToken) retireActivationToken(current, slotToken);
+    else releaseSlot(current);
     // A confirmed hard cutoff also ends any older unconfirmed request.
     const superseded = supersededUncertainRef.current.get(id);
-    if (superseded && superseded !== current.activationId) releaseSlot(current, superseded);
+    for (const token of new Set([...(current.uncertainActivationIds ?? []), ...(superseded ? [superseded] : [])])) {
+      if (token !== slotToken) retireActivationToken(current, token);
+    }
+    // Every uncertain token has its durable retirement marker before its
+    // uncertainty is cleared, even if the first release reply is lost.
+    updateLink(id, (latest) => {
+      const { uncertainActivationIds: _uncertain, ...settled } = latest;
+      return { ...settled, activationPending: false, terminalStatus, finishedAt: latest.finishedAt ?? Date.now() };
+    });
     supersededUncertainRef.current.delete(id);
     settleStoppedChild(current.rootThreadId, id, current.title, status);
-  }, [linksIncludingPending, releaseSlot, updateLink]);
+  }, [linksIncludingPending, releaseSlot, retireActivationToken, updateLink]);
 
   const invalidateChildAgentGuidance = useCallback((threadId: string, reason: string): void => {
     // Stop has already retired its own run, so this names only archive and delete.
@@ -1359,12 +1525,14 @@ export function useChildAgents(context: ChildAgentContext): {
       if (link.childThreadId !== threadId && link.rootThreadId !== threadId) continue;
       const id = link.childThreadId;
       childStopGenerationRef.current.set(id, (childStopGenerationRef.current.get(id) ?? 0) + 1);
+      followUpPreparationsRef.current.get(id)?.abort();
+      clearAdmissionRetry(id);
       // In-flight entries remain protected history until the provider proves
       // acceptance/refusal; Stop invalidates their preparation via generation.
       cancelQueuedForChild(id, reason);
     }
     notifyChildWaiters();
-  }, [linksIncludingPending, notifyChildWaiters]);
+  }, [clearAdmissionRetry, linksIncludingPending, notifyChildWaiters]);
 
   const persistNativeSettlement = useCallback((expected: NativeAgentLink | undefined, status: TaskStatus) => {
     if (!expected) return;
@@ -1379,7 +1547,18 @@ export function useChildAgents(context: ChildAgentContext): {
     });
   }, []);
 
-  /** Live child count for a session, counting spawns still settling. */
+  /** Missing local state after reload cannot prove a durable child finished. */
+  const childHoldsSlot = useCallback((link: ChildAgentLink): boolean => (
+    isChildActive(taskStatusOf(link.childThreadId))
+    || childLifecycleForLink(link, taskStatusOf(link.childThreadId)) === "unknown"
+    || followUpsInFlightRef.current.has(link.childThreadId)
+    || pendingActivationsRef.current.has(link.childThreadId)
+    || explicitStartsRef.current.has(link.childThreadId)
+    || supersededUncertainRef.current.has(link.childThreadId)
+    || Boolean(link.uncertainActivationIds?.length)
+  ), []);
+
+  /** Live or unconfirmed children, counting each preparing spawn only once. */
   const reservedChildCount = useCallback((
     sessionId: string,
     rootThreadId: string,
@@ -1403,13 +1582,69 @@ export function useChildAgents(context: ChildAgentContext): {
     const nativeActive = (useTaskStore.getState().tasks[rootThreadId]?.agents ?? []).filter((agent) => (
       agent.id !== rootThreadId && !crossProviderIds.has(agent.id) && isActiveAgentRecord(agent.status)
     )).length;
-    // A dispatched follow-up is already counted by its child's active status;
-    // its reservation must not take a second slot until its start settles.
-    const activeIds = activeChildThreadIds(sessionId, links);
-    const pendingCount = [...(pending ?? [])].filter((id) => !(id.startsWith(FOLLOW_UP_RESERVATION)
-      && activeIds.includes(id.slice(FOLLOW_UP_RESERVATION.length)))).length;
-    return activeIds.length + pendingCount + nativeActive;
-  }, []);
+    const occupied = new Set(Object.values(links).filter((link) => link.sessionId === sessionId
+      && link.childThreadId !== link.rootThreadId && childHoldsSlot(link)).map((link) => link.childThreadId));
+    // Follow-ups and identified initial spawns already name their child;
+    // only an anonymous initial spawn consumes a separate reservation.
+    for (const id of pending ?? []) occupied.add(id.startsWith(FOLLOW_UP_RESERVATION)
+      ? id.slice(FOLLOW_UP_RESERVATION.length) : id);
+    return occupied.size + nativeActive;
+  }, [childHoldsSlot]);
+
+  /**
+   * What holds one worker slot (destination) of a session, from this
+   * renderer's evidence. The backend's slot accounting is authoritative for
+   * parent-driven work; this mirror adds what only the renderer can see, such
+   * as a user-typed turn on that slot's child, so automatic parent work never
+   * runs a second child on an occupied slot. A durable unknown still holds
+   * its own slot until recovery or Stop confirms its outcome, including a
+   * manual turn whose renderer task status was lost on reload.
+   */
+  const slotHolderFor = useCallback((
+    sessionId: string,
+    targetId: string,
+    links: Record<string, ChildAgentLink>,
+    exceptChild?: string,
+    exceptReservation?: string,
+  ): string | undefined => {
+    for (const [reservation, entry] of pendingSpawnSlotsRef.current) {
+      if (reservation === exceptReservation) continue;
+      if (entry.sessionId === sessionId && entry.targetId === targetId) return "a sub-agent that is still starting";
+    }
+    const holder = Object.values(links).find((link) => link.sessionId === sessionId && link.targetId === targetId
+      && link.childThreadId !== exceptChild && link.childThreadId !== link.rootThreadId
+      && childHoldsSlot(link));
+    if (!holder) return undefined;
+    return explicitStartsRef.current.has(holder.childThreadId) || holder.manualAttemptId && isChildActive(taskStatusOf(holder.childThreadId))
+      ? `\`${holder.childThreadId}\` (a turn the user started)`
+      : `\`${holder.childThreadId}\``;
+  }, [childHoldsSlot]);
+
+  /** Old manual work can outlive a crew recapture without a native reservation. */
+  const incompatibleHeldSlotFor = useCallback((policy: ChildAgentPolicy, links: Record<string, ChildAgentLink>): string | undefined => {
+    const occupied = new Map<string, string>();
+    const inspect = (slot: { targetId: string; provider: Provider; model: string }, holder: string): string | undefined => {
+      const approved = policy.targets.find((entry) => entry.enabled && entry.id === slot.targetId);
+      if (!approved || approved.provider !== slot.provider || childAgentModel(approved) !== slot.model) {
+        return `${holder} still holds worker slot \`${slot.targetId}\` outside the current approved crew`;
+      }
+      const previous = occupied.get(slot.targetId);
+      if (previous) return `${previous} and ${holder} both hold worker slot \`${slot.targetId}\``;
+      occupied.set(slot.targetId, holder);
+      return undefined;
+    };
+    for (const entry of pendingSpawnSlotsRef.current.values()) {
+      if (entry.sessionId !== policy.sessionId) continue;
+      const reason = inspect(entry, "a sub-agent that is still starting");
+      if (reason) return reason;
+    }
+    for (const link of Object.values(links)) {
+      if (link.sessionId !== policy.sessionId || link.childThreadId === link.rootThreadId || !childHoldsSlot(link)) continue;
+      const reason = inspect(link, `\`${link.childThreadId}\``);
+      if (reason) return reason;
+    }
+    return undefined;
+  }, [childHoldsSlot]);
 
   /** Follow-up guidance for this child is queued or starting, not yet delivered. */
   const followUpPending = useCallback((childThreadId: string): boolean => (
@@ -1527,6 +1762,19 @@ export function useChildAgents(context: ChildAgentContext): {
     const reviewAssignment = parentReviewField(rootThreadId);
     const stopGeneration = stopGenerationRef.current.get(rootThreadId) ?? 0;
     const rendererGeneration = lifecycleRef.current.generation;
+    const incompatible = incompatibleHeldSlotFor(policy, currentLinks);
+    if (incompatible) {
+      throw new Error(`New sub-agent work must wait because ${incompatible}. Collect or stop that work before using the current crew. Nothing was started.`);
+    }
+    // Each destination is one worker slot. The backend already reserved this
+    // slot for parent work it can see; a user-typed turn on the slot's child
+    // is visible only here and must not let a second child onto it.
+    const slotHolder = slotHolderFor(policy.sessionId, target.id, currentLinks);
+    if (slotHolder) {
+      throw new Error(
+        `Worker slot \`${target.id}\` is busy with ${slotHolder}; each destination runs at most one sub-agent at a time. Use a free slot or wait for that child to finish. Nothing was started.`,
+      );
+    }
     const active = reservedChildCount(policy.sessionId, rootThreadId, currentLinks);
     if (active >= policy.maxConcurrent) {
       throw new Error(
@@ -1551,6 +1799,11 @@ export function useChildAgents(context: ChildAgentContext): {
     const pending = pendingChildrenRef.current.get(policy.sessionId) ?? new Set<string>();
     pending.add(reservation);
     pendingChildrenRef.current.set(policy.sessionId, pending);
+    // Until the provider identifies the child (and its link carries the slot),
+    // this reservation alone holds the worker slot in the renderer's view.
+    pendingSpawnSlotsRef.current.set(reservation, {
+      sessionId: policy.sessionId, targetId: target.id, provider: target.provider, model: childAgentModel(target),
+    });
     const inFlight = inFlightStartsRef.current;
     inFlight.set(rootThreadId, (inFlight.get(rootThreadId) ?? 0) + 1);
     if (reviewAssignment.reviewRunId) {
@@ -1615,6 +1868,11 @@ export function useChildAgents(context: ChildAgentContext): {
             || contextRef.current.threadUnavailable?.(provisionalChild) === true
             || contextRef.current.threadBusy?.(provisionalChild) === true)
           || policyChanged()
+          || Boolean(incompatibleHeldSlotFor(policy, linksIncludingPending(contextRef.current.links)))
+          || Boolean(slotHolderFor(policy.sessionId, target.id,
+            linksIncludingPending(contextRef.current.links), provisionalChild, reservation))
+          || reservedChildCount(policy.sessionId, rootThreadId,
+            linksIncludingPending(contextRef.current.links)) > policy.maxConcurrent
           || contextRef.current.threadUnavailable?.(rootThreadId) === true
           || contextRef.current.threadBusy?.(rootThreadId) === true
           || executionTargetChanged(),
@@ -1661,6 +1919,7 @@ export function useChildAgents(context: ChildAgentContext): {
           ctx.setThreads((current) => upsertThread(current, thread));
           pending.delete(reservation);
           pending.add(childThreadId);
+          pendingSpawnSlotsRef.current.delete(reservation);
           useTaskStore.getState().ensureTask(childThreadId, executionPath);
           useTaskStore.getState().setTaskStatus(childThreadId, "starting");
           publishedRunGeneration = childRunGenerationRef.current.get(childThreadId) ?? 0;
@@ -1738,6 +1997,7 @@ export function useChildAgents(context: ChildAgentContext): {
       }
     } finally {
       pending.delete(reservation);
+      pendingSpawnSlotsRef.current.delete(reservation);
       if (provisionalChild && initialStartsRef.current.get(provisionalChild) === publishedLink) initialStartsRef.current.delete(provisionalChild);
     }
     if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration) {
@@ -1894,7 +2154,7 @@ export function useChildAgents(context: ChildAgentContext): {
       ...(cutoffNote ? { note: cutoffNote } : {}),
       ...parentFollowUpFor(linksIncludingPending(contextRef.current.links)[childThreadId] ?? link),
     };
-  }, [linksIncludingPending, managedCutoffGuard, notifyModeLockChanged, parentFollowUpFor, releaseSlot, reservedChildCount, rootRunStopped, settleManagedCutoff, updateLink]);
+  }, [incompatibleHeldSlotFor, linksIncludingPending, managedCutoffGuard, notifyModeLockChanged, parentFollowUpFor, releaseSlot, reservedChildCount, rootRunStopped, settleManagedCutoff, slotHolderFor, updateLink]);
 
   /**
    * Whether Stop must ask the provider for a cutoff. An unconfirmed activation
@@ -1906,12 +2166,12 @@ export function useChildAgents(context: ChildAgentContext): {
     const id = link.childThreadId;
     return isChildActive(taskStatusOf(id)) || (!followUpsInFlightRef.current.has(id)
       && (childLifecycleForLink(link, taskStatusOf(id)) === "unknown" || Boolean(pendingActivationsRef.current.get(id)?.uncertain)
-        || supersededUncertainRef.current.has(id)));
+        || supersededUncertainRef.current.has(id) || Boolean(link.uncertainActivationIds?.length)));
   }, []);
 
   const childPhaseForModel = useCallback((link: ChildAgentLink) => {
     const id = link.childThreadId;
-    const uncertain = pendingActivationsRef.current.get(id)?.uncertain
+    const uncertain = Boolean(link.uncertainActivationIds?.length) || pendingActivationsRef.current.get(id)?.uncertain
       || link.activationPending && !followUpsInFlightRef.current.has(id) && !initialStartPending(link);
     return uncertain ? "unknown" : childReviewPhase(link, taskStatusOf(id));
   }, [initialStartPending]);
@@ -1971,7 +2231,7 @@ export function useChildAgents(context: ChildAgentContext): {
       ...(phase === "unknown" ? { note: "Collect this child to confirm its current activation." } : {}),
       ...(waiting ? { followUpPending: true, ...(waitReason ? { followUpWaiting: waitReason } : {}) } : {}),
       ...(releaseFailure ? { slotReleasePending: `Mythra Code could not yet release this child's concurrency slot (${releaseFailure}); it keeps retrying, and the slot may count against the limit until it succeeds.` } : {}),
-      ...(supersededUncertainRef.current.has(childId) ? { earlierFollowUpUncertain: "An earlier follow-up request was never confirmed and may still be running alongside newer work. Its slot stays reserved until the child is stopped." } : {}),
+      ...(supersededUncertainRef.current.has(childId) || link.uncertainActivationIds?.length ? { earlierFollowUpUncertain: "An earlier follow-up request may still be running alongside newer work. Its slot stays reserved until the child is stopped." } : {}),
       ...(outcomes.total || outcomes.trimmed ? {
         guidanceNotDelivered: outcomes.messages.map(guidanceOutcomeForModel),
         guidanceNotDeliveredTotal: outcomes.total,
@@ -1996,6 +2256,15 @@ export function useChildAgents(context: ChildAgentContext): {
 
   const reportStatus = useCallback((request: ChildAgentRequest): Record<string, unknown> => {
     const ctx = contextRef.current;
+    const currentLinks = linksIncludingPending(ctx.links);
+    const policy = childAgentPolicyForSession(ctx.policies, request.sessionId);
+    // Internal positive occupancy evidence for the native status merger.
+    // Include all children, even when this response pages or focuses its
+    // visible list. An idle renderer never releases native-owned work.
+    const workerSlotOccupants = Object.values(currentLinks)
+      .filter((link) => link.sessionId === request.sessionId && link.childThreadId !== link.rootThreadId && childHoldsSlot(link))
+      .map((link) => ({ childId: link.childThreadId, targetId: link.targetId, provider: link.provider, model: link.model }));
+    const workerSlotAdmissionBlocked = policy ? incompatibleHeldSlotFor(policy, currentLinks) : undefined;
     const childId = String(request.arguments.childId ?? "");
     const rawCursor = request.arguments.cursor;
     if (rawCursor !== undefined && (typeof rawCursor !== "string" || !/^p1:\d{1,6}$/.test(rawCursor))) {
@@ -2007,7 +2276,7 @@ export function useChildAgents(context: ChildAgentContext): {
     // moving between pages would make the next numeric cursor skip or repeat.
     // Freshness only decides which messages fill the bounded response.
     const phaseRank: Record<string, number> = { unknown: 3, running: 4, awaiting_review: 5, failed: 6, cancelled: 7, accepted: 8 };
-    const ranked = Object.values(linksIncludingPending(ctx.links))
+    const ranked = Object.values(currentLinks)
       .filter((link) => link.sessionId === request.sessionId && (!childId || link.childThreadId === childId))
       .map((link) => {
         const mailbox = getChildMailbox(link.childThreadId);
@@ -2066,13 +2335,15 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     return {
       children,
+      workerSlotOccupants,
+      ...(workerSlotAdmissionBlocked ? { workerSlotAdmissionBlocked } : {}),
       ...(!childId && children.some((child) => child.automaticFollowUp === false) ? { followUpNote: NO_FOLLOW_UP_LIST_NOTE } : {}),
       ...(rest.length ? { omittedChildren: rest.length, omittedByPhase, nextCursor: `p1:${offset + page.length}`,
         omittedNote: "More children follow. Pass nextCursor to agent_status for the next page, or childId to inspect one." } : {}),
       ...(offset ? { pageOffset: offset, pageNote: "Paging is by current attention order; children can move between pages as their state changes." } : {}),
       ...(delivered ? { messagesNote: `Use send_agent_message with replyTo when a child needs your answer. For failed or cancelled work, collect its result and reply only if the child should do more work.${replyPendingShown ? ` ${REPLY_PENDING_NOTE}` : ""}` } : {}),
     };
-  }, [canAnswerChildQuestions, childPhaseForModel, describeChild, linksIncludingPending]);
+  }, [canAnswerChildQuestions, childHoldsSlot, childPhaseForModel, describeChild, incompatibleHeldSlotFor, linksIncludingPending]);
 
   /**
    * Questions from this parent's other V2 children that it can answer or
@@ -2378,6 +2649,8 @@ export function useChildAgents(context: ChildAgentContext): {
       // never be followed by an automatic follow-up turn, and an in-flight
       // follow-up start sees this generation change and aborts.
       childStopGenerationRef.current.set(childThreadId, (childStopGenerationRef.current.get(childThreadId) ?? 0) + 1);
+      followUpPreparationsRef.current.get(childThreadId)?.abort();
+      clearAdmissionRetry(childThreadId);
       cancelQueuedForChild(childThreadId, origin === "user" ? "The user stopped this sub-agent." : PARENT_CANCEL_GUIDANCE_REASON);
       updateLink(childThreadId, (current) => ({ ...current, stopOrigin: origin }));
       // A follow-up still preparing aborts on the generation change above and
@@ -2413,7 +2686,7 @@ export function useChildAgents(context: ChildAgentContext): {
     settleStoppedChild(parentThreadId, childThreadId, prompt, status);
     if (!link) persistNativeSettlement(ctx.nativeLinks?.[childThreadId], status);
     void auditEvent("childAgent.stopped", { rootThreadId, childThreadId, kind: link ? "cross-provider" : "native", origin });
-  }, [childNeedsCutoff, childObservationGuard, linksIncludingPending, managedCutoffGuard, persistNativeSettlement, settleManagedCutoff, updateLink]);
+  }, [childNeedsCutoff, childObservationGuard, clearAdmissionRetry, linksIncludingPending, managedCutoffGuard, persistNativeSettlement, settleManagedCutoff, updateLink]);
 
   /**
    * Stop from another device. The same path as stopChildAgent, except that the host
@@ -2433,6 +2706,8 @@ export function useChildAgents(context: ChildAgentContext): {
           || worker.reviewToken && childReviewToken(link) !== worker.reviewToken) throw new Error("This sub-agent's assignment changed. Refresh and try again.");
         assertAllowed();
         childStopGenerationRef.current.set(childThreadId, (childStopGenerationRef.current.get(childThreadId) ?? 0) + 1);
+        followUpPreparationsRef.current.get(childThreadId)?.abort();
+        clearAdmissionRetry(childThreadId);
         cancelQueuedForChild(childThreadId, "The user stopped this sub-agent.");
         updateLink(childThreadId, (current) => ({ ...current, stopOrigin: "user" }));
         if (followUpsInFlightRef.current.has(childThreadId) && !isChildActive(taskStatusOf(childThreadId))) return;
@@ -2466,7 +2741,7 @@ export function useChildAgents(context: ChildAgentContext): {
       } catch (reason) { void auditEvent("childAgent.stopSettlementFailed", { rootThreadId, childThreadId, reason: friendlyError(reason) }, rootThreadId); }
       void auditEvent("childAgent.stopped", { rootThreadId, childThreadId, kind: "native", origin: "user" });
     } finally { remoteStopsRef.current.delete(childThreadId); }
-  }, [childNeedsCutoff, childObservationGuard, linksIncludingPending, managedCutoffGuard, persistNativeSettlement, settleManagedCutoff, updateLink]);
+  }, [childNeedsCutoff, childObservationGuard, clearAdmissionRetry, linksIncludingPending, managedCutoffGuard, persistNativeSettlement, settleManagedCutoff, updateLink]);
 
   const cancelChild = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
     const ctx = contextRef.current;
@@ -2505,8 +2780,8 @@ export function useChildAgents(context: ChildAgentContext): {
    *
    * Order matters and every step is guarded: the guidance moves to
    * `delivering` (compare-and-set), a prior slot release finishes, the
-   * backend reserves a slot and returns an activation token that is persisted
-   * at once, then the provider is asked. Guidance becomes `delivered` only
+   * renderer persists an exact activation token, the backend confirms that
+   * reservation, then the provider is asked. Guidance becomes `delivered` only
    * when the provider accepts the turn. Any refusal before dispatch returns
    * it to the queue or cancels it with a reason; the token always releases
    * exactly its own reservation.
@@ -2520,6 +2795,7 @@ export function useChildAgents(context: ChildAgentContext): {
     // with later guidance while an earlier message is still being delivered.
     const { messages: queued, blockedBy } = deliverableGuidance(childThreadId);
     if (!queued.length) {
+      clearAdmissionRetry(childThreadId);
       if (blockedBy && queuedForChild(childThreadId).length) waitFor(`Earlier guidance ${blockedBy} is still being delivered; later messages wait behind it.`);
       return;
     }
@@ -2548,6 +2824,16 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     // A running child receives guidance at its own boundary or by pulling it.
     if (isChildActive(initialStatus)) return;
+    if (link.activationPending || pendingActivationsRef.current.has(childThreadId)
+      || supersededUncertainRef.current.has(childThreadId) || link.uncertainActivationIds?.length || explicitStartsRef.current.has(childThreadId)) {
+      return waitFor("This sub-agent still has a turn starting or awaiting confirmation; guidance stays queued until that activation settles.");
+    }
+    if (link.retiringActivationIds?.length) {
+      // Re-send (deduplicated) after a reload; confirmation pumps again.
+      waitingOnRetirementRef.current.add(childThreadId);
+      for (const token of link.retiringActivationIds) retireActivationToken(link, token);
+      return waitFor("An earlier follow-up attempt is still being released by Mythra Code; guidance stays queued until that release is confirmed.");
+    }
     // After a reload a missing local status proves nothing; wait for evidence.
     if (initialStatus === "idle" && !link.terminalStatus) {
       return waitFor("Mythra Code cannot yet confirm this sub-agent's last turn finished; it starts once its status is known.");
@@ -2564,9 +2850,34 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     const logicalPath = ctx.projectPathForThread(rootThreadId);
     if (!logicalPath) return waitFor("Mythra Code no longer knows the parent thread's project folder.");
-    const active = reservedChildCount(policy.sessionId, rootThreadId, linksIncludingPending(ctx.links));
+    // A follow-up reacquires this child's own worker slot, never a sibling's.
+    // That slot must still be approved with the provider/model it started on;
+    // otherwise a continued child could quietly run beyond the user's crew.
+    const slot = policy.targets.find((entry) => entry.id === link.targetId && entry.enabled);
+    if (!slot || slot.provider !== link.provider || childAgentModel(slot) !== link.model) {
+      cancelQueuedForChild(childThreadId, slot
+        ? `This sub-agent's worker slot \`${link.targetId}\` now runs a different provider or model than it started with, so it cannot be continued automatically. Spawn a new sub-agent on a current slot, or continue it yourself from its conversation.`
+        : `This sub-agent's worker slot \`${link.targetId}\` is no longer in this thread's approved crew, so it cannot be continued automatically. Spawn a new sub-agent on a current slot, or continue it yourself from its conversation.`);
+      return;
+    }
+    const currentLinks = linksIncludingPending(ctx.links);
+    const incompatible = incompatibleHeldSlotFor(policy, currentLinks);
+    if (incompatible) return waitFor(`New sub-agent work must wait because ${incompatible}. Collect or stop that work before using the current crew.`);
+    const slotHolder = slotHolderFor(policy.sessionId, link.targetId, currentLinks, childThreadId);
+    if (slotHolder) return waitFor(`Worker slot \`${link.targetId}\` is busy with ${slotHolder}; this sub-agent continues when its own slot frees.`);
+    const active = reservedChildCount(policy.sessionId, rootThreadId, currentLinks);
     if (active >= policy.maxConcurrent) return waitFor(`All ${policy.maxConcurrent} concurrency slot${policy.maxConcurrent === 1 ? " is" : "s are"} in use; it starts when one frees.`);
     const ids = queued.map((message) => message.id);
+    const batch = JSON.stringify(ids);
+    const admissionRetry = admissionRetriesRef.current.get(childThreadId);
+    if (admissionRetry && (admissionRetry.batch !== batch || admissionRetry.createdAt !== link.createdAt
+      || admissionRetry.revision !== (link.resultRevision ?? 0)
+      || admissionRetry.runGeneration !== (childRunGenerationRef.current.get(childThreadId) ?? 0)
+      || admissionRetry.rootGeneration !== (stopGenerationRef.current.get(rootThreadId) ?? 0)
+      || admissionRetry.childGeneration !== (childStopGenerationRef.current.get(childThreadId) ?? 0)
+      || admissionRetry.rendererGeneration !== lifecycleRef.current.generation)) clearAdmissionRetry(childThreadId);
+    const retry = admissionRetriesRef.current.get(childThreadId);
+    if (retry && retry.retryAt > Date.now()) return waitFor(retry.reason);
     if (!transitionChildMessage(childThreadId, ids, ["queued"], "delivering")) return;
     followUpWaitReasonRef.current.delete(childThreadId);
 
@@ -2614,6 +2925,8 @@ export function useChildAgents(context: ChildAgentContext): {
     const startRunGeneration = childRunGenerationRef.current.get(childThreadId) ?? 0;
     const startRevision = link.resultRevision ?? 0;
     let checkpointId: string | undefined;
+    const preparation = new AbortController();
+    followUpPreparationsRef.current.set(childThreadId, preparation);
     pendingActivationsRef.current.set(childThreadId, {});
     let dispatched = false;
     let accepted = false;
@@ -2643,6 +2956,22 @@ export function useChildAgents(context: ChildAgentContext): {
       const livePolicy = childAgentPolicyForSession(live.policies, link.sessionId);
       if (!livePolicy?.targets.length || livePolicy.rootThreadId !== rootThreadId || livePolicy.collaborationV2 !== true || live.threadUnavailable?.(rootThreadId)) {
         throw new FollowUpRefused("The parent thread is unavailable or its sub-agent policy was switched off.", "cancel");
+      }
+      const liveSlot = livePolicy.targets.find((entry) => entry.id === link.targetId && entry.enabled);
+      if (!liveSlot || liveSlot.provider !== link.provider || childAgentModel(liveSlot) !== link.model) {
+        throw new FollowUpRefused("This sub-agent's approved worker slot was removed or changed while the follow-up was preparing. Spawn a new sub-agent on a current slot, or continue it yourself from its conversation.", "cancel");
+      }
+      if (!dispatched) {
+        const liveLinks = linksIncludingPending(live.links);
+        const incompatible = incompatibleHeldSlotFor(livePolicy, liveLinks);
+        if (incompatible) throw new FollowUpRefused(`New sub-agent work must wait because ${incompatible}. Collect or stop that work before using the current crew.`, "keep");
+        const holder = slotHolderFor(link.sessionId, link.targetId, liveLinks, childThreadId);
+        if (holder) throw new FollowUpRefused(`Worker slot \`${link.targetId}\` is busy with ${holder}; guidance stays queued until its own slot frees.`, "keep");
+        // This preparation already owns one renderer reservation. Compare
+        // against the cap including itself, rather than blocking its own slot.
+        if (reservedChildCount(link.sessionId, rootThreadId, liveLinks) > livePolicy.maxConcurrent) {
+          throw new FollowUpRefused(`All ${livePolicy.maxConcurrent} concurrency slots are in use; guidance stays queued until one frees.`, "keep");
+        }
       }
       if (livePolicy.permission !== policy.permission || livePolicy.systemPrompt !== policy.systemPrompt
         || JSON.stringify(livePolicy.providerSystemPrompts) !== JSON.stringify(policy.providerSystemPrompts)
@@ -2687,16 +3016,13 @@ export function useChildAgents(context: ChildAgentContext): {
       baselineCompleted = useTaskStore.getState().tasks[childThreadId]?.lastCompletedTurnId;
       previousTurnId = baselineCompleted ?? link.activationTurnId;
       baselineFrozen = true;
-      pendingActivationsRef.current.set(childThreadId, { previousTurnId });
-      try {
-        activationId = await reactivateChildAgent(link.sessionId, childThreadId);
-      } catch (reason) {
-        const message = friendlyError(reason);
-        throw new FollowUpRefused(message, /maximum|still holds|already owns|not active|re-register/i.test(message) ? "keep" : "cancel");
-      }
-      // Persist the token before any provider work, so every later
-      // completion or failure release names exactly this reservation.
-      const token = activationId;
+      // Name and persist this attempt's token before the backend can admit
+      // it. A lost or malformed reply, a renderer reload, or any refusal is
+      // then settled by retiring exactly this token, never by guessing
+      // whether the backend admitted it. Nothing reaches the provider until
+      // admission is confirmed, so retirement can never orphan model work.
+      const token = crypto.randomUUID();
+      activationId = token;
       pendingActivationsRef.current.set(childThreadId, { activationId: token, previousTurnId });
       // Keep the settled outcome until dispatch: a reload during preparation
       // proves (through activationDispatched: false) that it still applies.
@@ -2704,6 +3030,50 @@ export function useChildAgents(context: ChildAgentContext): {
         ...current, activationId: token, activationPreviousTurnId: previousTurnId, activationPending: true, activationDispatched: false,
       }));
       assertCanStart();
+      try {
+        await reactivateChildAgent(link.sessionId, childThreadId,
+          { targetId: link.targetId, provider: link.provider, model: link.model }, token, preparation.signal);
+      } catch (reason) {
+        const message = friendlyError(reason);
+        // An unconfirmed admission sends no provider prompt. Keep guidance
+        // queued for recoverable admission failures; the exact retirement
+        // must settle before any later attempt can be offered.
+        if (reason instanceof ChildAgentAdmissionUnconfirmedError && !stopped()
+          && lifecycleRef.current.mounted && lifecycleRef.current.generation === rendererGeneration) {
+          const previous = admissionRetriesRef.current.get(childThreadId);
+          const failures = previous?.batch === batch ? previous.failures + 1 : 1;
+          clearAdmissionRetry(childThreadId);
+          const delay = [5_000, 15_000][failures - 1];
+          const pauseReason = delay === undefined
+            ? `${message} Guidance stays queued. Automatic admission retries are paused after three unconfirmed attempts; new guidance can offer a fresh batch.`
+            : `${message} Guidance stays queued for another admission attempt after ${delay / 1_000} seconds and confirmation that the earlier reservation was released.`;
+          const entry = {
+            batch, failures, retryAt: delay === undefined ? Number.POSITIVE_INFINITY : Date.now() + delay, reason: pauseReason,
+            createdAt: link.createdAt, revision: startRevision, runGeneration: startRunGeneration,
+            rootGeneration: stopGeneration, childGeneration, rendererGeneration,
+            timer: undefined as ReturnType<typeof window.setTimeout> | undefined,
+          };
+          admissionRetriesRef.current.set(childThreadId, entry);
+          if (delay !== undefined) entry.timer = window.setTimeout(() => {
+            if (admissionRetriesRef.current.get(childThreadId) !== entry) return;
+            entry.timer = undefined;
+            const current = linksIncludingPending(contextRef.current.links)[childThreadId];
+            if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration
+              || stopped() || !current || current.createdAt !== entry.createdAt || (current.resultRevision ?? 0) !== entry.revision
+              || (childRunGenerationRef.current.get(childThreadId) ?? 0) !== entry.runGeneration
+              || JSON.stringify(deliverableGuidance(childThreadId).messages.map((message) => message.id)) !== batch) {
+              clearAdmissionRetry(childThreadId);
+              return;
+            }
+            schedulePumpRef.current(link.sessionId);
+          }, delay);
+          throw new FollowUpRefused(pauseReason, "keep");
+        }
+        throw new FollowUpRefused(message, stopped() ? "cancel" : preparation.signal.aborted
+          || /maximum|still holds|already owns|not active|re-register|is busy with|follow-up must wait|already retired|confirmation timed out/i.test(message) ? "keep" : "cancel");
+      }
+      assertCanStart();
+      clearAdmissionRetry(childThreadId);
       if (link.provider === "cursor" && !ctx.cursorSessionIdsRef.current[childThreadId]) {
         const sessionId = managedChildCursorSessionId(link);
         if (sessionId) ctx.cursorSessionIdsRef.current[childThreadId] = sessionId;
@@ -2755,6 +3125,7 @@ export function useChildAgents(context: ChildAgentContext): {
         },
       });
       accepted = true;
+      clearAdmissionRetry(childThreadId);
       if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration) {
         // The durable activation is already owned. A replacement renderer
         // recovers its provider status; this retired closure must not replace
@@ -2771,9 +3142,20 @@ export function useChildAgents(context: ChildAgentContext): {
         // Provider receipt remains true, but this acknowledgement cannot
         // replace a user's newer activation or give it the old slot token.
         transitionChildMessage(childThreadId, ids, ["delivering", "cancelled"], "delivered", { via: "turn" });
-        releaseSlot({ ...link, activationId: token }, token);
+        const ownCutoff = latest?.activationId === token && (latest.resultRevision ?? 0) === dispatchRevision
+          && !latest.activationPending && Boolean(latest.terminalStatus) && releasedRef.current.has(childThreadId);
+        const ownFinished = Boolean(result.turnId && latestTask?.lastCompletedTurnId === result.turnId && confirmedLocalTerminal(childThreadId));
+        if (ownCutoff || ownFinished) retireActivationToken(link, token);
+        else rememberUncertainActivation(latest ?? link, token);
         if (pendingActivationsRef.current.get(childThreadId)?.activationId === token) pendingActivationsRef.current.delete(childThreadId);
-        if (latest?.activationId === token) updateLink(childThreadId, (current) => {
+        if (latest?.activationId === token && !ownCutoff) updateLink(childThreadId, (current) => {
+          if (current.manualAttemptId || (current.resultRevision ?? 0) !== dispatchRevision) {
+            // Only the old attempt's transient fields belong to this reply.
+            // A newer user revision keeps its outcome, turn and stop state.
+            const { activationId: _activation, activationPending: _pending, activationPreviousTurnId: _previous,
+              activationDispatched: _dispatched, activationStartRequestId: _start, ...newer } = current;
+            return newer;
+          }
           const { acceptedAt: _accepted, acceptedBy: _by, acceptNote: _note, stopOrigin: _stop,
             activationId: _activation, activationPending: _pending, activationPreviousTurnId: _previous,
             activationTurnId: _turn, terminalStatus: _terminal, finishedAt: _finished, ...reopened } = current;
@@ -2869,6 +3251,9 @@ export function useChildAgents(context: ChildAgentContext): {
         let rolledBack = false;
         if (activationId) {
           const token = activationId;
+          // Durable marker first: the rollback below may clear this token
+          // from the activation fields before the backend confirms release.
+          retireActivationToken(linksIncludingPending(contextRef.current.links)[childThreadId] ?? link, token);
           updateLink(childThreadId, (current) => {
             if (current.activationId !== token) return current;
             const { activationPending: _pending, activationDispatched: _dispatched, activationPreviousTurnId: _previous, ...rest } = current;
@@ -2877,7 +3262,12 @@ export function useChildAgents(context: ChildAgentContext): {
             // preserve those newer fields rather than restoring old ones.
             if (!dispatched && current.activationDispatched === false) {
               rolledBack = true;
-              return rest;
+              // The token was named before admission and may have been
+              // refused outright; restore the settled generation it replaced
+              // so review tokens and ownership guards see no new activation.
+              // retiringActivationIds alone keeps this token until release.
+              const { activationId: _attempt, ...settled } = rest;
+              return link.activationId ? { ...settled, activationId: link.activationId } : settled;
             }
             if (confirmedCutoff || stopped()
               || current.stopOrigin || (dispatched && ((current.resultRevision ?? 0) !== dispatchRevision
@@ -2892,7 +3282,6 @@ export function useChildAgents(context: ChildAgentContext): {
             }
             return restored as unknown as ChildAgentLink;
           });
-          releaseSlot(linksIncludingPending(contextRef.current.links)[childThreadId] ?? link, token);
         }
         if (refusedBeforeWrite && rolledBack && taskStatusOf(childThreadId) === "starting") {
           useTaskStore.getState().setTaskStatus(childThreadId, initialStatus);
@@ -2917,7 +3306,17 @@ export function useChildAgents(context: ChildAgentContext): {
               "The provider did not confirm this follow-up. It may be working; Stop it or collect confirmed runtime evidence before continuing.");
           }
         } else if (activationId && !confirmedCutoff) {
-          supersededUncertainRef.current.set(childThreadId, activationId);
+          rememberUncertainActivation(current ?? link, activationId);
+          if (pendingActivationsRef.current.get(childThreadId)?.activationId === activationId) pendingActivationsRef.current.delete(childThreadId);
+          updateLink(childThreadId, (latest) => {
+            if (latest.activationId !== activationId) return latest;
+            // The older dispatched attempt owns only these transient fields.
+            // Its durable uncertainty stays separate from the newer manual
+            // revision, so that revision's completion cannot retire it.
+            const { activationId: _activation, activationPending: _pending, activationPreviousTurnId: _previous,
+              activationDispatched: _dispatched, activationStartRequestId: _start, ...newer } = latest;
+            return newer;
+          });
         }
       }
       const message = friendlyError(reason);
@@ -2939,6 +3338,7 @@ export function useChildAgents(context: ChildAgentContext): {
       transitionChildMessage(childThreadId, ids, ["delivering"], neverSent && stopped() ? "cancelled" : "failed", { reason: detail, uncertain: !neverSent });
       recordParentActivity(rootThreadId, `child-followup-failed-${childThreadId}-${ids[0]}`, `Could not continue ${link.title}`, detail, childThreadId, "resume", "warning");
     } finally {
+      if (followUpPreparationsRef.current.get(childThreadId) === preparation) followUpPreparationsRef.current.delete(childThreadId);
       followUpsInFlightRef.current.delete(childThreadId);
       pending.delete(reservation);
       if (!pending.size) pendingChildrenRef.current.delete(policy.sessionId);
@@ -2948,7 +3348,7 @@ export function useChildAgents(context: ChildAgentContext): {
       if (lifecycleRef.current.mounted) notifyModeLockChanged();
       if (lifecycleRef.current.mounted && lifecycleRef.current.generation === rendererGeneration) reconcileChildrenRef.current();
     }
-  }, [linksIncludingPending, managedCutoffGuard, notifyModeLockChanged, recordParentActivity, releaseSlot, reservedChildCount, settleManagedCutoff, updateLink]);
+  }, [clearAdmissionRetry, incompatibleHeldSlotFor, linksIncludingPending, managedCutoffGuard, notifyModeLockChanged, recordParentActivity, rememberUncertainActivation, reservedChildCount, retireActivationToken, settleManagedCutoff, slotHolderFor, updateLink]);
 
   /** Start queued follow-ups that can run now. Event-driven; never polls. */
   const pumpSession = useCallback((sessionId: string) => {
@@ -3169,7 +3569,7 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     if (link.acceptedAt) return { childId, phase: "accepted", note: "This sub-agent was already accepted." };
     if (remoteAcceptancesRef.current.has(childId)) throw new Error("This sub-agent is being signed off from another device.");
-    if (supersededUncertainRef.current.has(childId) || explicitStartsRef.current.has(childId)) {
+    if (supersededUncertainRef.current.has(childId) || link.uncertainActivationIds?.length || explicitStartsRef.current.has(childId)) {
       throw new Error("This sub-agent has preparing or unconfirmed work. Confirm or stop it before accepting its result.");
     }
     const clickedReviewToken = by === "user" ? expectedReviewToken ?? childReviewToken(link) : expectedReviewToken;
@@ -3184,7 +3584,7 @@ export function useChildAgents(context: ChildAgentContext): {
     const current = linksIncludingPending(contextRef.current.links)[childId];
     if (!current || current.rootThreadId !== rootThreadId || current.sessionId !== link.sessionId
       || current.activationPending || pendingActivationsRef.current.has(childId)
-      || supersededUncertainRef.current.has(childId) || explicitStartsRef.current.has(childId)) {
+      || supersededUncertainRef.current.has(childId) || current.uncertainActivationIds?.length || explicitStartsRef.current.has(childId)) {
       throw new Error("The child's current result is unknown or changed while acceptance was preparing. Collect it again.");
     }
     if (current.signoff !== "required") throw new Error("This assignment no longer has a V2 review contract.");
@@ -3252,7 +3652,7 @@ export function useChildAgents(context: ChildAgentContext): {
       if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration) throw new Error("Mythra Code restarted while this sign-off was preparing.");
       if (contextRef.current.threadUnavailable?.(childId)) throw new Error("The child conversation is unavailable.");
       if (link.activationPending || pendingActivationsRef.current.has(childId) || followUpsInFlightRef.current.has(childId)
-        || supersededUncertainRef.current.has(childId) || explicitStartsRef.current.has(childId)) throw new Error("This sub-agent has work still starting. Try again when it settles.");
+        || supersededUncertainRef.current.has(childId) || link.uncertainActivationIds?.length || explicitStartsRef.current.has(childId)) throw new Error("This sub-agent has work still starting. Try again when it settles.");
       if (isChildActive(taskStatusOf(childId))) throw new Error("This sub-agent is still working.");
       if (!worker.reviewToken || childReviewToken(link) !== worker.reviewToken) throw new Error("This sub-agent's result changed. Refresh and try again.");
       if (getChildMailbox(childId)?.messages.some((message) => message.direction === "toChild" && message.state === "delivering")) throw new Error("Guidance is still reaching this sub-agent.");
@@ -3831,12 +4231,14 @@ export function useChildAgents(context: ChildAgentContext): {
     return () => {
       lifecycleRef.current.mounted = false;
       lifecycleRef.current.generation += 1;
+      for (const preparation of followUpPreparationsRef.current.values()) preparation.abort();
+      for (const childId of admissionRetriesRef.current.keys()) clearAdmissionRetry(childId);
       scheduledPumpsRef.current.clear();
       for (const timer of releaseRetryTimersRef.current.values()) window.clearTimeout(timer);
       releaseRetryTimersRef.current.clear();
       notifyChildWaiters();
     };
-  }, [notifyChildWaiters, releaseSlot]);
+  }, [clearAdmissionRetry, notifyChildWaiters, releaseSlot]);
 
   // App-owned availability and persisted ownership may change without a task
   // status event. Existing waits reevaluate their captured identity on render.
@@ -3916,7 +4318,9 @@ export function useChildAgents(context: ChildAgentContext): {
         && !(link.resultRevision && completedId === link.revisionBaseTurnId) ? completedId : undefined;
       updateLink(id, (current) => ({ ...current, terminalStatus, finishedAt: current.finishedAt ?? Date.now(),
         activationPending: false, ...(ownTurn ? { activationTurnId: ownTurn } : {}) }));
-      releaseSlot(link);
+      const slotToken = childAgentSlotActivationId(link);
+      if (slotToken) retireActivationToken(link, slotToken);
+      else releaseSlot(link);
       settleChildInParent(link.rootThreadId, id, link.title, terminalStatus, terminalStatus);
       const queued = queuedForChild(id);
       // After a reload local status is idle; the reconciled outcome decides.
@@ -3927,7 +4331,7 @@ export function useChildAgents(context: ChildAgentContext): {
       }
       schedulePumpRef.current(link.sessionId);
     }
-  }, [linksIncludingPending, releaseSlot, updateLink]);
+  }, [linksIncludingPending, releaseSlot, retireActivationToken, updateLink]);
   reconcileChildrenRef.current = reconcileChildren;
 
   // Release the backend's concurrency slot as soon as a child's turn reaches a
@@ -3978,7 +4382,7 @@ export function useChildAgents(context: ChildAgentContext): {
                 const { acceptedAt: _accepted, acceptedBy: _by, acceptNote: _note,
                   terminalStatus: _terminal, finishedAt: _finished, activationTurnId: _turn,
                   activationPreviousTurnId: _previous, manualAttemptId: _attempt, activationStartRequestId: _start, ...reopened } = current;
-                return { ...reopened, resultRevision: (current.resultRevision ?? 0) + 1,
+                return { ...reopened, resultRevision: (current.resultRevision ?? 0) + 1, manualAttemptId: crypto.randomUUID(),
                   ...(baseTurnId ? { revisionBaseTurnId: baseTurnId } : {}) };
               });
             }
@@ -4023,6 +4427,21 @@ export function useChildAgents(context: ChildAgentContext): {
       .map((link) => link.sessionId));
     for (const sessionId of sessions) schedulePumpRef.current(sessionId);
   }, []);
+
+  // Token cleanup does not require opening an archived/busy conversation or
+  // recovering a provider: undispatched work has never reached it. Run on
+  // ownership changes too, so links hydrated after mount are not forgotten.
+  // Only exact release confirmation clears a durable retirement marker.
+  useEffect(() => {
+    for (const observed of Object.values(linksIncludingPending(contextRef.current.links))) {
+      const link = retireUndispatchedActivation(observed);
+      const uncertain = link.uncertainActivationIds?.[0];
+      if (uncertain) supersededUncertainRef.current.set(link.childThreadId, uncertain);
+      else supersededUncertainRef.current.delete(link.childThreadId);
+      for (const token of link.retiringActivationIds ?? []) retireActivationToken(link, token);
+      if (uncertain) void recoverUncertainActivations(link).catch(() => undefined);
+    }
+  }, [context.links, linksIncludingPending, recoverUncertainActivations, retireActivationToken, retireUndispatchedActivation]);
 
   // One bounded mount pass recovers only unresolved links. Adopt a durable
   // initial relay before releasing its slot: until the renderer acknowledges
