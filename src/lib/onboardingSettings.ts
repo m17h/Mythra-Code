@@ -12,6 +12,9 @@ export type OnboardingSettingsDraft = {
   /** A Settings row id (SETTINGS_ROWS) to bring into view, e.g. from a
    * Tools link. Like `account`, it only opens; it never edits. */
   row?: string;
+  /** Open the Theme library over Appearance (the command palette). A fresh
+   * number per request, so asking again opens it again. Only opens. */
+  themeLibrary?: number;
 };
 
 /** Match the default-provider selector in Settings, including its model reset. */

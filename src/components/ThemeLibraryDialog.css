@@ -1,0 +1,320 @@
+/* The Theme library window (docs/design/pro-ui.md). App chrome: tokens only,
+   neutral selection, hairline cards and rows, no glow. Only the previews show
+   a theme's own colours and motion. It sits inside the Settings backdrop, so
+   it inherits the live theme and the app scale. */
+
+.app-shell[data-theme][data-color-scheme] .ct-lib-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell[data-theme][data-color-scheme] .ct-lib-backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+
+.app-shell[data-theme][data-color-scheme] .ct-lib {
+  width: min(1120px, 100%);
+  height: min(780px, 100%);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+  color: var(--text);
+  background: var(--bg);
+  box-shadow: var(--lm-pop-shadow);
+}
+
+/* ---- Header: title and count, then search, sort and the design button ---- */
+.app-shell[data-theme][data-color-scheme] .ct-lib-head {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 14px 14px 14px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin-right: auto; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-title h3 { margin: 0; color: var(--text); font-size: 15px; font-weight: 650; outline: none; white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-tools { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-search {
+  position: relative;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  width: 240px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--field);
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-search > svg { justify-self: center; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .ct-lib-search input {
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-search input:focus { outline: none; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-search input::placeholder { color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .ct-lib-search:focus-within { border-color: var(--accent-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .ct-lib-search-clear {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-chip);
+  color: var(--muted-2);
+  background: transparent;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-search-clear:hover { color: var(--text); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .ct-lib-sort .app-select { min-width: 150px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-design { white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-close {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted-2);
+  background: transparent;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-close:hover { color: var(--text); background: var(--lm-press); }
+
+/* ---- Body: the grid on the left, the details on the right ---- */
+.app-shell[data-theme][data-color-scheme] .ct-lib-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-body { grid-template-columns: minmax(0, 1fr); }
+.app-shell[data-theme][data-color-scheme] .ct-lib-grid-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: 16px 16px 16px 20px;
+  overscroll-behavior: contain;
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  align-content: start;
+  gap: 12px;
+  outline: none;
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-card {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  color: var(--ink-2);
+  background: var(--panel);
+  cursor: pointer;
+  outline: none;
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-card:hover { color: var(--text); border-color: var(--line-strong); }
+/* The theme being looked at: neutral, like the Settings tiles. */
+.app-shell[data-theme][data-color-scheme] .ct-lib-card.current {
+  color: var(--text);
+  border-color: var(--muted-2);
+  background: var(--lm-hover);
+  box-shadow: 0 0 0 .5px var(--muted-2);
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-card-preview {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-radius: var(--r-md);
+  box-shadow: 0 0 0 1px var(--line);
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-card-preview > * { width: 100%; height: 100%; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-card-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 0 4px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-card-copy strong { overflow: hidden; color: var(--text); font-size: var(--fs-ui); font-weight: 550; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-card-copy small { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
+/* "In use": the same small neutral badge as a selected Settings tile. */
+.app-shell[data-theme][data-color-scheme] .ct-lib-in-use-mark {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  padding: 2px;
+  border-radius: 50%;
+  color: var(--panel);
+  background: var(--text);
+  stroke-width: 3.25;
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-grid-pane > .lm-empty { margin: 8px 0 0; }
+
+/* Narrow windows: the theme in view, and the way to its details. */
+.app-shell[data-theme][data-color-scheme] .ct-lib-peek {
+  position: sticky;
+  bottom: -16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px -16px -16px -20px;
+  padding: 10px 16px 10px 20px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-peek > span { display: flex; flex: 1 1 auto; flex-direction: column; gap: 1px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-peek strong { overflow: hidden; color: var(--text); font-size: var(--fs-ui); font-weight: 550; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-peek small { color: var(--muted); font-size: var(--fs-meta); }
+
+/* ---- Details ---- */
+.app-shell[data-theme][data-color-scheme] .ct-lib-details {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding: 16px 20px 20px;
+  border-left: 1px solid var(--line);
+  overscroll-behavior: contain;
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-details { border-left: 0; }
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-details > * { width: 100%; max-width: 560px; margin-inline: auto; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-back {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  padding: 0 8px 0 4px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-details > .ct-lib-back { width: auto; margin-inline: 0; }
+/* A narrow column is tall, not wide: keep the preview small enough to see the name under it. */
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-details > .ct-lib-hero { max-width: 320px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-back:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .ct-lib-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-hero {
+  flex: 0 0 auto;
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-radius: var(--r-lg);
+  box-shadow: 0 0 0 1px var(--line);
+}
+.app-shell[data-theme][data-color-scheme] .ct-lib-hero > * { width: 100%; height: 100%; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-identity { display: grid; gap: 6px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-field-label { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-name { width: 100%; height: 30px; font-size: 14px; font-weight: 550; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-description { margin: 2px 0 0; color: var(--ink-2); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-meta { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-actions > button { flex: 1 1 110px; justify-content: center; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-actions > .ct-lib-in-use:disabled { color: var(--ink-2); opacity: 1; cursor: default; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-rows { flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-rows .set-row { padding: 9px 12px; }
+/* History stacks in the narrow column: the disclosure, then Undo under it. */
+.app-shell[data-theme][data-color-scheme] .ct-lib-rows .ct-history-row { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-rows .ct-history-row > .ct-history-toggle { width: 100%; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-rows .ct-history-row > .set-control { justify-self: auto; justify-content: flex-start; padding-left: 15px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-details .ct-rev-summary { white-space: normal; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .ct-lib-danger { display: flex; justify-content: flex-start; padding-top: 2px; }
+/* Destructive: red ink, the red edge and a faint red fill on hover only. */
+.app-shell[data-theme][data-color-scheme] .ct-lib-delete { color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .ct-lib-delete:hover:not(:disabled) { border-color: var(--red-line); color: var(--red); background: var(--red-soft); }
+
+/* History: a disclosure row, then a hairline list with the head marked. */
+.app-shell[data-theme][data-color-scheme] .ct-history-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .ct-history-toggle strong { font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .ct-history-toggle small { grid-column: 2; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .ct-history-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.app-shell[data-theme][data-color-scheme] .ct-chevron {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform var(--lm-d-3) var(--lm-ease-out);
+}
+.app-shell[data-theme][data-color-scheme] .ct-history-toggle[aria-expanded="true"] .ct-chevron { transform: rotate(45deg); }
+.app-shell[data-theme][data-color-scheme] .ct-history { margin: 0; padding: 0 12px 8px; list-style: none; }
+.app-shell[data-theme][data-color-scheme] .ct-history > li {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line-quiet);
+}
+.app-shell[data-theme][data-color-scheme] .ct-history > li.ct-history-pruned { display: block; min-height: 0; padding: 8px 0 2px; color: var(--muted-2); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .ct-rev { color: var(--muted-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .ct-rev-copy { display: grid; gap: 1px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .ct-rev-summary { overflow: hidden; color: var(--text); font-size: var(--fs-ui); white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .ct-rev-copy small { color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .ct-rev-current { color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .ct-history > li.current .ct-rev { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .ct-rev-restore { height: 26px; }
+
+/* The header stacks once the window is narrow. */
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-head { padding-left: 16px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-tools { order: 3; flex: 1 1 100%; flex-wrap: wrap; }
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-search { flex: 1 1 200px; width: auto; }
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-grid-pane { padding-left: 16px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-peek { margin-left: -16px; padding-left: 16px; }
+.app-shell[data-theme][data-color-scheme] .ct-lib.narrow .ct-lib-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+
+@media (max-width: 1100px) {
+  .app-shell[data-theme][data-color-scheme] .ct-lib-body { grid-template-columns: minmax(0, 1fr) 300px; }
+  .app-shell[data-theme][data-color-scheme] .ct-lib-search { width: 200px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-theme][data-color-scheme] .ct-chevron { transition: none; }
+}

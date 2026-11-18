@@ -20,7 +20,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Check, ChevronDown, Circle, CircleAlert, CircleStop, Code2, Cpu, Keyboard, TextCursorInput, UsersRound, Download, Folder, FolderOpen, Gauge, GitBranch, Hand, Wrench, GitFork, GitPullRequest, ListFilter, LoaderCircle, MessageSquare, NotebookPen, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, RotateCcw, Search, Settings, ShieldAlert, Shrink, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, ChevronDown, Circle, CircleAlert, CircleStop, Code2, Cpu, Keyboard, TextCursorInput, UsersRound, Download, Folder, FolderOpen, Gauge, GitBranch, Hand, Wrench, GitFork, GitPullRequest, ListFilter, LoaderCircle, MessageSquare, NotebookPen, Palette, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, RotateCcw, Search, Settings, ShieldAlert, Shrink, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, RuntimeRestartBusyError, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeDefaultModel, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging, providerAuthGeneration } from "./lib/providerAuth";
@@ -948,6 +948,8 @@ export default function App() {
   // Filled once the theme host below is set up; the keyboard layer and view
   // boundaries are declared earlier in this component.
   const resetThemeRef = useRef<(reason?: "shortcut" | "palette" | "tray") => void>(() => {});
+  // Each "Open theme library" request gets a new number, so asking again reopens it.
+  const themeLibraryRequestRef = useRef(0);
   const reportThemeRenderErrorRef = useRef<() => void>(() => {});
   const customThemeLibrary = useCustomThemes();
   const [themeDesignerRequest, setThemeDesignerRequest] = useState<ThemeDesignerChoice | null>(null);
@@ -10352,6 +10354,8 @@ export default function App() {
     ...(customThemeLibrary.themes.length ? [{ id: "theme-motion", label: settings.themeMotion === "paused" ? "Resume theme animations" : "Pause theme animations", group: "Appearance", icon: settings.themeMotion === "paused" ? Circle : CircleStop, keywords: "motion animation custom theme",
       run: () => persistSettings((current) => ({ ...current, themeMotion: current.themeMotion === "paused" ? "on" : "paused" })) }] : []),
     { id: "custom-themes", label: "Custom themes", detail: "Settings > Appearance", group: "Appearance", icon: Settings, keywords: "design theme ai colours look", run: () => openSettings("appearance", { row: "appearance.custom-themes" }) },
+    ...(customThemeLibrary.themes.length ? [{ id: "theme-library", label: "Open theme library", detail: "Settings > Appearance", group: "Appearance", icon: Palette, keywords: "custom themes browse search manage rename history",
+      run: () => openSettings("appearance", { themeLibrary: ++themeLibraryRequestRef.current }) }] : []),
     ...(!remoteActive && activeThread ? [
       { id: "thread-rename", label: "Rename thread", group: "Thread", icon: Pencil, run: () => {
         showSidebar();
