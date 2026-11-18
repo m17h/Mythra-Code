@@ -24,7 +24,8 @@ export type ShortcutId =
   | "settings"
   | "shortcuts"
   | "workspaceTab"
-  | "focusApproval";
+  | "focusApproval"
+  | "resetTheme";
 
 export interface ShortcutDefinition {
   id: ShortcutId;
@@ -41,6 +42,7 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
   { id: "palette", keys: ["Mod", "K"], label: "Command palette", group: "General" },
   { id: "shortcuts", keys: ["Mod", "/"], label: "Keyboard shortcuts", group: "General" },
   { id: "settings", keys: ["Mod", ","], label: "Settings", group: "General" },
+  { id: "resetTheme", keys: ["Mod", "Alt", "Shift", "T"], label: "Switch back to the default theme", group: "General", note: "Works everywhere, even in dialogs" },
   { id: "toggleSidebar", keys: ["Mod", "\\"], label: "Show or hide the sidebar", group: "General" },
   { id: "newThread", keys: ["Mod", "N"], label: "New thread", group: "Threads" },
   { id: "previousThread", keys: ["Mod", "Shift", "["], label: "Previous thread", group: "Threads", note: "In this project or Chats, in sidebar order" },

@@ -924,6 +924,9 @@ export const Composer = forwardRef<ComposerHandle, {
           // Explicit so drafts keep spelling marks even inside a container
           // that opts out.
           spellCheck
+          // Right-click (or the menu key / Shift+F10) opens Cut, Copy, Paste
+          // and Select all; Paste goes through onPaste below (lib/editMenu.ts).
+          data-edit-menu=""
           // The @ menu is an inline listbox the textarea drives, so the active
           // option has to be announced from here — it never takes focus itself.
           aria-autocomplete="list"

@@ -244,6 +244,26 @@
 .app-shell[data-theme][data-color-scheme] .spelling-menu-word { margin-bottom: 4px; padding: 0 8px 6px; border-bottom-color: var(--line-quiet); color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .spelling-menu button { min-height: 28px; padding: 4px 8px; border-radius: var(--r-sm); }
 .app-shell[data-theme][data-color-scheme] .spelling-menu button[data-highlighted] { color: var(--text); background: var(--lm-press); box-shadow: none; }
+/* Edit commands (Cut, Copy, Paste, Select all): one-line rows with the key
+   hint at the end in plain muted text, groups split by quiet hairlines. */
+.app-shell[data-theme][data-color-scheme] .spelling-menu.edit-menu .spelling-menu-panel { min-width: 200px; }
+.app-shell[data-theme][data-color-scheme] .spelling-menu button.edit-menu-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 8px; white-space: nowrap; overflow-wrap: normal; }
+.app-shell[data-theme][data-color-scheme] .spelling-menu button.edit-menu-item > kbd { padding: 0; border: 0; color: var(--muted); background: transparent; font: 400 11.5px var(--font-sans); letter-spacing: .02em; font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .spelling-menu button.edit-menu-item:disabled { color: var(--muted-2); cursor: default; }
+.app-shell[data-theme][data-color-scheme] .spelling-menu button.edit-menu-item:disabled > kbd { color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .spelling-menu .edit-menu-group.separated,
+.app-shell[data-theme][data-color-scheme] .spelling-menu button.edit-menu-item.separated { position: relative; margin-top: 9px; }
+.app-shell[data-theme][data-color-scheme] .spelling-menu .edit-menu-group.separated::before,
+.app-shell[data-theme][data-color-scheme] .spelling-menu button.edit-menu-item.separated::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 8px;
+  right: 8px;
+  height: 1px;
+  background: var(--line-quiet);
+  pointer-events: none;
+}
 
 /* ---- Project instructions and Run command popovers ---- */
 .app-shell[data-theme][data-color-scheme] .project-prompt-popover { padding: 14px; }
@@ -802,6 +822,8 @@
   .app-shell[data-theme][data-color-scheme] .palette-row.active { outline: 2px solid Highlight; outline-offset: -2px; }
   .app-shell[data-theme][data-color-scheme] .shortcuts-sheet { outline: 1px solid CanvasText; }
   .app-shell[data-theme][data-color-scheme] .spelling-menu button[data-highlighted] { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .spelling-menu button.edit-menu-item:disabled { color: GrayText; }
+  .app-shell[data-theme][data-color-scheme] .spelling-menu button.edit-menu-item:disabled > kbd { color: GrayText; }
   /* Outrank the legacy doubled-class focus reset on spelling-menu buttons. */
   .app-shell[data-theme][data-color-scheme] .spelling-menu.spelling-menu .spelling-menu-panel button:focus { outline: 2px solid Highlight; outline-offset: -2px; }
 }

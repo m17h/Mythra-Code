@@ -1,0 +1,23 @@
+{
+  "schema": "mythra.theme/1",
+  "name": "Paper",
+  "description": "Warm off-white paper with ink-brown text, a terracotta accent and a fine grain",
+  "base": "atari",
+  "tokens": {
+    "bg": "#f7f2e8",
+    "sidebar": "#efe8da",
+    "panel": "#fbf8f1",
+    "text": "#2a231b",
+    "accent": "#a5441f",
+    "codeBg": "#f2ecdf"
+  },
+  "shape": "standard",
+  "elevation": "flat",
+  "typography": { "ui": "system", "display": "serif", "chat": "serif" },
+  "surfaces": { "translucency": 0 },
+  "effects": {
+    "grain": { "amount": 0.55 }
+  },
+  "motion": { "enabled": true },
+  "customCss": ".thread-empty-state h1 { letter-spacing: -0.01em; }\n.rich-markdown blockquote { border-left-color: var(--accent-line); }"
+}

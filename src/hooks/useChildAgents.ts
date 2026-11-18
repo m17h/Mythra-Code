@@ -33,6 +33,7 @@ import {
 } from "../lib/childAgents";
 import { childAgentPolicyForSession, childAgentRegistrationForSession, childThreadForBridgeSession, projectTerminalScopeForSession, revokeRootChildAgentRegistration } from "../lib/childAgentSessions";
 import { getCommitMessageContext, queueCommitMessageSuggestion } from "../lib/commitMessages";
+import { handleThemeToolRequest, isThemeTool } from "../lib/customThemes/toolHandlers";
 import { ChildAgentStartUncertainError, continueChildAgentTurn, definitelyNotDispatched, startChildAgentTurn } from "../lib/childRun";
 import {
   cancelQueuedForChild,
@@ -4190,6 +4191,13 @@ export function useChildAgents(context: ChildAgentContext): {
       else if (request.tool === "set_project_check_command") result = await setCheckCommand(request);
       else if (request.tool === "get_commit_message_context" || request.tool === "set_commit_message") result = await commitMessageRequest(request);
       else if (request.tool === "read_project_terminal") result = await readTerminal(request);
+      // App-appearance tools: the conversation is the session's root thread
+      // when its policy already knows it (the store falls back otherwise).
+      else if (isThemeTool(request.tool)) {
+        result = await handleThemeToolRequest(request, {
+          policyThreadId: childAgentPolicyForSession(contextRef.current.policies, request.sessionId)?.rootThreadId || undefined,
+        });
+      }
       else throw new Error(`\`${request.tool}\` is not a sub-agent tool.`);
       await respondToChildAgentRequest(request.requestId, result);
       if (request.tool === "spawn_mythra_agent" && lifecycleRef.current.mounted && typeof result.childId === "string") {

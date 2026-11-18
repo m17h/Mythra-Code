@@ -63,6 +63,7 @@ import { clearProviderStopIntent, markProviderStopIntent } from "../lib/provider
 import { sealStoppedTurn } from "../lib/stopTurnHistory";
 import { isClaudeThread, isCursorThread, modelForProvider } from "../lib/threadProvider";
 import { mythraCodeDeveloperInstructions, withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
+import { bindSessionToThread, themeDesignerPurpose } from "../lib/customThemes/store";
 import { RUN_COMMAND_TOOL } from "../lib/projectRun";
 import { CHECK_COMMAND_TOOL } from "../lib/projectChecks";
 import {
@@ -1075,6 +1076,9 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     const rememberChildAgentPolicy = (threadId: string) => {
       if (!childBridge) return;
       const { policy, captured, policyUpdated } = childBridge;
+      // Theme tool calls name their conversation by bridge session; bind it
+      // as soon as the thread exists (the policy cache below also does).
+      if (childBridge.launch.toolNames.includes("create_custom_theme")) bindSessionToThread(policy.sessionId, threadId);
       if (!captured && !policyUpdated && policy.rootThreadId === threadId) return;
       const next = { ...policy, rootThreadId: threadId };
       childBridge = { ...childBridge, policy: next, captured: false, policyUpdated: false };
@@ -1429,6 +1433,12 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         serviceTier: effectiveSettings.serviceTier,
         readiness: childAgentReadiness,
         settingsProposalsEnabled: Boolean(activeProject) && effectiveSettings.subagentEngine !== "native",
+        // Custom-theme tools for every root conversation, including plain
+        // chats, unless switched off. Stable per thread (a flip would rotate
+        // the bridge); children and workflow-owned threads never get them.
+        themeToolsEnabled: effectiveSettings.customThemeTools !== false
+          && !(activeThread && childThread)
+          && !(activeThread && useTaskStore.getState().workflowOwners[activeThread.id]),
         // Thread selection may attach a bridge, but only sending a prompt is
         // allowed to consume a staged thread-local crew edit.
         promoteStagedEdits: true,
@@ -1458,6 +1468,15 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         toolAvailable: Boolean(childBridge?.launch.toolNames.includes(CHECK_COMMAND_TOOL)),
         check: activeProject?.overrides?.check ?? null,
       };
+      // Theme guidance follows the tools this turn's bridge really carries.
+      // "Design a theme with AI" threads (or the draft that button opened)
+      // carry the designer brief every turn; Settings records the purpose.
+      const themeDesigner = !childThread && themeDesignerPurpose(activeThread?.id) !== null;
+      const themePrompt = {
+        toolsAvailable: Boolean(childBridge?.launch.toolNames.includes("create_custom_theme")),
+        designer: themeDesigner,
+      };
+      const codexVersion = ctx.runtimeStatus?.runningVersion ?? ctx.runtimeStatus?.version ?? null;
       // Workflows own their thread and never come through this path as a
       // parent run; a workflow-owned thread keeps its older semantics.
       parentRunReady = !childThread && !nativeDelegation
@@ -1486,7 +1505,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
             // Appending the optimistic user message cannot flip assistant
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
-            const result = await startClaudeTurn({ ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : ctx.localOwnerHandle ? { localOwnerHandle: ctx.localOwnerHandle } : {}), threadId: thread.id, startRequestId: localStartRequestId, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2, parentRunReady), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, nativeSubagents: nativeDelegation, nativeSubagentMax: sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax), autoCompactTokens: effectiveSettings.autoCompactTokens, ...(nativeDelegation ? { nativeSubagentModel: effectiveSettings.nativeSubagentOptions?.claude?.model?.trim() || undefined, nativeAutoCompactTokens: effectiveSettings.nativeSubagentOptions?.claude?.autoCompactTokens } : {}), customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : ctx.localOwnerHandle ? { localOwnerHandle: ctx.localOwnerHandle } : {}), threadId: thread.id, startRequestId: localStartRequestId, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2, parentRunReady, themePrompt), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, nativeSubagents: nativeDelegation, nativeSubagentMax: sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax), autoCompactTokens: effectiveSettings.autoCompactTokens, ...(nativeDelegation ? { nativeSubagentModel: effectiveSettings.nativeSubagentOptions?.claude?.model?.trim() || undefined, nativeAutoCompactTokens: effectiveSettings.nativeSubagentOptions?.claude?.autoCompactTokens } : {}), customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             if (typeof result?.turnId !== "string" || !result.turnId.trim()) {
               throw new Error("MYTHRA_DELIVERY_UNCERTAIN: Claude accepted the start without returning its turn identifier.");
             }
@@ -1533,7 +1552,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
               effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
               permission: effectiveSettings.permission,
-              systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2, parentRunReady),
+              systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2, parentRunReady, themePrompt),
               resumeSessionId: priorSessionId || undefined,
               attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
               childAgentBridge: childBridge
@@ -1581,7 +1600,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       let runtimeTurnModel: unknown;
       startedThreadId = threadId;
       if (!threadId) {
-        const startParams = threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
+        const startParams = threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check, codexVersion, themeDesigner });
         const result = await rpc<{ thread: Thread; model?: unknown; runtimeInstance: string }>("thread/start", ctx.remoteDelivery ? { ...startParams, remoteDelivery: ctx.remoteDelivery.metadata() } : ctx.localOwnerHandle ? { ...startParams, localOwnerHandle: ctx.localOwnerHandle } : startParams);
         runtimeInstance = result.runtimeInstance;
         const startedThread = optimisticStartedThread(result.thread, text);
@@ -1625,7 +1644,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         if (plan.restartRuntime) runtimeInstance = await contextRef.current.restartRuntimeForCapabilities(threadId, true);
         assertCanStart();
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
-          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
+          const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check, codexVersion, themeDesigner });
           const resumeParams = effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume;
           const resumed = await rpc<{ model?: unknown; runtimeInstance: string }>("thread/resume", ctx.remoteDelivery ? { ...resumeParams, remoteDelivery: ctx.remoteDelivery.metadata() } : ctx.localOwnerHandle ? { ...resumeParams, localOwnerHandle: ctx.localOwnerHandle } : resumeParams);
           runtimeInstance = resumed.runtimeInstance;
@@ -1696,6 +1715,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
           nativeDelegation,
           collaborationV2,
           parentRunReady,
+          themePrompt,
         ),
       }), expectedRuntimeInstance: runtimeInstance, ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : ctx.localOwnerHandle ? { localOwnerHandle: ctx.localOwnerHandle } : {}) };
       const taskBeforeDispatch = useTaskStore.getState().tasks[threadId];

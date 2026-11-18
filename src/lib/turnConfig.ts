@@ -1,7 +1,7 @@
 import type { AppSettings, CustomAgentProfile, PermissionMode, ProjectCheckCommand, ProjectRunCommand, ScheduleRunSettings } from "../types";
 import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { JsonObject } from "./codex";
-import { MYTHRA_CODE_NATIVE_DELEGATION_POLICY, mythraCodeDeveloperInstructions, type CheckButtonPromptContext, type RunButtonPromptContext } from "./completionPrompt";
+import { MYTHRA_CODE_NATIVE_DELEGATION_POLICY, mythraCodeDeveloperInstructions, type CheckButtonPromptContext, type RunButtonPromptContext, type ThemeToolsPromptContext } from "./completionPrompt";
 import { RUN_COMMAND_TOOL } from "./projectRun";
 import { CHECK_COMMAND_TOOL } from "./projectChecks";
 import { resolveProviderSystemPrompt } from "./systemPrompt";
@@ -89,6 +89,14 @@ export interface ThreadStartOptions {
   /** The project's Run button command, so the model can describe and update it. */
   projectRunCommand?: ProjectRunCommand | null;
   projectCheckCommand?: ProjectCheckCommand | null;
+  /**
+   * Running Codex version (`runtimeStatus.runningVersion ?? version`). Gates
+   * config keys only some runtimes understand; omitted means "unknown", and
+   * unknown never receives them.
+   */
+  codexVersion?: string | null;
+  /** This is a "Design a theme with AI" conversation. */
+  themeDesigner?: boolean;
 }
 
 function runButtonContext(options: Pick<ThreadStartOptions, "childAgentBridge" | "projectRunCommand">): RunButtonPromptContext {
@@ -99,6 +107,14 @@ function runButtonContext(options: Pick<ThreadStartOptions, "childAgentBridge" |
   };
 }
 
+/** Theme guidance follows the tools actually registered on this bridge. */
+function themeToolsContext(options: Pick<ThreadStartOptions, "childAgentBridge" | "themeDesigner">): ThemeToolsPromptContext {
+  return {
+    toolsAvailable: Boolean(options.childAgentBridge?.toolNames.includes("create_custom_theme")),
+    designer: options.themeDesigner === true,
+  };
+}
+
 function checkButtonContext(options: Pick<ThreadStartOptions, "childAgentBridge" | "projectCheckCommand">): CheckButtonPromptContext {
   return {
     toolAvailable: Boolean(options.childAgentBridge?.toolNames.includes(CHECK_COMMAND_TOOL)),
@@ -106,9 +122,35 @@ function checkButtonContext(options: Pick<ThreadStartOptions, "childAgentBridge"
   };
 }
 
-/** Registers the Mythra Code delegation bridge as a per-thread MCP server. */
-export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined): JsonObject {
+/** The seven app-appearance tools the bridge exposes when theme tools are on. */
+export const THEME_BRIDGE_TOOL_NAMES = [
+  "get_theme_design_kit", "list_custom_themes", "get_custom_theme", "create_custom_theme",
+  "update_custom_theme", "undo_custom_theme", "apply_custom_theme",
+] as const;
+
+/**
+ * Oldest Codex verified (offline, 2026-11-18) to parse
+ * `mcp_servers.<server>.tools.<tool>.approval_mode = "approve"`: 0.167.0 and
+ * 0.167.1 both carry `McpServerToolConfig { approval_mode }` and the
+ * `AppToolApproval` value `approve`, which their own "Allow and don't ask me
+ * again" choice writes. Older runtimes are left without the key, so an
+ * unknown field can never break thread start; there the user is asked.
+ */
+export const CODEX_MCP_TOOL_APPROVAL_MINIMUM_VERSION = "0.167.0";
+
+export function codexSupportsMcpToolApproval(version: string | null | undefined): boolean {
+  return nativeSubagentVersionAtLeast(version, [0, 167, 0]);
+}
+
+/**
+ * Registers the Mythra Code delegation bridge as a per-thread MCP server.
+ * Theme tools are app-appearance changes the user can always undo, so on a
+ * Codex version that supports it each one is approved without a prompt in
+ * every permission mode. Every other bridge tool keeps Codex's normal policy.
+ */
+export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined, codexVersion?: string | null): JsonObject {
   if (!bridge) return {};
+  const themeTools = THEME_BRIDGE_TOOL_NAMES.filter((tool) => bridge.toolNames.includes(tool));
   return {
     mcp_servers: {
       // Collection returns within 45 seconds, while a cold provider spawn may
@@ -119,6 +161,9 @@ export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined):
         args: bridge.args,
         startup_timeout_sec: 30,
         tool_timeout_sec: 310,
+        ...(themeTools.length && codexSupportsMcpToolApproval(codexVersion) ? {
+          tools: Object.fromEntries(themeTools.map((tool) => [tool, { approval_mode: "approve" }])),
+        } : {}),
       },
     },
   };
@@ -130,7 +175,7 @@ export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined):
  * ChatGPT connected-app tools are fetched independently by the runtime and
  * can contain provider-specific schemas that OpenRouter destinations reject.
  */
-export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<Pick<ThreadStartOptions, "interactive" | "customAgents" | "modelContextWindow" | "childAgentBridge" | "projectRunCommand" | "projectCheckCommand">> = {}): JsonObject {
+export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<Pick<ThreadStartOptions, "interactive" | "customAgents" | "modelContextWindow" | "childAgentBridge" | "projectRunCommand" | "projectCheckCommand" | "codexVersion" | "themeDesigner">> = {}): JsonObject {
   const compactError = parentAutoCompactionUnavailableReason(run.provider, run.autoCompactTokens);
   if (compactError) throw new Error(compactError);
   const contextWindow = Number(options.modelContextWindow);
@@ -148,7 +193,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<P
     throw new Error("Native sub-agents cannot share a thread with the Mythra Code spawning bridge. Refresh this thread's sub-agent setup before sending.");
   }
   return {
-    ...childAgentMcpConfig(options.childAgentBridge),
+    ...childAgentMcpConfig(options.childAgentBridge, options.codexVersion),
     ...lmStudioProviderConfig(run),
     ...(nativeDelegation ? { model_provider: "openai" } : {}),
     // The app supplies selected root files freshly per turn. Native discovery
@@ -158,7 +203,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<P
     // Older runtimes use this mode hint. Current V2 ignores it, but replacing
     // the app baseline also avoids retaining its native-disabled custom text.
     multi_agent_mode: nativeDelegation ? "explicitRequestOnly" : { custom: MYTHRA_CODE_NATIVE_DELEGATION_POLICY },
-    developer_instructions: mythraCodeDeveloperInstructions(mythraDelegation, mythraSettings, runButtonContext(options), checkButtonContext(options), nativeDelegation, collaborationV2),
+    developer_instructions: mythraCodeDeveloperInstructions(mythraDelegation, mythraSettings, runButtonContext(options), checkButtonContext(options), nativeDelegation, collaborationV2, false, themeToolsContext(options)),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
     ...(run.autoCompactTokens !== undefined ? {
       // Own context only. Native Codex workers inherit this runtime policy;
@@ -205,6 +250,8 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     nativeCodexDelegation(run),
     Boolean(options.childAgentBridge?.toolNames.includes("send_agent_message")
       && options.childAgentBridge?.toolNames.includes("accept_agent")),
+    false,
+    themeToolsContext(options),
   );
   const params: JsonObject = {
     cwd,
@@ -229,7 +276,7 @@ export function threadResumeParams(
   run: ScheduleRunSettings,
   threadId: string,
   cwd: string,
-  options: Partial<Pick<ThreadStartOptions, "interactive" | "perTurnSystemPrompt" | "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge" | "projectRunCommand" | "projectCheckCommand">> & {
+  options: Partial<Pick<ThreadStartOptions, "interactive" | "perTurnSystemPrompt" | "customAgents" | "modelContextWindow" | "additionalWorkspaceRoots" | "childAgentBridge" | "projectRunCommand" | "projectCheckCommand" | "codexVersion" | "themeDesigner">> & {
     excludeTurns?: boolean;
     /**
      * Re-send the whole runtime config even with no bridge attached. This is
@@ -248,6 +295,8 @@ export function threadResumeParams(
     nativeCodexDelegation(run),
     Boolean(options.childAgentBridge?.toolNames.includes("send_agent_message")
       && options.childAgentBridge?.toolNames.includes("accept_agent")),
+    false,
+    themeToolsContext(options),
   );
   const modelProvider = runtimeModelProviderId(run.provider);
   return {

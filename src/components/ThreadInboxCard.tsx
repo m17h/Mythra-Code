@@ -17,7 +17,7 @@ import type { Provider } from "../types";
 import { ThreadTitle } from "./ThreadTitle";
 import { ProviderLogo } from "./BrandLogos";
 import { ScheduledCountBadge } from "./ScheduledCountBadge";
-import { WorkingIndicator } from "./WorkingIndicator";
+import { PixelWorkingMark } from "./PixelWorkingMark";
 import { formatWorkingDuration, visibleWorkingDuration } from "../lib/sidebarAttention";
 
 /** Wraps each case-insensitive occurrence of the search words in <mark>. */
@@ -139,7 +139,7 @@ function ThreadInboxStatus({ threadId, id, active, presence, fallback = null }: 
   if (status === "starting" || status === "running") {
     return (
       <span id={id} className="thread-card-status working">
-        <WorkingIndicator size={11} className="thread-card-working-mark" />
+        <PixelWorkingMark className="thread-card-working-mark" />
         <span>{status === "starting" ? "Starting" : "Working"}</span>
         {status === "running" && startedAt !== undefined && <WorkingDuration startedAt={startedAt} active={active} />}
       </span>
@@ -304,7 +304,7 @@ export const ThreadInboxCard = memo(function ThreadInboxCard({
   const accessibleTitle = titlePending ? "Generating title" : title;
   const openLabel = `${unavailable ? "Retry opening" : "Open"} ${accessibleTitle}${parentLabel ? ` · ${parentLabel}` : ""}${subAgentLabel ? ` · ${subAgentLabel}` : ""}`;
   const statusNode = pendingStatus ? <span id={statusId} className="thread-card-status working">
-    <WorkingIndicator size={11} className="thread-card-working-mark" />
+    <PixelWorkingMark className="thread-card-working-mark" live={pendingStatus === "starting"} />
     <span>{pendingStatus === "stopping" ? "Stopping" : "Starting"}</span>
   </span> : <ThreadInboxStatus threadId={threadId} id={statusId} active={active} presence={presence}
     fallback={unavailable ? <span id={statusId} className="thread-card-status unavailable" title="Couldn’t be opened last time. Open it to try again.">Unavailable</span> : null} />;

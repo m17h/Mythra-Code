@@ -161,7 +161,7 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
 /* A failed operation is flagged on its node and keeps a readable title. */
 .activity-step.is-failed .activity-step-node { color: var(--red); border-color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--line)); }
 /* Thinking that is happening now shows the working mark, not a glyph. */
-.activity-step.kind-reasoning .activity-step-node.working { color: var(--accent); }
+.activity-step.kind-reasoning .activity-step-node.working { color: var(--text); }
 .activity-step.from-user .activity-step-node { color: var(--text); background: var(--field); }
 
 .activity-step-body { min-width: 0; padding-top: 2px; }
@@ -255,7 +255,7 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
 .activity-details-empty p { margin: 0; font-size: var(--fs-ui); }
 .activity-details-empty-mark { position: relative; width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-md, 8px); color: color-mix(in srgb, var(--accent) 75%, var(--ink-2)); background: var(--accent-soft); }
 .activity-details-empty-mark.live { color: var(--text); background: none; }
-.activity-details-empty-mark .working-indicator { color: var(--accent); }
+.activity-details-empty-mark .pixel-working-mark { --pixel-size: 3px; }
 
 .activity-details-latest {
   position: absolute;

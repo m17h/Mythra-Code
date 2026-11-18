@@ -573,7 +573,7 @@ html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .
 .app-shell[data-theme][data-color-scheme] .thread-row-wrap:focus-within > .thread-card .thread-card-meta { visibility: visible; }
 /* Second line: the folder (or branch) gives way before the status does, so
    "Working 12s" or "Needs approval" is never cut, down to the 230px sidebar.
-   The mark is the shared WorkingIndicator in the status ink. */
+   The mark is the dot-matrix PixelWorkingMark in the status ink. */
 .app-shell[data-theme][data-color-scheme] .thread-card > .thread-card-context { gap: 8px; }
 .app-shell[data-theme][data-color-scheme] .thread-card-context > .thread-card-workspace { flex: 0 1 auto; }
 .app-shell[data-theme][data-color-scheme] .thread-card-context > .thread-card-status { flex: 0 0 auto; min-width: max-content; margin-left: auto; line-height: 15px; }

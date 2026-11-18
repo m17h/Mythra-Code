@@ -7,10 +7,13 @@ use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, State, Wry,
+    AppHandle, Emitter, Manager, State, Wry,
 };
 
 const TRAY_ID: &str = "mythra-status";
+/// Native escape hatch for an unreadable custom theme: native menus are never
+/// styled by app CSS. The webview listens and switches to the default theme.
+pub(crate) const CUSTOM_THEME_RESET_EVENT: &str = "custom-theme-reset";
 
 #[derive(Default)]
 pub(crate) struct TrayState {
@@ -54,13 +57,20 @@ pub(crate) fn tray_configure(app: AppHandle, state: State<'_, TrayState>, enable
     let separator = PredefinedMenuItem::separator(&app).map_err(|error| error.to_string())?;
     let show = MenuItem::with_id(&app, "tray-show", "Show Mythra Code", true, None::<&str>)
         .map_err(|error| error.to_string())?;
-    let menu = Menu::with_items(&app, &[&status, &separator, &show]).map_err(|error| error.to_string())?;
+    let reset_theme = MenuItem::with_id(&app, "tray-reset-theme", "Use default theme", true, None::<&str>)
+        .map_err(|error| error.to_string())?;
+    let menu = Menu::with_items(&app, &[&status, &separator, &show, &reset_theme]).map_err(|error| error.to_string())?;
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Mythra Code")
         .menu(&menu)
         .on_menu_event(|app, event| {
-            if event.id().as_ref() == "tray-show" {
-                show_main_window(app);
+            match event.id().as_ref() {
+                "tray-show" => show_main_window(app),
+                "tray-reset-theme" => {
+                    show_main_window(app);
+                    let _ = app.emit(CUSTOM_THEME_RESET_EVENT, ());
+                }
+                _ => {}
             }
         })
         .on_tray_icon_event(|tray, event| {

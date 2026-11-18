@@ -1,0 +1,24 @@
+{
+  "schema": "mythra.theme/1",
+  "name": "Deep Field",
+  "description": "Near-black space with three layers of slowly drifting stars and the odd shooting star",
+  "base": "mythra",
+  "tokens": {
+    "bg": "#0c0f17",
+    "sidebar": "#0f131c",
+    "panel": "#151a25",
+    "text": "#dfe5f1",
+    "accent": "#9db7ff"
+  },
+  "shape": "standard",
+  "elevation": "soft",
+  "typography": { "ui": "system" },
+  "surfaces": { "translucency": 0.2 },
+  "effects": {
+    "starfield": { "density": "dense", "twinkle": true, "drift": "slow", "shootingStars": true, "accentColor": "#b8a4ff" },
+    "vignette": { "strength": 0.45 },
+    "shimmer": { "targets": ["selectionBar"], "interval": 12 }
+  },
+  "motion": { "enabled": true },
+  "customCss": ""
+}

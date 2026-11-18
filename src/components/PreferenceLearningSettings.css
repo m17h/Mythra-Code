@@ -22,7 +22,7 @@
 .preference-learning-status:empty { display: none; }
 .preference-learning-status [role="alert"] { color: var(--red); }
 .preference-learning-history-state { display: flex; align-items: center; gap: 8px; color: var(--ink-2); }
-.preference-learning-history-state > .working-indicator,
+.preference-learning-history-state > .pixel-working-mark,
 .preference-learning-history-state > svg { flex: 0 0 auto; }
 .preference-learning-history-state > span { min-width: 0; overflow-wrap: anywhere; }
 .preference-learning-history-state.complete { color: var(--accent); }

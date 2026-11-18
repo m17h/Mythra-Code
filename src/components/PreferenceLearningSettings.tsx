@@ -20,7 +20,7 @@ import {
 } from "../lib/preferenceLearningStore";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import type { ChildAgentModelOption } from "./ChildAgentRoster";
-import { WorkingIndicator } from "./WorkingIndicator";
+import { PixelWorkingMark } from "./PixelWorkingMark";
 import { InfoPopover } from "./InfoPopover";
 import "./PreferenceLearningSettings.css";
 
@@ -203,7 +203,7 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
 
   const historyStatus = <div className="preference-learning-history-progress" aria-live="polite">
     {!historyWorking && !history && <p className="preference-learning-history-state">{historyActiveElsewhere ? "Another history analysis is running. Select that scope to view its progress." : removedProject ? "History analysis is unavailable for this removed project." : scope.enabled ? "Ready to analyze recent conversations." : "Enable this scope to analyze recent conversations."}</p>}
-    {historyWorking && <p className="preference-learning-history-state" data-history-status={history?.status ?? "reading"}><WorkingIndicator size={12} /><span>{historyPhase}</span></p>}
+    {historyWorking && <p className="preference-learning-history-state" data-history-status={history?.status ?? "reading"}><PixelWorkingMark /><span>{historyPhase}</span></p>}
     {historyWorking && <p>{providerDisplayName(analysisProvider)} · {analysisModel ?? "No available learning model"}</p>}
     {historyFinished && <p className="preference-learning-history-state complete" data-history-status={history?.status}><Check size={16} aria-hidden="true" /><span>{completion}</span></p>}
     {historyFinished && <p className="preference-learning-history-coverage">This bounded history pass does not cover all history.</p>}

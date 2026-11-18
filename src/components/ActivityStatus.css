@@ -46,8 +46,7 @@ html[data-input-modality="pointer"] .activity-status-pill:focus { outline: none;
 .activity-status.live .activity-status-pill { color: var(--ink-2); }
 
 /* A small rounded square carrying a static semantic glyph (waiting or settled).
-   A working run shows the shared WorkingIndicator arc in the same footprint
-   (round 6, I5: one running mark in transcript, sidebar and top bar). */
+   A working run shows the bare dot-matrix mark in the same footprint. */
 .activity-status-mark {
   position: relative;
   flex: 0 0 auto;
@@ -60,8 +59,8 @@ html[data-input-modality="pointer"] .activity-status-pill:focus { outline: none;
   background: color-mix(in srgb, var(--activity-tone) 12%, transparent);
 }
 .activity-status.state-unknown .activity-status-mark { color: var(--muted); background: var(--line-quiet); }
-/* The arc takes the accent, like every other "working" mark in the app. */
-.activity-status-mark.working { color: var(--accent); background: none; }
+/* Neutral foreground, like terminal text: readable on light and dark. */
+.activity-status-mark.working { color: var(--text); background: none; }
 
 .activity-status-text { min-width: 0; display: inline-flex; align-items: baseline; overflow: hidden; white-space: nowrap; }
 .activity-status-label { overflow: hidden; text-overflow: ellipsis; }

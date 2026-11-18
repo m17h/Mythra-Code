@@ -52,6 +52,13 @@ use tokio::{
     time::{timeout, Duration},
 };
 
+#[path = "agent_theme_tools.rs"]
+mod theme_tools;
+use theme_tools::{
+    claude_theme_tool, is_theme_tool, theme_tool_catalog, titled_theme_tool,
+    validate_theme_tool_call, THEME_BRIDGE_INSTRUCTIONS, TOOL_THEME_CREATE,
+};
+
 /// Private argv switch that turns this executable into the stdio MCP bridge.
 pub(super) const AGENT_BRIDGE_ARG: &str = "--openkiwi-agent-bridge";
 
@@ -747,6 +754,9 @@ struct ChildAgentSession {
     /// mailbox authority is captured separately by `parent_messaging`.
     collaboration_v2: bool,
     native_delegation: bool,
+    /// App-appearance tools for a root conversation, independent of
+    /// delegation and of a project. Never granted to a child thread.
+    theme_tools: bool,
     provider: String,
     directory: PathBuf,
     /// Reuse an unchanged managed-child registration after a renderer reload:
@@ -902,16 +912,9 @@ pub(super) async fn child_agent_bridge_config_registered(
         .any(|session| session.directory.join("mcp.json") == path)
 }
 
-/// Permission for two app-metadata tools, never a general MCP allowlist.
-/// This is checked against the exact live bridge supplied to the Claude turn;
-/// unknown, stale, native-child and malformed requests fall through unchanged.
-pub(super) async fn child_agent_bridge_mailbox_control_response(
-    state: &ChildAgentState,
-    config_path: &str,
-    permission: &str,
-    cwd: &str,
-    message: &Value,
-) -> Option<Value> {
+/// The root-turn `can_use_tool` request this exact bridge tool asks about, or
+/// None for anything else (other tools, sub-agent turns, malformed ids).
+fn bridge_control_request<'a>(message: &'a Value) -> Option<(&'a str, &'a Value)> {
     let request = &message["request"];
     if message["type"] != "control_request"
         || request["subtype"] != "can_use_tool"
@@ -920,15 +923,24 @@ pub(super) async fn child_agent_bridge_mailbox_control_response(
     {
         return None;
     }
-    let tool = match request["tool_name"].as_str()? {
-        "mcp__mythra_agents__message_parent" => TOOL_MESSAGE_PARENT,
-        "mcp__mythra_agents__read_parent_messages" => TOOL_READ_PARENT,
-        _ => return None,
-    };
     let request_id = message["request_id"].as_str()?;
     if request_id.is_empty() || request_id.len() > 4096 {
         return None;
     }
+    Some((request_id, request))
+}
+
+/// The live, unended registration whose private MCP config is exactly the
+/// file handed to this Claude turn and whose private session file still
+/// carries its token and the running server. Anything stale or altered is
+/// None, so the request falls through to the normal permission path.
+async fn verified_live_bridge(
+    state: &ChildAgentState,
+    config_path: &str,
+    permission: &str,
+    cwd: &str,
+    scope: impl Fn(&ChildAgentSession) -> bool,
+) -> Option<Arc<ChildAgentSession>> {
     let server_url = {
         let server = state.server.lock().await;
         let server = server.as_ref()?;
@@ -937,26 +949,28 @@ pub(super) async fn child_agent_bridge_mailbox_control_response(
         }
         server.url.clone()
     };
-    let sessions = state.sessions.lock().await;
-    let session = sessions.values().find(|session| {
-        session.directory.join("mcp.json") == Path::new(config_path)
-            && session.child_thread
-            && session.parent_messaging
-            && !session.native_delegation
-            && session.targets.is_empty()
-            && session.provider == "claude"
-            && session.permission == permission
-            && !*session.ended.borrow()
-            && !*session.query_ended.borrow()
-    })?;
+    let session = {
+        let sessions = state.sessions.lock().await;
+        sessions
+            .values()
+            .find(|session| {
+                session.directory.join("mcp.json") == Path::new(config_path)
+                    && session.provider == "claude"
+                    && session.permission == permission
+                    && !*session.ended.borrow()
+                    && !*session.query_ended.borrow()
+                    && scope(session)
+            })?
+            .clone()
+    };
     match (&session.project_path, &session.terminal_scope) {
         (Some(project_path), Some(scope)) => {
             if scope != cwd || std::fs::canonicalize(cwd).ok().as_ref() != Some(project_path) {
                 return None;
             }
         }
-        // Projectless bridges hold only a mailbox scope, with no execution
-        // folder/language authority. Its exact live config binds this child.
+        // Projectless bridges hold no execution folder or language authority;
+        // the exact live config binds this turn.
         (None, None) => {}
         _ => return None,
     }
@@ -984,15 +998,110 @@ pub(super) async fn child_agent_bridge_mailbox_control_response(
     {
         return None;
     }
-    validate_tool_call(&[], &HashSet::new(), tool, &request["input"]).ok()?;
-    Some(json!({
+    Some(session)
+}
+
+fn allow_control_response(request_id: &str, input: &Value) -> Value {
+    json!({
         "type": "control_response",
         "response": {
             "subtype": "success",
             "request_id": request_id,
-            "response": { "behavior": "allow", "updatedInput": request["input"] },
+            "response": { "behavior": "allow", "updatedInput": input },
         }
-    }))
+    })
+}
+
+/// Permission for two app-metadata tools, never a general MCP allowlist.
+/// This is checked against the exact live bridge supplied to the Claude turn;
+/// unknown, stale, native-child and malformed requests fall through unchanged.
+pub(super) async fn child_agent_bridge_mailbox_control_response(
+    state: &ChildAgentState,
+    config_path: &str,
+    permission: &str,
+    cwd: &str,
+    message: &Value,
+) -> Option<Value> {
+    let (request_id, request) = bridge_control_request(message)?;
+    let tool = match request["tool_name"].as_str()? {
+        "mcp__mythra_agents__message_parent" => TOOL_MESSAGE_PARENT,
+        "mcp__mythra_agents__read_parent_messages" => TOOL_READ_PARENT,
+        _ => return None,
+    };
+    verified_live_bridge(state, config_path, permission, cwd, |session| {
+        session.child_thread
+            && session.parent_messaging
+            && !session.native_delegation
+            && session.targets.is_empty()
+    })
+    .await?;
+    validate_tool_call(&[], &HashSet::new(), tool, &request["input"]).ok()?;
+    Some(allow_control_response(request_id, &request["input"]))
+}
+
+/// Theme tools change only app appearance and every change is undoable, so
+/// they never prompt, in any permission mode (Read-only protects the project,
+/// not how the app looks). Same exact-live-bridge binding as the mailbox: only
+/// a root registration that was granted theme tools, only the seven theme
+/// tool names, and only well-formed arguments. Sub-agent tool requests
+/// (`parent_tool_use_id`) and everything else fall through unchanged.
+pub(super) async fn child_agent_bridge_theme_control_response(
+    state: &ChildAgentState,
+    config_path: &str,
+    permission: &str,
+    cwd: &str,
+    message: &Value,
+) -> Option<Value> {
+    let (request_id, request) = bridge_control_request(message)?;
+    let tool = claude_theme_tool(request["tool_name"].as_str()?)?;
+    verified_live_bridge(state, config_path, permission, cwd, |session| {
+        session.theme_tools && !session.child_thread && !session.parent_messaging
+    })
+    .await?;
+    validate_theme_tool_call(tool, &request["input"]).ok()?;
+    Some(allow_control_response(request_id, &request["input"]))
+}
+
+/// Cursor ACP: is this `session/request_permission` exactly a theme tool call
+/// on the turn's own registered bridge (identified by its launch arguments)?
+/// The tool identity comes from the ACP tool-call title, which must match one
+/// of the seven names exactly; `rawInput` must be present and pass the theme
+/// shape check, so a shell or edit request can never qualify. Without a
+/// recognisable identity the normal permission path (a prompt) applies.
+pub(super) async fn child_agent_bridge_theme_permission_allowed(
+    state: &ChildAgentState,
+    bridge_args: &[String],
+    params: &Value,
+) -> bool {
+    let tool_call = &params["toolCall"];
+    let Some(tool) = tool_call["title"].as_str().and_then(titled_theme_tool) else {
+        return false;
+    };
+    if tool_call
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind != "other")
+    {
+        return false;
+    }
+    let Some(input) = tool_call.get("rawInput").filter(|input| input.is_object()) else {
+        return false;
+    };
+    if validate_theme_tool_call(tool, input).is_err() {
+        return false;
+    }
+    if bridge_args.len() != 2 || bridge_args[0] != AGENT_BRIDGE_ARG {
+        return false;
+    }
+    let session_file = Path::new(&bridge_args[1]);
+    state.sessions.lock().await.values().any(|session| {
+        session.directory.join("session.json") == session_file
+            && session.theme_tools
+            && !session.child_thread
+            && session.provider == "cursor"
+            && !*session.ended.borrow()
+            && !*session.query_ended.borrow()
+    })
 }
 
 /** Detect dual authority using the actual registered bridge, never argv text claims. */
@@ -1136,6 +1245,10 @@ pub(super) struct ChildAgentSessionOptions {
     collaboration_v2: bool,
     #[serde(default)]
     native_delegation: bool,
+    /// The user's "Let models create and change themes" switch, applied by
+    /// the app. Root conversations only.
+    #[serde(default)]
+    theme_tools: bool,
     /// Actual provider supplied by the app, not by model tool arguments.
     #[serde(default)]
     provider: String,
@@ -1580,6 +1693,7 @@ fn scoped_tool_catalog(
     parent_messaging: bool,
     collaboration_v2: bool,
     permission: &str,
+    theme_tools: bool,
 ) -> Value {
     let mut tools = if child {
         if parent_messaging {
@@ -1587,6 +1701,11 @@ fn scoped_tool_catalog(
         } else {
             Vec::new()
         }
+    } else if targets.is_empty() && !project {
+        // A plain chat with no crew: there is no project for settings
+        // proposals, a Run button or a Checks button to act on. Only app
+        // scopes (themes) can be granted to it.
+        Vec::new()
     } else {
         tool_catalog(targets, max_concurrent, collaboration_v2)
             .as_array()
@@ -1667,6 +1786,11 @@ fn scoped_tool_catalog(
     if permission != "full" {
         tools.retain(|tool| tool["name"] != TOOL_LANGUAGE_INSTALL);
     }
+    // App appearance, not project authority: independent of project, crew,
+    // permission mode and native delegation, and never for a child thread.
+    if theme_tools && !child {
+        tools.extend(theme_tool_catalog());
+    }
     Value::Array(tools)
 }
 
@@ -1680,6 +1804,7 @@ fn bridge_tool_catalog(
     collaboration_v2: bool,
     permission: &str,
     native: bool,
+    theme_tools: bool,
 ) -> Value {
     let mut catalog = scoped_tool_catalog(
         targets,
@@ -1689,6 +1814,7 @@ fn bridge_tool_catalog(
         parent_messaging,
         collaboration_v2,
         permission,
+        theme_tools,
     );
     if native {
         // The native runtime is the only delegation authority. Keep the
@@ -1709,7 +1835,7 @@ fn bridge_tool_catalog(
                             | TOOL_LANGUAGE_INSTALL
                             | TOOL_LANGUAGE_QUERY
                     )
-                )
+                ) || tool["name"].as_str().is_some_and(is_theme_tool)
             });
     }
     // Model notes live once in the spawn description, beside the roster they
@@ -1773,6 +1899,9 @@ fn bridge_instructions(catalog: &Value, provider: &str) -> String {
     }
     if has(TOOL_SET_CHECK) {
         instructions.push("Use set_project_check_command for the full relevant project-relative verification command; saving never executes it.".into());
+    }
+    if has(TOOL_THEME_CREATE) {
+        instructions.push(THEME_BRIDGE_INSTRUCTIONS.into());
     }
     if has(TOOL_COMMIT_MESSAGE) {
         instructions.push("After completing file changes in a local Git repository, call get_commit_message_context and then set_commit_message before your final response. Summarize all accumulated uncommitted changes, not just this turn; include a separate stagedMessage if there are staged changes. Inspect relevant new files and any truncated diff yourself. These tools only prepare editable text, never commit. Skip this when there are no changes or the folder is not a Git repository; a draft failure must not prevent your final response.".into());
@@ -1915,6 +2044,9 @@ pub(super) fn validate_tool_call(
         .as_object()
         .ok_or_else(|| "Tool arguments must be an object.".to_string())?;
     let text = |key: &str| object.get(key).and_then(Value::as_str).unwrap_or_default();
+    if is_theme_tool(tool) {
+        return validate_theme_tool_call(tool, arguments);
+    }
     match tool {
         TOOL_READ_TERMINAL => {
             if object.keys().any(|key| key != "maxCharacters")
@@ -2558,6 +2690,11 @@ async fn relay_to_app_inner(
     if matches!(tool, TOOL_READ_TERMINAL | TOOL_COMMIT_CONTEXT | TOOL_COMMIT_MESSAGE) {
         request["terminalScope"] = json!(session.terminal_scope);
     }
+    // Theme history credits the model that made a change. The provider is
+    // the app's own registration value, never a model argument.
+    if is_theme_tool(tool) && !session.provider.is_empty() {
+        request["provider"] = json!(session.provider);
+    }
     let emitted = state.app.emit("child-agent-request", request);
     if let Err(error) = emitted {
         state.pending.lock().await.remove(&request_id);
@@ -2665,6 +2802,7 @@ async fn dispatch_tool(
         session.collaboration_v2,
         &session.permission,
         session.native_delegation,
+        session.theme_tools,
     );
     if !catalog
         .as_array()
@@ -2924,6 +3062,7 @@ async fn handle_bridge_request(
                 session.collaboration_v2,
                 &session.permission,
                 session.native_delegation,
+                session.theme_tools,
             );
             json!({ "ok": true, "result": { "instructions": bridge_instructions(&tools, &session.provider), "tools": tools } })
         }),
@@ -3001,6 +3140,7 @@ fn reusable_managed_child_launch(
         || &existing.project_path != project_path
         || existing.terminal_scope != options.project_path
         || existing.native_delegation != options.native_delegation
+        || existing.theme_tools != options.theme_tools
         || existing.collaboration_v2 != options.collaboration_v2
         || existing.targets != options.targets
         || existing.max_concurrent != max_concurrent
@@ -3085,6 +3225,9 @@ pub(super) async fn child_agent_session_start(
     if options.collaboration_v2 && (options.child_thread || options.native_delegation) {
         return Err("Managed sub-agent conversations require a managed root thread.".into());
     }
+    if options.theme_tools && options.child_thread {
+        return Err("Sub-agent threads cannot change app themes.".into());
+    }
     if !options.provider.is_empty()
         && !agent_bridge_providers().contains(&options.provider.as_str())
     {
@@ -3124,6 +3267,7 @@ pub(super) async fn child_agent_session_start(
         options.collaboration_v2,
         &options.permission,
         options.native_delegation,
+        options.theme_tools,
     );
     {
         let sessions = state.sessions.lock().await;
@@ -3274,6 +3418,7 @@ pub(super) async fn child_agent_session_start(
             parent_messaging: options.parent_messaging,
             collaboration_v2: options.collaboration_v2,
             native_delegation: options.native_delegation,
+            theme_tools: options.theme_tools,
             provider: options.provider,
             directory,
             launch: launch.clone(),
@@ -4150,4 +4295,281 @@ pub(super) fn run_agent_bridge(session_path: &str) -> i32 {
     // stdout fails. Runtime drop otherwise waits for that reader indefinitely.
     runtime.shutdown_timeout(Duration::ZERO);
     exit_code
+}
+
+#[cfg(test)]
+mod theme_scope_tests {
+    use super::*;
+
+    fn names(catalog: &Value) -> Vec<String> {
+        catalog
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    fn target() -> ChildAgentTarget {
+        serde_json::from_value(json!({ "id": "claude-opus", "provider": "claude", "model": "opus", "label": "Opus" })).unwrap()
+    }
+
+    fn catalog(
+        targets: &[ChildAgentTarget],
+        project: bool,
+        child: bool,
+        permission: &str,
+        native: bool,
+        theme: bool,
+    ) -> Vec<String> {
+        names(&bridge_tool_catalog(targets, &[], 2, project, child, false, false, permission, native, theme))
+    }
+
+    fn has_all_theme_tools(tools: &[String]) -> bool {
+        theme_tools::THEME_TOOLS.iter().all(|tool| tools.iter().any(|name| name == tool))
+    }
+
+    fn has_any_theme_tool(tools: &[String]) -> bool {
+        tools.iter().any(|name| is_theme_tool(name))
+    }
+
+    #[test]
+    fn plain_chat_gets_only_theme_tools_when_switched_on() {
+        let on = catalog(&[], false, false, "ask", false, true);
+        assert_eq!(on, theme_tools::THEME_TOOLS.to_vec());
+        // Without the switch a plain chat has no app scope at all, as before.
+        assert!(catalog(&[], false, false, "ask", false, false).is_empty());
+    }
+
+    #[test]
+    fn theme_tools_are_independent_of_permission_mode() {
+        for permission in ["ask", "read-only", "full"] {
+            assert!(has_all_theme_tools(&catalog(&[], false, false, permission, false, true)), "{permission}");
+            assert!(has_all_theme_tools(&catalog(&[], true, false, permission, false, true)), "{permission}");
+        }
+    }
+
+    #[test]
+    fn project_and_crew_threads_add_theme_tools_to_their_existing_tools() {
+        let project = catalog(&[], true, false, "ask", false, true);
+        for tool in [TOOL_PROPOSE_SETTINGS, TOOL_SET_RUN, TOOL_SET_CHECK, TOOL_LANGUAGE_QUERY] {
+            assert!(project.iter().any(|name| name == tool), "{tool}");
+        }
+        assert!(has_all_theme_tools(&project));
+        let without = catalog(&[], true, false, "ask", false, false);
+        assert!(!has_any_theme_tool(&without));
+        assert_eq!(project.len(), without.len() + 7);
+
+        let crew = catalog(&[target()], false, false, "ask", false, true);
+        assert!(crew.iter().any(|name| name == TOOL_SPAWN));
+        assert!(has_all_theme_tools(&crew));
+    }
+
+    #[test]
+    fn native_delegation_keeps_theme_tools_but_no_crew_controls() {
+        let native = catalog(&[], true, false, "ask", true, true);
+        assert!(has_all_theme_tools(&native));
+        assert!(!native.iter().any(|name| name == TOOL_PROPOSE_SETTINGS || name == TOOL_SPAWN));
+    }
+
+    #[test]
+    fn child_threads_never_get_theme_tools() {
+        assert!(!has_any_theme_tool(&catalog(&[], true, true, "full", false, true)));
+        let mailbox = names(&bridge_tool_catalog(&[], &[], 1, false, true, true, false, "ask", false, true));
+        assert_eq!(mailbox, vec![TOOL_MESSAGE_PARENT.to_string(), TOOL_READ_PARENT.to_string()]);
+    }
+
+    #[test]
+    fn instructions_mention_themes_only_when_offered() {
+        let with = bridge_tool_catalog(&[], &[], 1, false, false, false, false, "ask", false, true);
+        assert!(bridge_instructions(&with, "openai").contains("get_theme_design_kit"));
+        let without = bridge_tool_catalog(&[], &[], 1, true, false, false, false, "ask", false, false);
+        assert!(!bridge_instructions(&without, "openai").contains("theme"));
+    }
+
+    #[test]
+    fn validate_tool_call_routes_theme_tools_to_their_shape_checks() {
+        assert_eq!(validate_tool_call(&[], &HashSet::new(), "list_custom_themes", &json!({})), Ok(()));
+        assert!(validate_tool_call(&[], &HashSet::new(), "apply_custom_theme", &json!({})).is_err());
+        assert!(validate_tool_call(&[], &HashSet::new(), "delete_custom_theme", &json!({})).is_err());
+    }
+
+    struct Fixture {
+        state: ChildAgentState,
+        config_path: String,
+        session_file: String,
+        directory: PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    async fn fixture(theme_tools: bool, child_thread: bool, provider: &str, permission: &str) -> Fixture {
+        let directory = std::env::temp_dir().join(format!("mythra-theme-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let url = "http://127.0.0.1:9/test".to_string();
+        let token = "a".repeat(64);
+        let session_file = directory.join("session.json");
+        let config_path = directory.join("mcp.json");
+        let launch = ChildAgentBridgeLaunch {
+            name: AGENT_BRIDGE_SERVER.into(),
+            registration_id: "registration".into(),
+            command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code".into(),
+            args: vec![AGENT_BRIDGE_ARG.into(), session_file.to_string_lossy().to_string()],
+            config_path: config_path.to_string_lossy().to_string(),
+            tool_names: Vec::new(),
+        };
+        std::fs::write(&session_file, serde_json::to_string(&BridgeSessionFile {
+            url: url.clone(), session_token: token.clone(), session_id: "session".into(), instructions: String::new(),
+        }).unwrap()).unwrap();
+        std::fs::write(&config_path, json!({ "mcpServers": { AGENT_BRIDGE_SERVER: {
+            "type": "stdio", "command": launch.command, "args": launch.args,
+        } } }).to_string()).unwrap();
+        let state = ChildAgentState::default();
+        *state.server.lock().await = Some(BridgeServer {
+            url,
+            task: tokio::spawn(std::future::pending::<()>()),
+        });
+        state.sessions.lock().await.insert("session".into(), Arc::new(ChildAgentSession {
+            session_id: "session".into(),
+            registration_id: "registration".into(),
+            session_token: token,
+            targets: Vec::new(),
+            model_guidance: Vec::new(),
+            max_concurrent: 1,
+            project_path: None,
+            terminal_scope: None,
+            permission: permission.into(),
+            child_thread,
+            parent_messaging: child_thread,
+            collaboration_v2: false,
+            native_delegation: false,
+            theme_tools,
+            provider: provider.into(),
+            directory: directory.clone(),
+            launch,
+            runtime: Arc::new(Mutex::new(SessionRuntime::default())),
+            ended: watch::channel(false).0,
+            query_ended: watch::channel(false).0,
+        }));
+        Fixture {
+            state,
+            config_path: config_path.to_string_lossy().to_string(),
+            session_file: session_file.to_string_lossy().to_string(),
+            directory,
+        }
+    }
+
+    fn can_use_tool(tool: &str, input: Value) -> Value {
+        json!({ "type": "control_request", "request_id": "req-1", "request": {
+            "subtype": "can_use_tool", "tool_name": tool, "input": input,
+        } })
+    }
+
+    #[tokio::test]
+    async fn claude_theme_requests_are_allowed_for_the_exact_root_bridge_in_every_mode() {
+        for permission in ["ask", "read-only"] {
+            let fixture = fixture(true, false, "claude", permission).await;
+            let message = can_use_tool("mcp__mythra_agents__create_custom_theme", json!({
+                "name": "Nebula", "base": "mythra", "tokens": { "bg": "#111", "text": "#eee", "accent": "#b794ff" },
+            }));
+            let response = child_agent_bridge_theme_control_response(
+                &fixture.state, &fixture.config_path, permission, "/tmp", &message,
+            ).await.expect("theme tool allowed");
+            assert_eq!(response["response"]["request_id"], "req-1");
+            assert_eq!(response["response"]["response"]["behavior"], "allow");
+            assert_eq!(response["response"]["response"]["updatedInput"]["name"], "Nebula");
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_theme_allow_refuses_everything_else() {
+        let fixture = fixture(true, false, "claude", "ask").await;
+        let allow = |message: Value, config: String, permission: &'static str| {
+            let state = &fixture.state;
+            async move { child_agent_bridge_theme_control_response(state, &config, permission, "/tmp", &message).await }
+        };
+        let good = json!({});
+        // Not a theme tool, or not exactly the bridge's spelling.
+        assert!(allow(can_use_tool("mcp__mythra_agents__spawn_mythra_agent", good.clone()), fixture.config_path.clone(), "ask").await.is_none());
+        assert!(allow(can_use_tool("mcp__other__list_custom_themes", good.clone()), fixture.config_path.clone(), "ask").await.is_none());
+        assert!(allow(can_use_tool("Bash", json!({ "command": "ls" })), fixture.config_path.clone(), "ask").await.is_none());
+        // Malformed arguments fall through to the normal prompt.
+        assert!(allow(can_use_tool("mcp__mythra_agents__apply_custom_theme", json!({})), fixture.config_path.clone(), "ask").await.is_none());
+        // A sub-agent's request inside this turn is not the root's.
+        let mut nested = can_use_tool("mcp__mythra_agents__list_custom_themes", good.clone());
+        nested["parent_tool_use_id"] = json!("toolu_1");
+        assert!(allow(nested, fixture.config_path.clone(), "ask").await.is_none());
+        // Another config path or a different permission is another turn.
+        assert!(allow(can_use_tool("mcp__mythra_agents__list_custom_themes", good.clone()), "/tmp/other/mcp.json".into(), "ask").await.is_none());
+        assert!(allow(can_use_tool("mcp__mythra_agents__list_custom_themes", good.clone()), fixture.config_path.clone(), "full").await.is_none());
+        // Positive control for the same fixture.
+        assert!(allow(can_use_tool("mcp__mythra_agents__list_custom_themes", good.clone()), fixture.config_path.clone(), "ask").await.is_some());
+        // An altered private config is not the registered bridge.
+        std::fs::write(&fixture.config_path, "{}").unwrap();
+        assert!(allow(can_use_tool("mcp__mythra_agents__list_custom_themes", good), fixture.config_path.clone(), "ask").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn claude_theme_allow_needs_a_live_theme_scoped_root() {
+        let off = fixture(false, false, "claude", "ask").await;
+        let message = can_use_tool("mcp__mythra_agents__list_custom_themes", json!({}));
+        assert!(child_agent_bridge_theme_control_response(&off.state, &off.config_path, "ask", "/tmp", &message).await.is_none());
+        let child = fixture(true, true, "claude", "ask").await;
+        assert!(child_agent_bridge_theme_control_response(&child.state, &child.config_path, "ask", "/tmp", &message).await.is_none());
+        let ended = fixture(true, false, "claude", "ask").await;
+        ended.state.sessions.lock().await["session"].ended.send_replace(true);
+        assert!(child_agent_bridge_theme_control_response(&ended.state, &ended.config_path, "ask", "/tmp", &message).await.is_none());
+        // The mailbox auto-allow keeps its own, narrower scope.
+        let mailbox = can_use_tool("mcp__mythra_agents__message_parent", json!({ "message": "hi" }));
+        let root = fixture(true, false, "claude", "ask").await;
+        assert!(child_agent_bridge_mailbox_control_response(&root.state, &root.config_path, "ask", "/tmp", &mailbox).await.is_none());
+        let mailbox_child = fixture(false, true, "claude", "ask").await;
+        assert!(child_agent_bridge_mailbox_control_response(&mailbox_child.state, &mailbox_child.config_path, "ask", "/tmp", &mailbox).await.is_some());
+    }
+
+    fn cursor_request(title: &str, kind: Option<&str>, raw_input: Option<Value>) -> Value {
+        let mut tool_call = json!({ "toolCallId": "call-1", "title": title });
+        if let Some(kind) = kind {
+            tool_call["kind"] = json!(kind);
+        }
+        if let Some(raw_input) = raw_input {
+            tool_call["rawInput"] = raw_input;
+        }
+        json!({ "sessionId": "acp", "toolCall": tool_call, "options": [
+            { "optionId": "once", "kind": "allow_once", "name": "Allow" },
+            { "optionId": "reject", "kind": "reject_once", "name": "Reject" },
+        ] })
+    }
+
+    #[tokio::test]
+    async fn cursor_theme_permissions_need_title_input_and_the_turns_bridge() {
+        let fixture = fixture(true, false, "cursor", "read-only").await;
+        let args = vec![AGENT_BRIDGE_ARG.to_string(), fixture.session_file.clone()];
+        let allowed = |params: Value, args: Vec<String>| {
+            let state = &fixture.state;
+            async move { child_agent_bridge_theme_permission_allowed(state, &args, &params).await }
+        };
+        assert!(allowed(cursor_request("mythra_agents: list_custom_themes", None, Some(json!({}))), args.clone()).await);
+        assert!(allowed(cursor_request("mythra_agents.apply_custom_theme", Some("other"), Some(json!({ "builtInTheme": "kiwi" }))), args.clone()).await);
+        // No arguments to check, a non-MCP kind, bad arguments, or another tool.
+        assert!(!allowed(cursor_request("mythra_agents: list_custom_themes", None, None), args.clone()).await);
+        assert!(!allowed(cursor_request("mythra_agents: list_custom_themes", Some("execute"), Some(json!({}))), args.clone()).await);
+        assert!(!allowed(cursor_request("mythra_agents: list_custom_themes", None, Some(json!({ "command": "ls" }))), args.clone()).await);
+        assert!(!allowed(cursor_request("mythra_agents: spawn_mythra_agent", None, Some(json!({}))), args.clone()).await);
+        assert!(!allowed(cursor_request("rm -rf mythra_agents.list_custom_themes", Some("execute"), Some(json!({}))), args.clone()).await);
+        // Another bridge, or no bridge, never qualifies.
+        assert!(!allowed(cursor_request("mythra_agents: list_custom_themes", None, Some(json!({}))), vec![AGENT_BRIDGE_ARG.into(), "/tmp/x/session.json".into()]).await);
+        assert!(!allowed(cursor_request("mythra_agents: list_custom_themes", None, Some(json!({}))), Vec::new()).await);
+        let off = fixture_off_cursor().await;
+        let off_args = vec![AGENT_BRIDGE_ARG.to_string(), off.session_file.clone()];
+        assert!(!child_agent_bridge_theme_permission_allowed(&off.state, &off_args, &cursor_request("mythra_agents: list_custom_themes", None, Some(json!({})))).await);
+    }
+
+    async fn fixture_off_cursor() -> Fixture {
+        fixture(false, false, "cursor", "ask").await
+    }
 }

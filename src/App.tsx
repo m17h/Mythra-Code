@@ -28,7 +28,14 @@ import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { loadStored, readStoredRaw, storeValue, subscribeRemoteStateAdoption } from "./lib/storage";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeParentFollowUpLimit, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeParentFollowUpLimit, sanitizeTerminalTimeoutMinutes, sanitizeThemeId, customThemeIdOf, themeColorScheme } from "./lib/appConfig";
+import { checkBootGuard, claimPendingThemeDesigner, themeDesignerPurpose, resolveThemeSetting, setPendingThemeDesigner, useCustomThemes, armBootGuard, getCustomTheme } from "./lib/customThemes/store";
+import { useCustomThemeHost, type ThemeToastAction } from "./hooks/useCustomThemeHost";
+import "./components/AppToastActions.css";
+import { CustomThemeStyle } from "./components/CustomThemeStyle";
+import { ThemeEffectsLayer } from "./components/ThemeEffectsLayer";
+import { useThemeMotionGate } from "./lib/customThemes/motion";
+import type { ThemeDesignerChoice } from "./components/CustomThemesSettings";
 import { modelCatalogRecentlyRefreshed, shareModelRefresh, type ModelRefreshState } from "./lib/modelCatalogRefresh";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { searchLocalTranscripts, threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
@@ -112,7 +119,7 @@ import {
   markPullRequestReady,
   mergePullRequest,
 } from "./lib/pullRequests";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, ChildAgentTarget, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, SettingsSection, SubagentEngine, Thread, ThreadHandoff, ThreadReasoning, ThreadSubagentSettings, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, ChildAgentTarget, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, SettingsSection, SubagentEngine, Thread, ThreadHandoff, ThreadReasoning, ThreadSubagentSettings, ThemeId, WorkspaceMode } from "./types";
 import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts, pendingTurnStartRevision } from "./lib/pendingTurnStarts";
@@ -266,7 +273,7 @@ import { reorderProjects, sortProjectsByPin, toggleProjectPinned, type ProjectDr
 import { containTab, reachableFocusables } from "./hooks/useModalFocus";
 import { useTopbarFit } from "./hooks/useTopbarFit";
 import { attentionIdsFromKey, attentionThreadKey, countAttentionByWorkspace, projectIndicator } from "./lib/sidebarAttention";
-import { WorkingIndicator } from "./components/WorkingIndicator";
+import { PixelWorkingMark } from "./components/PixelWorkingMark";
 import { TOPBAR_SHED_PULL_REQUESTS, TOPBAR_SHED_SHORT_STATUS, TOPBAR_SHED_USAGE, topbarStatusLabel } from "./lib/topbarFit";
 import {
   deleteCheckpointSnapshot,
@@ -605,7 +612,16 @@ const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !
 const rawStoredSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const storedSettings = { ...rawStoredSettings, defaultModelExplicit: rawStoredSettings.defaultModelExplicit === true, warnOnMaxReasoning: rawStoredSettings.warnOnMaxReasoning !== false, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true, automaticGitInitialization: rawStoredSettings.automaticGitInitialization === true, transcription: sanitizeTranscriptionSettings(rawStoredSettings.transcription) };
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), parentFollowUpLimit: sanitizeParentFollowUpLimit(storedSettings.parentFollowUpLimit), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), subagentModelGuidance: sanitizeSubagentModelGuidance(storedSettings.subagentModelGuidance), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), parentFollowUpLimit: sanitizeParentFollowUpLimit(storedSettings.parentFollowUpLimit), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), subagentModelGuidance: sanitizeSubagentModelGuidance(storedSettings.subagentModelGuidance), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeThemeId(storedSettings.theme), themeMotion: storedSettings.themeMotion === "paused" ? "paused" : "on", themePauseInBackground: storedSettings.themePauseInBackground !== false, customThemeTools: storedSettings.customThemeTools !== false, themeDesignerProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.themeDesignerProvider ?? "") ? storedSettings.themeDesignerProvider : undefined, themeDesignerModel: typeof storedSettings.themeDesignerModel === "string" ? storedSettings.themeDesignerModel.slice(0, 160) : undefined, effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+// Safe mode: a custom theme the last launch never finished drawing with
+// starts switched off. Then the theme this launch is about to draw is armed
+// before the first render, so a crash while drawing it is caught next time.
+const bootSafeModeThemeId = checkBootGuard();
+{
+  const initialCustomTheme = customThemeIdOf(initialSettings.theme);
+  const record = initialCustomTheme ? getCustomTheme(initialCustomTheme) : undefined;
+  if (record && !record.disabledReason) armBootGuard(record.id, record.head);
+}
 
 /**
  * Claude/Cursor transcripts flow memory → disk on a debounced save, so the
@@ -919,6 +935,7 @@ export default function App() {
   const gitInitializingPathRef = useRef<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<"success" | "info">("success");
+  const [toastActions, setToastActions] = useState<ThemeToastAction[] | null>(null);
   const successToastTimerRef = useRef<number | null>(null);
   const toastRef = useRef<HTMLDivElement | null>(null);
   const mountToast = useCallback((node: HTMLDivElement | null) => {
@@ -927,7 +944,13 @@ export default function App() {
   }, []);
   const [worktreeStatus, setWorktreeStatus] = useState<WorktreeStatus | null>(null);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
-  const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
+  const [previewTheme, setPreviewTheme] = useState<ThemeId | null>(null);
+  // Filled once the theme host below is set up; the keyboard layer and view
+  // boundaries are declared earlier in this component.
+  const resetThemeRef = useRef<(reason?: "shortcut" | "palette" | "tray") => void>(() => {});
+  const reportThemeRenderErrorRef = useRef<() => void>(() => {});
+  const customThemeLibrary = useCustomThemes();
+  const [themeDesignerRequest, setThemeDesignerRequest] = useState<ThemeDesignerChoice | null>(null);
   const [previewEffortSlider, setPreviewEffortSlider] = useState<EffortSliderStyle | null>(null);
   const [previewChatFont, setPreviewChatFont] = useState<ChatFont | null>(null);
   // Custom chat fonts (Settings > Appearance), persisted per device.
@@ -2237,7 +2260,7 @@ export default function App() {
     }
   }, []);
 
-  const showToast = useCallback((message: string, kind: "success" | "info") => {
+  const showToast = useCallback((message: string, kind: "success" | "info", options?: { actions?: ThemeToastAction[]; durationMs?: number }) => {
     if (successToastTimerRef.current !== null) {
       window.clearTimeout(successToastTimerRef.current);
     }
@@ -2246,10 +2269,12 @@ export default function App() {
     toastRef.current?.showPopover?.();
     setSuccessToast(message);
     setToastKind(kind);
+    setToastActions(options?.actions?.length ? options.actions : null);
     successToastTimerRef.current = window.setTimeout(() => {
       setSuccessToast(null);
+      setToastActions(null);
       successToastTimerRef.current = null;
-    }, 4_500);
+    }, options?.durationMs ?? 4_500);
   }, []);
   const showSuccessToast = useCallback((message: string) => showToast(message, "success"), [showToast]);
   useEffect(() => {
@@ -2280,6 +2305,7 @@ export default function App() {
       successToastTimerRef.current = null;
     }
     setSuccessToast(null);
+    setToastActions(null);
   }, []);
 
   const {
@@ -5413,7 +5439,7 @@ export default function App() {
           <span className="workspace-attention-count" title={indicator.title} aria-hidden="true"><Hand size={11} />{indicator.count}</span>
         )}
         {indicator?.kind === "working" && (
-          <span className="workspace-working-count" title={indicator.title} aria-hidden="true"><WorkingIndicator size={11} />{indicator.count > 1 && <b>{indicator.count}</b>}</span>
+          <span className="workspace-working-count" title={indicator.title} aria-hidden="true"><PixelWorkingMark />{indicator.count > 1 && <b>{indicator.count}</b>}</span>
         )}
       </>}
       menu={[
@@ -5832,8 +5858,11 @@ export default function App() {
       // with the fast view-only read. The promise is handled immediately to
       // avoid a transient unhandled rejection while history wins the race.
       const historyReadBoundary = captureHistoryReadBoundary(useTaskStore.getState().tasks[thread.id]);
-      const childBridgePromise = activeProject || childAgentLinksRef.current[thread.id] ? ensureChildAgentBridge({
+      // Plain chats get a bridge too while theme tools are on (they need no project).
+      const themeToolsEnabled = settingsRef.current.customThemeTools !== false && !threadIsChild && !useTaskStore.getState().workflowOwners[thread.id];
+      const childBridgePromise = activeProject || childAgentLinksRef.current[thread.id] || themeToolsEnabled ? ensureChildAgentBridge({
         provider: threadProviderSettings.provider,
+        themeToolsEnabled,
         ...(activeProject ? { projectPath: executionPath } : {}),
         threadId: thread.id,
         policies: childAgentPolicies,
@@ -5958,7 +5987,7 @@ export default function App() {
         }
       }
       if (!ownsSelection()) return;
-      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { perTurnSystemPrompt: true, projectRunCommand: activeProject?.overrides?.run ?? null, projectCheckCommand: activeProject?.overrides?.check ?? null, customAgents, modelContextWindow: resumedModelContextWindow, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
+      const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { perTurnSystemPrompt: true, projectRunCommand: activeProject?.overrides?.run ?? null, projectCheckCommand: activeProject?.overrides?.check ?? null, customAgents, modelContextWindow: resumedModelContextWindow, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true , codexVersion: runtimeStatus?.runningVersion ?? runtimeStatus?.version ?? null, themeDesigner: themeDesignerPurpose(thread.id) !== null });
       if (isolation?.status !== "missing" && isolation?.status !== "removed" && !capabilityRefreshDeferred) {
         const resumed = await rpc<{ thread: Thread; runtimeInstance: string }>("thread/resume", { ...resumeParams, excludeTurns: true });
         if (!ownsSelection()) return;
@@ -6145,6 +6174,8 @@ export default function App() {
     setDraftThreadProvider(null);
     setDraftThreadModel(null);
     setDraftThreadIsolated(false);
+    // An ordinary new thread is not a theme-designer draft.
+    setPendingThemeDesigner(null);
     if (pendingHandoff) composerRef.current?.setDraft("");
     setPendingHandoff(null);
     setError(null);
@@ -6227,6 +6258,8 @@ export default function App() {
   const handleThreadCreated = useCallback((threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean; subagentEngine?: SubagentEngine; nativeSubagentMax?: number; nativeSubagentOptions?: import("./types").NativeSubagentOptions; autoCompactTokens?: number }) => {
     // This callback is captured with the sending draft, even if the user
     // navigates while provider preparation is in flight.
+    // A draft opened from "Design a theme with AI" stays a designer thread.
+    if (!options?.deferred) claimPendingThemeDesigner(threadId);
     persistThreadSubagentSettings((current) => ({ ...current, [threadId]: {
       enabled: options?.subagentsEnabled ?? effectiveSettings.subagentsEnabled,
       engine: sanitizeSubagentEngine(options?.subagentEngine ?? effectiveSettings.subagentEngine),
@@ -9429,6 +9462,7 @@ export default function App() {
       if (activeApprovalWaiting) focusApprovalRequest();
       else showToast("Nothing in this thread is waiting for approval.", "info");
     },
+    resetTheme: () => resetThemeRef.current("shortcut"),
   });
   /** Things Settings can start only happen on this device, which isn't on
    * screen. Saying so beats a button that does nothing. */
@@ -10119,7 +10153,63 @@ export default function App() {
   const activeChatFont = requestedChatFont.startsWith("custom:") && !activeCustomFonts.length ? "system" : requestedChatFont;
   // Onboarding edits the app-wide look. Show that look even when the active
   // project has its own theme, without overwriting the project's saved choice.
-  const activeTheme = previewTheme ?? (onboardingOpen ? settings.theme : projectDefaults?.theme ?? settings.theme);
+  // A project's custom theme that was deleted falls back to the global theme.
+  const projectThemeCustom = customThemeIdOf(projectDefaults?.theme);
+  const projectTheme = projectThemeCustom && !customThemeLibrary.themes.some((record) => record.id === projectThemeCustom) ? undefined : projectDefaults?.theme;
+  const effectiveTheme: ThemeId = onboardingOpen ? settings.theme : projectTheme ?? settings.theme;
+  const activeTheme = previewTheme ?? effectiveTheme;
+  // The shell renders on a built-in theme; a custom theme draws on top of its base.
+  const resolvedTheme = resolveThemeSetting(activeTheme, customThemeLibrary);
+  const activeBaseTheme = resolvedTheme.base;
+  const activeCustomTheme = resolvedTheme.custom;
+  const activeCustomSpec = activeCustomTheme ? activeCustomTheme.revisions.find((revision) => revision.n === activeCustomTheme.head)?.spec ?? null : null;
+  const themeMotion = useThemeMotionGate({
+    userPaused: settings.themeMotion === "paused",
+    themeMotion: activeCustomSpec?.motion?.enabled !== false,
+    pauseInBackground: settings.themePauseInBackground !== false,
+  }).motion;
+  const activeThemeEffects = activeCustomSpec ? Object.keys(activeCustomSpec.effects ?? {}).filter((key) => (activeCustomSpec.effects as Record<string, unknown>)[key]).join(" ") : "";
+  const { resetTheme, reportRenderError: reportThemeRenderError } = useCustomThemeHost({
+    settingsRef,
+    persistSettings: (update) => persistSettings((current) => update(current)),
+    projectsRef,
+    setProjects: (update) => setProjects((current) => update(current)),
+    projectForThread,
+    activeProjectId: workspaceMode === "project" ? activeProjectId : null,
+    effectiveTheme,
+    appliedCustom: previewTheme === null ? activeCustomTheme : null,
+    setPreviewTheme,
+    threadForSession: (sessionId) => childAgentPolicyForSession(childAgentPoliciesRef.current, sessionId)?.rootThreadId || undefined,
+    threadModel: (threadId) => {
+      const thread = knownThreadsRef.current?.[threadId] as Pick<Thread, "modelProvider"> | undefined;
+      return { provider: thread ? providerFromThread(thread, settingsRef.current.provider) : undefined, model: threadModelsRef.current[threadId] };
+    },
+    showToast: (message, options) => showToast(message, options?.kind ?? "info", options),
+    openCustomThemes: () => openSettings("appearance", { row: "appearance.custom-themes" }),
+    bootSafeModeThemeId,
+  });
+  resetThemeRef.current = resetTheme;
+  reportThemeRenderErrorRef.current = reportThemeRenderError;
+  // "Design a theme with AI": once Chats is on screen, open a fresh draft on
+  // the chosen model with the designer purpose and a prefilled message.
+  useEffect(() => {
+    if (!themeDesignerRequest || workspaceMode !== "chat" || settingsOpen) return;
+    const choice = themeDesignerRequest;
+    setThemeDesignerRequest(null);
+    newThread();
+    setDraftThreadProvider(choice.provider === projectDefaultProvider ? null : choice.provider);
+    setDraftThreadModel(choice.model);
+    setPendingThemeDesigner(choice.targetThemeId ? { targetThemeId: choice.targetThemeId } : {});
+    const target = choice.targetThemeId ? getCustomTheme(choice.targetThemeId) : undefined;
+    const targetName = target?.revisions.find((revision) => revision.n === target.head)?.spec.name;
+    const prompt = targetName ? `Adjust my “${targetName}” theme: ` : "Design a Mythra Code theme: ";
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      composerRef.current?.setDraft(prompt);
+      composerRef.current?.focus();
+    }));
+    // newThread and the draft setters are render-scope functions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [themeDesignerRequest, workspaceMode, settingsOpen]);
   const activeEffortSlider = previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider;
   // Let the tour's local preview be the only styled slider ancestor. The
   // obscured app restores its style when the tour closes or hands off to Settings.
@@ -10258,6 +10348,10 @@ export default function App() {
     ...(remoteActive || activeProject ? [{ id: "toggle-workspace", label: (remoteActive ? remoteStudioOpen : studioOpen) ? "Hide Tools" : "Show Tools", icon: PanelRight, shortcut: formatShortcut("toggleWorkspace"),
       run: () => { if (remoteActive) setRemoteStudioOpen((open) => !open); else if (studioOpen) setStudioOpen(false); else openStudio(studioTab); } }] : []),
     { id: "shortcuts", label: "Keyboard shortcuts", icon: Keyboard, shortcut: formatShortcut("shortcuts"), run: () => setShortcutsOpen(true) },
+    { id: "reset-theme", label: "Reset to default theme", detail: "Switches back to Mythra", group: "Appearance", icon: RotateCcw, shortcut: formatShortcut("resetTheme"), keywords: "use default theme reset safe mythra unreadable", run: () => resetThemeRef.current("palette") },
+    ...(customThemeLibrary.themes.length ? [{ id: "theme-motion", label: settings.themeMotion === "paused" ? "Resume theme animations" : "Pause theme animations", group: "Appearance", icon: settings.themeMotion === "paused" ? Circle : CircleStop, keywords: "motion animation custom theme",
+      run: () => persistSettings((current) => ({ ...current, themeMotion: current.themeMotion === "paused" ? "on" : "paused" })) }] : []),
+    { id: "custom-themes", label: "Custom themes", detail: "Settings > Appearance", group: "Appearance", icon: Settings, keywords: "design theme ai colours look", run: () => openSettings("appearance", { row: "appearance.custom-themes" }) },
     ...(!remoteActive && activeThread ? [
       { id: "thread-rename", label: "Rename thread", group: "Thread", icon: Pencil, run: () => {
         showSidebar();
@@ -10287,15 +10381,25 @@ export default function App() {
   }), [settings.warnOnMaxReasoning, attachmentKey, activeWorkspace?.path, effectiveSettings.provider, effectiveSettings.model, settingsOpen]);
 
   return (
-    <div className="app-shell" data-machine-phase={machinePhase === "idle" ? undefined : machinePhase} onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-model-provider={effectiveSettings.provider} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100, ...(activeChatFont.startsWith("custom:") ? { "--chat-font": chatFontCss(activeChatFont, customFonts) } : {}) } as CSSProperties}>
+    <div className="app-shell" data-machine-phase={machinePhase === "idle" ? undefined : machinePhase} onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeBaseTheme} data-color-scheme={themeColorScheme(activeBaseTheme)} data-custom-theme={activeCustomTheme?.id} data-theme-motion={activeCustomTheme ? themeMotion : undefined} data-ct-fx={activeThemeEffects || undefined} data-model-provider={effectiveSettings.provider} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100, ...(activeChatFont.startsWith("custom:") ? { "--chat-font": chatFontCss(activeChatFont, customFonts) } : {}) } as CSSProperties}>
+      {/* A custom theme's styles and its effects layer (first child of the
+          shell, behind every pane). Its own boundary: a failure here switches
+          the theme off instead of taking the window down. */}
+      <ErrorBoundary label="theme effects" showError={false} onError={() => reportThemeRenderErrorRef.current()}>
+        <CustomThemeStyle spec={activeCustomSpec} id={activeCustomTheme?.id} revision={activeCustomTheme?.head} />
+        <ThemeEffectsLayer spec={activeCustomSpec} id={activeCustomTheme?.id} motion={themeMotion} />
+      </ErrorBoundary>
       <RendererLaunchCommitMarker />
       <MaxReasoningWarningContext.Provider value={maxReasoningWarning}>
       <FeedbackProvider enabled={(remoteActive ? Boolean(remoteFeedbackScope) : Boolean(activeThread)) && !settingsOpen && !onboardingOpen} scopeKey={remoteActive ? remoteFeedbackScope ?? "" : feedbackScope} onAdd={(anchor, comment) => remoteActive ? addRemoteFeedback(anchor, comment) : Boolean(feedback.addNote(anchor, comment))}>
       {remoteUi && <remoteUi.RemoteNotices />}
       {successToast && (
-        <div ref={mountToast} popover={typeof HTMLElement.prototype.showPopover === "function" ? "manual" : undefined} className={`app-toast ${toastKind}`} role="status" aria-live="polite">
+        <div ref={mountToast} popover={typeof HTMLElement.prototype.showPopover === "function" ? "manual" : undefined} className={`app-toast ${toastKind}`} role="status" aria-live="polite" data-overlay-exempt="">
           <span className="app-toast-icon">{toastKind === "success" ? <Check size={14} strokeWidth={2.5} /> : <MessageSquare size={14} />}</span>
           <span>{successToast}</span>
+          {toastActions && <span className="app-toast-actions">
+            {toastActions.map((action) => <button type="button" key={action.label} onClick={() => { dismissSuccessToast(); action.run(); }}>{action.label}</button>)}
+          </span>}
           <button onClick={dismissSuccessToast} aria-label="Dismiss notification">
             <X size={13} />
           </button>
@@ -10603,7 +10707,7 @@ export default function App() {
               const detail = awaitingApproval ? "This thread is waiting for you to allow or deny a request." : openFailed ? `“${threadLoadFailure?.title}” couldn’t be opened. Retry from the message in the conversation.` : setupNeeded ? `${providerLabel(activeProvider)} needs ${setupNeeded}, which isn’t installed on this computer.` : parentRunStatus ? parentRunStatus.title : childrenStatusUnknown && !running && !childrenWorking ? "A sub-agent's current status has not been confirmed." : status;
               // Approval and setup are both amber actions, so each has its own
               // shape as well as its own word: a raised hand vs. a wrench.
-              const icon = awaitingApproval ? <Hand size={13} aria-hidden="true" /> : setupNeeded ? <Wrench size={13} aria-hidden="true" /> : openFailed ? <CircleAlert size={13} aria-hidden="true" /> : (running || childrenWorking) && parentRunStatus?.kind !== "paused" ? <WorkingIndicator size={13} /> : <Circle size={8} fill="currentColor" aria-hidden="true" />;
+              const icon = awaitingApproval ? <Hand size={13} aria-hidden="true" /> : setupNeeded ? <Wrench size={13} aria-hidden="true" /> : openFailed ? <CircleAlert size={13} aria-hidden="true" /> : (running || childrenWorking) && parentRunStatus?.kind !== "paused" ? <PixelWorkingMark /> : <Circle size={8} fill="currentColor" aria-hidden="true" />;
               // Both states ask something of the person, so both are buttons:
               // one moves focus to the request (never answers it), the other
               // opens the install guide for the missing runtime.
@@ -10921,7 +11025,7 @@ export default function App() {
                   )}
                 </div>
               ) : (
-                <ErrorBoundary label="conversation" key={timelineView.attempt} resetKey={activeThreadId} onRetry={() => setTimelineView((current) => ({ View: lazy(loadChatTimeline), attempt: current.attempt + 1 }))}>
+                <ErrorBoundary label="conversation" key={timelineView.attempt} resetKey={activeThreadId} onError={() => reportThemeRenderErrorRef.current()} onRetry={() => setTimelineView((current) => ({ View: lazy(loadChatTimeline), attempt: current.attempt + 1 }))}>
                   <Suspense
                     fallback={
                       firstPromptLoadingFallback
@@ -10952,7 +11056,7 @@ export default function App() {
                   </div>
                 </div>
               )}
-              <ErrorBoundary label="composer" resetKey={attachmentKey}>
+              <ErrorBoundary label="composer" resetKey={attachmentKey} onError={() => reportThemeRenderErrorRef.current()}>
               <Composer
                 ref={composerRef}
                 threadKey={attachmentKey}
@@ -11415,6 +11519,29 @@ export default function App() {
           }
         }}
         onThemePreview={setPreviewTheme}
+        onDesignTheme={(choice) => {
+          persistSettings((current) => ({ ...current, themeDesignerProvider: choice.provider, themeDesignerModel: choice.model }));
+          closeSettings();
+          setWorkspaceMode("chat");
+          setThemeDesignerRequest(choice);
+        }}
+        onCustomThemeDeleted={(deleted) => {
+          const name = deleted.record.revisions.find((revision) => revision.n === deleted.record.head)?.spec.name ?? "the theme";
+          const setting: ThemeId = `custom:${deleted.record.id}`;
+          showToast(`Deleted “${name}”`, "info", { durationMs: 10_000, actions: [{ label: "Undo", run: () => {
+            if (!deleted.restore()) { showToast(`“${name}” couldn't be restored: the theme limit is reached.`, "info"); return; }
+            if (deleted.wasSelected) {
+              persistSettings((current) => ({ ...current, theme: setting }));
+              // Settings may still be previewing the base it fell back to.
+              setPreviewTheme((preview) => preview === null ? null : setting);
+            }
+            if (deleted.projectIds.length) setProjects((current) => current.map((project) => {
+              const defaults = project.overrides?.defaults;
+              if (!deleted.projectIds.includes(project.id) || !defaults) return project;
+              return { ...project, overrides: { ...(project.overrides ?? {}), defaults: { ...defaults, theme: setting } } };
+            }));
+          } }] });
+        }}
         onEffortSliderPreview={setPreviewEffortSlider}
         onChatFontPreview={setPreviewChatFont}
         onUiScalePreview={setPreviewUiScale}
