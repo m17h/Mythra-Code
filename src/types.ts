@@ -18,6 +18,12 @@ export type ClaudeLogoStyle = "claude" | "anthropic";
 export type CursorLogoStyle = "cube" | "app-dark";
 export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "synthwave" | "atari";
+/** A custom theme's id in the per-device library (lib/customThemes/store.ts): `ct_` + 10 of [a-z0-9]. */
+export type CustomThemeId = `ct_${string}`;
+/** What a theme setting stores: a built-in theme, or `custom:<id>` from the custom theme library. */
+export type ThemeId = ThemeName | `custom:${CustomThemeId}`;
+/** "paused" stops every custom-theme animation; absent means "on". */
+export type ThemeMotionSetting = "on" | "paused";
 export type EffortSliderStyle = "studio" | "pixel" | "aurora" | "astra" | "ink" | "reactor" | "comet" | "coil" | "poet";
 /** Typeface family used for chat prose and the composer: a built-in stack
  * (styles.css --chat-font-<id>) or `custom:<id>` from the custom font library
@@ -49,8 +55,9 @@ export interface ProjectPromptProfile {
 export interface ProjectDefaults {
   provider: Provider;
   model: string;
-  /** Omitted appearance values continue to follow the global setting. */
-  theme?: ThemeName;
+  /** Omitted appearance values continue to follow the global setting. A
+   * custom theme that no longer exists falls back to the global theme. */
+  theme?: ThemeId;
   effortSlider?: EffortSliderStyle;
   chatFont?: ChatFont;
 }
@@ -590,7 +597,16 @@ export interface AppSettings {
   reasoningEffort: ReasoningEffort;
   ultra: boolean;
   serviceTier: string | null;
-  theme: ThemeName;
+  theme: ThemeId;
+  /** Custom-theme animations. Absent before custom themes: on. */
+  themeMotion?: ThemeMotionSetting;
+  /** Pause custom-theme animations while the window is in the background. Absent: on. */
+  themePauseInBackground?: boolean;
+  /** Theme tools in every conversation. Absent: on. */
+  customThemeTools?: boolean;
+  /** Last model chosen for "Design a theme with AI". */
+  themeDesignerProvider?: Provider;
+  themeDesignerModel?: string;
   /** Visual style of the reasoning-effort sliders. Absent before 1.8.5. */
   effortSlider: EffortSliderStyle;
   /** Typeface for chat prose and the composer. Absent before the font selector shipped. */

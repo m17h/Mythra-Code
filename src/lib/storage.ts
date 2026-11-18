@@ -65,6 +65,8 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.trayStatus",
   "kiwi.performanceOverlay",
   "kiwi.customFonts",
+  "kiwi.customThemes",
+  "kiwi.customThemeBoot",
 ] as const;
 
 /**

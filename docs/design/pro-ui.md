@@ -185,9 +185,10 @@ an amber "Unavailable" status until Retry works or another thread opens. Status 
   (amber hand + count) over threads working (the working mark + count). The
   tooltip and the row's accessible name give both counts.
 - **One working mark.** Anything running (sidebar rows, project rows, the top
-  bar status, the transcript's running digest) uses `WorkingIndicator`, a
-  calm arc in the status ink that holds still under reduced motion. Never a
-  dot grid (it reads as a drag handle) and never a second spinner style.
+  bar status, the transcript's running digest) uses `PixelWorkingMark`, the
+  dot-matrix comet in the status ink that holds still under reduced motion.
+  Owner decision (2026-11-18): never a spinning ring or a second spinner
+  style.
 - **The composer bar keeps its original two-row layout** (owner decision,
   2026-11-18): provider, model and the always-visible reasoning slider (with
   its Fast badge) on the first row; Access, "Sub-agents: N" and Attach on the
@@ -254,3 +255,34 @@ an amber "Unavailable" status until Retry works or another thread opens. Status 
   fades and settles 4px, the chevron turns over the same 240ms, and closing
   plays the same way before the panel is hidden (inert while it leaves).
   First used by Settings → Models & accounts.
+
+## Custom themes
+
+Owner decision (2026-11-18): people can design their own themes, usually by
+asking a model in any chat or through Settings → Appearance → Custom themes →
+"Design a theme with AI". A custom theme is the user's own choice, so it may go
+past this document's restraint rules: glows, gradients, coloured shadows and
+continuous animation are allowed **inside a custom theme**, within the effect
+library's caps (`src/lib/customThemes/effects.ts`) and the customCss
+sanitizer (`sanitizeCss.ts`).
+
+What stays the same:
+
+- The six built-in themes and all app chrome follow the rules above. The
+  Custom themes section in Settings is itself Pro UI: neutral selection,
+  hairline rows, tokens only. Only the mini previews show a theme's own look.
+- Readability is enforced, not suggested: every ink is checked against every
+  surface it sits on (4.5:1 for text), and inks are nudged or the theme is
+  refused. Effects never sit behind panels, menus, fields or code.
+- Motion: no bounce, overshoot, hover lift or press shrink; entrances move at
+  most 6px; nothing flashes faster than 3 times a second. All theme motion
+  stops for `prefers-reduced-motion`, the "Theme animations" switch, a theme's
+  own switch, and (by default) while the window is in the background.
+- `PixelWorkingMark` stays the one working mark, and status words are never
+  hidden or recoloured into the accent.
+- Escape hatches always work, whatever a theme does: ⌘⌥⇧T (Ctrl+Alt+Shift+T),
+  the palette's "Reset to default theme", the tray's "Use default theme", and
+  safe mode (a theme that breaks a launch or a view is switched off and the
+  user is told why).
+- Models can create, adjust, undo and apply themes. Only the user can delete
+  one, in Settings, with a confirmation and a short Undo.

@@ -620,6 +620,8 @@ export async function continueChildAgentTurn(prompt: string, context: ChildFollo
     serviceTier: policy.serviceTier,
     readiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: true, claudeReady: true, cursorReady: true },
     ...(context.projectId ? { projectPath: context.executionPath } : {}),
+    // Sub-agents never change the app's look; only root conversations can.
+    themeToolsEnabled: false,
   });
   assertCanStart();
   const launch = bridge?.launch;

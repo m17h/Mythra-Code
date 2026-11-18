@@ -3,7 +3,7 @@ import { ArrowUpRight, ChevronRight, GitFork } from "lucide-react";
 import type { Provider } from "../types";
 import type { SubAgentParentState } from "../lib/subAgentParents";
 import { ProviderLogo } from "./BrandLogos";
-import { WorkingIndicator } from "./WorkingIndicator";
+import { PixelWorkingMark } from "./PixelWorkingMark";
 import { useTaskStore } from "../lib/taskStore";
 import { workerStatusFromAgentRecord } from "../lib/subAgentActivity";
 
@@ -107,7 +107,7 @@ export function SubAgentParentGroup({
           {providerName && <span className="sr-only">{`, ${providerName} thread`}</span>}
           <span className="subagent-group-count" aria-hidden="true">{count}</span>
           <span className="sr-only">{`, ${countLabel}`}</span>
-          {working > 0 && <span className="subagent-group-activity"><WorkingIndicator size={11} />{working} working</span>}
+          {working > 0 && <span className="subagent-group-activity"><PixelWorkingMark />{working} working</span>}
           {approvals > 0 && <span className="subagent-group-tag">{approvals} need approval</span>}
           {failed > 0 && <span className="subagent-group-tag">{failed} failed</span>}
          </button>

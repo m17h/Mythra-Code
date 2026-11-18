@@ -30,6 +30,14 @@ export interface AppShortcutContext {
   openShortcuts?: () => void;
   /** Moves focus to the active thread's approval card. Never answers it. */
   focusApproval?: () => void;
+  /** The escape hatch from an unreadable custom theme. Works inside dialogs too. */
+  resetTheme?: () => void;
+}
+
+/** ⌘⌥⇧T / Ctrl+Alt+Shift+T. Option changes `event.key` on macOS, so the physical key is read. */
+export function isResetThemeChord(event: Pick<KeyboardEvent, "code" | "key" | "altKey" | "shiftKey" | "metaKey" | "ctrlKey">, platform?: string): boolean {
+  return primaryModifierPressed(event as KeyboardEvent, platform) && event.altKey && event.shiftKey
+    && (event.code === "KeyT" || event.key.toLowerCase() === "t");
 }
 
 /** Shown next to the Tools panel control so the shortcut is discoverable. */
@@ -65,6 +73,19 @@ function digitFromCode(code: string): number | null {
 export function useAppShortcuts(context: AppShortcutContext): void {
   const contextRef = useRef(context);
   contextRef.current = context;
+
+  useEffect(() => {
+    // The theme reset listens in the capture phase, before any menu, dialog or
+    // field can take the key, so an unreadable theme can always be escaped.
+    const onResetTheme = (event: KeyboardEvent) => {
+      if (!isResetThemeChord(event) || !contextRef.current.resetTheme) return;
+      event.preventDefault();
+      event.stopPropagation();
+      contextRef.current.resetTheme();
+    };
+    document.addEventListener("keydown", onResetTheme, true);
+    return () => document.removeEventListener("keydown", onResetTheme, true);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

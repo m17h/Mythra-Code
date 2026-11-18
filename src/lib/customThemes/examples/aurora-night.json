@@ -1,0 +1,24 @@
+{
+  "schema": "mythra.theme/1",
+  "name": "Aurora Night",
+  "description": "Deep blue night with a slow teal-violet aurora drifting behind the sidebar and stage",
+  "base": "mythra",
+  "tokens": {
+    "bg": "#11131d",
+    "sidebar": "#141724",
+    "panel": "#191c2a",
+    "text": "#e6e8f2",
+    "accent": "#72e3d0",
+    "syntax": { "keyword": "#b9a2ff", "function": "#7fd3f5" }
+  },
+  "shape": "soft",
+  "elevation": "soft",
+  "typography": { "ui": "system", "display": "rounded" },
+  "surfaces": { "translucency": 0.16 },
+  "effects": {
+    "aurora": { "colors": ["#4d5dff", "#8b5cf6", "#22c7b4"], "intensity": 0.7, "speed": "slow", "position": "top" },
+    "glow": { "targets": ["focus", "send"], "strength": 0.4 }
+  },
+  "motion": { "enabled": true },
+  "customCss": ""
+}

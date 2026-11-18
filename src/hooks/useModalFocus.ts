@@ -108,6 +108,9 @@ export function holdInertOutside(keep: HTMLElement): () => void {
     for (const sibling of Array.from(node.parentElement.children)) {
       if (sibling === node || !(sibling instanceof HTMLElement)) continue;
       if (sibling.tagName === "SCRIPT" || sibling.tagName === "STYLE") continue;
+      // App notifications (the toast) float above every surface and keep their
+      // actions, such as Undo, usable while a dialog is open.
+      if (sibling.hasAttribute("data-overlay-exempt")) continue;
       const hold = holds.get(sibling);
       if (hold) hold.count += 1;
       else {

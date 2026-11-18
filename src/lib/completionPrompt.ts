@@ -98,7 +98,49 @@ export interface CheckButtonPromptContext {
   check: ProjectCheckCommand | null | undefined;
 }
 
-export function mythraCodeDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false, collaborationV2 = false, parentResume = false): string {
+/**
+ * Always-on theme guidance, added only when this turn's bridge really exposes
+ * the theme tools (kept short: it rides on every turn of every thread).
+ */
+export const MYTHRA_CODE_THEME_INSTRUCTIONS = [
+  "Mythra Code themes: when the user asks to create, change, restyle, animate or undo how Mythra Code looks, use the mythra_agents theme tools (never edit app files).",
+  "Call get_theme_design_kit before your first theme change.",
+  "To adjust an existing theme, call update_custom_theme on it, never create a duplicate; create a theme only when the user wants a new one.",
+  "Use undo_custom_theme to revert. Themes save automatically, and only the user can delete them.",
+].join(" ");
+
+/**
+ * Appended every turn of a "Design a theme with AI" conversation, which the
+ * user opened from Settings > Appearance > Custom themes.
+ */
+export const THEME_DESIGNER_INSTRUCTIONS = [
+  "This conversation is a Mythra Code theme designer, opened from Settings > Appearance > Custom themes. Act as a calm, skilled visual designer for the app's look.",
+  "Make a first version quickly from the user's words. Ask at most one clarifying question, and only if the request is empty or contradictory.",
+  "Read get_theme_design_kit once. If list_custom_themes shows a theme focused in this conversation, the user wants that theme adjusted: change it with update_custom_theme. Otherwise create one theme with create_custom_theme; every later request here adjusts that same theme with update_custom_theme. Use undo_custom_theme when the user wants to go back.",
+  "Prefer the design-kit tokens and curated effects over customCss. Keep long coding sessions comfortable: calm surfaces a small step apart, one clear accent used sparingly, readable muted text, and slow, subtle animation.",
+  "After each change, describe the result in plain, non-technical words, mention anything Mythra Code adjusted for readability, and offer two or three specific tweaks the user could ask for next.",
+  "Never touch project files or run commands in this conversation.",
+  "If the theme tools are missing, tell the user to turn on \"Let models create and change themes\" in Settings > Appearance > Custom themes and send the message again.",
+].join(" ");
+
+export interface ThemeToolsPromptContext {
+  /** The bridge registered for this turn exposes create_custom_theme. */
+  toolsAvailable: boolean;
+  /** A "Design a theme with AI" conversation. */
+  designer?: boolean;
+}
+
+/** The theme sections a turn carries. The designer brief also stands alone, so
+ * a designer thread whose tools were switched off can explain how to enable them. */
+export function themeInstructionSections(themes?: ThemeToolsPromptContext | null): string[] {
+  if (!themes) return [];
+  return [
+    ...(themes.toolsAvailable ? [MYTHRA_CODE_THEME_INSTRUCTIONS] : []),
+    ...(themes.designer ? [THEME_DESIGNER_INSTRUCTIONS] : []),
+  ];
+}
+
+export function mythraCodeDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false, collaborationV2 = false, parentResume = false, themes?: ThemeToolsPromptContext | null): string {
   const sections = [MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS, MYTHRA_CODE_COMPLETION_INSTRUCTIONS];
   if (nativeDelegation) sections.push(MYTHRA_CODE_PROVIDER_DELEGATION_INSTRUCTIONS);
   else if (delegationEnabled) {
@@ -109,12 +151,13 @@ export function mythraCodeDeveloperInstructions(delegationEnabled = false, setti
   if (runButton?.toolAvailable) sections.push(runButtonInstructions(runButton.run));
   if (runButton?.commitMessageToolAvailable) sections.push("After finishing file changes in this local Git project, call get_commit_message_context, inspect all accumulated changes (including earlier uncommitted work, staged changes and relevant new files), then call set_commit_message before your final response. Supply a concise imperative title with an optional blank line and body. Include stagedMessage for only the staged diff when hasStaged is true. Never stage, commit or push just to draft text. Skip if nothing changed or there is no Git repository, and never let a draft failure prevent your final response.");
   if (checkButton?.toolAvailable) sections.push(checkButtonInstructions(checkButton.check));
+  sections.push(...themeInstructionSections(themes));
   return sections.join("\n\n");
 }
 
-export function withMythraCodeCompletionInstructions(systemPrompt: string, delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false, collaborationV2 = false, parentResume = false): string {
+export function withMythraCodeCompletionInstructions(systemPrompt: string, delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false, collaborationV2 = false, parentResume = false, themes?: ThemeToolsPromptContext | null): string {
   const prompt = systemPrompt.trim();
-  const internalInstructions = mythraCodeDeveloperInstructions(delegationEnabled, settingsProposalsEnabled, runButton, checkButton, nativeDelegation, collaborationV2, parentResume);
+  const internalInstructions = mythraCodeDeveloperInstructions(delegationEnabled, settingsProposalsEnabled, runButton, checkButton, nativeDelegation, collaborationV2, parentResume, themes);
   return prompt
     ? `${prompt}\n\n${internalInstructions}`
     : internalInstructions;

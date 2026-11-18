@@ -10,7 +10,10 @@ import type { PermissionMode, Provider, SubagentModelGuidance } from "../types";
  * launch descriptor is only an executable path plus a session-file path.
  */
 
-export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "send_agent_message" | "accept_agent" | "message_parent" | "read_parent_messages" | "propose_agent_settings" | "set_project_run_command" | "set_project_check_command" | "read_project_terminal" | "get_commit_message_context" | "set_commit_message" | "language_tools_status" | "install_language_tool" | "language_tool_query";
+/** App-appearance tools; see src/lib/customThemes/toolHandlers.ts. */
+export type ThemeBridgeTool = "get_theme_design_kit" | "list_custom_themes" | "get_custom_theme" | "create_custom_theme" | "update_custom_theme" | "undo_custom_theme" | "apply_custom_theme";
+
+export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "send_agent_message" | "accept_agent" | "message_parent" | "read_parent_messages" | "propose_agent_settings" | "set_project_run_command" | "set_project_check_command" | "read_project_terminal" | "get_commit_message_context" | "set_commit_message" | "language_tools_status" | "install_language_tool" | "language_tool_query" | ThemeBridgeTool;
 
 export interface ProjectBridgeContext {
   projectPath?: string;
@@ -21,6 +24,12 @@ export interface ProjectBridgeContext {
   parentMessaging?: boolean;
   /** Native delegation retains project tools, never Mythra spawning/crew proposals. */
   nativeDelegation?: boolean;
+  /**
+   * Custom-theme tools for a root conversation (the user's "Let models create
+   * and change themes" switch). Independent of project and delegation; the
+   * backend refuses it for child threads.
+   */
+  themeTools?: boolean;
 }
 
 /** How a provider runtime should register the bridge as an MCP server. */
@@ -44,6 +53,8 @@ export interface ChildAgentRequest {
   arguments: Record<string, unknown>;
   /** Backend-owned execution folder; a model cannot supply or override it. */
   terminalScope?: string;
+  /** Theme tools only: the provider this bridge was registered for (app-supplied). */
+  provider?: Provider;
 }
 
 /** Durable child ownership used only when rebuilding a lost native session. */

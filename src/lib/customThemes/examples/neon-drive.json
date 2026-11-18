@@ -1,0 +1,26 @@
+{
+  "schema": "mythra.theme/1",
+  "name": "Neon Drive",
+  "description": "Midnight violet with a glowing grid horizon, faint scanlines and a turning neon border",
+  "base": "synthwave",
+  "tokens": {
+    "bg": "#150d26",
+    "sidebar": "#1a1030",
+    "panel": "#21153a",
+    "text": "#f4eaff",
+    "accent": "#ff5fc1",
+    "info": "#7de3ff"
+  },
+  "shape": "crisp",
+  "elevation": "deep",
+  "typography": { "ui": "system", "display": "pixel", "mono": "system" },
+  "surfaces": { "translucency": 0.18 },
+  "effects": {
+    "grid": { "color": "#ff5fc1", "speed": "slow", "horizon": 0.6, "glow": true },
+    "scanlines": { "opacity": 0.35, "spacing": 3 },
+    "border": { "targets": ["composer"], "colors": ["#ff5fc1", "#8b6bff", "#38d9ff"], "speed": "slow", "width": 1.5 },
+    "accentFlow": { "colors": ["#ff5fc1", "#ff8a6b", "#c86bff"], "speed": "slow" }
+  },
+  "motion": { "enabled": true },
+  "customCss": ""
+}

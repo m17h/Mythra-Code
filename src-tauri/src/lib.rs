@@ -73,7 +73,7 @@ mod live_transcription;
 mod workspace_folder;
 use agents::{
     child_agent_bridge_config_allows_spawning, child_agent_bridge_config_registered,
-    child_agent_bridge_mailbox_control_response,
+    child_agent_bridge_mailbox_control_response, child_agent_bridge_theme_control_response,
     child_agent_claim_spawn, child_agent_finished, child_agent_reactivate, child_agent_request_active,
     child_agent_respond, child_agent_retire_unclaimed_spawns, child_agent_revoke_root_registration,
     child_agent_session_end, child_agent_session_start,
@@ -7537,6 +7537,10 @@ async fn claude_turn_start(
     } else {
         options.child_agent_bridge_config.clone()
     };
+    // Theme tools are app-appearance tools on root registrations, including
+    // threads that use native Claude sub-agents; the check below binds them
+    // to this turn's exact live bridge and ignores sub-agent requests.
+    let stdout_bridge_config = options.child_agent_bridge_config.clone();
     let stdout_permission = options.permission;
     let stdout_cwd = options.cwd;
     let stdout_thread = options.thread_id;
@@ -7769,6 +7773,20 @@ async fn claude_turn_start(
                     ).await
                 } else {
                     None
+                };
+                // Checked before the Read-only denial on purpose: Read-only
+                // protects the project, and theme changes are app-local and
+                // undoable (Morgan, 2026-11-18).
+                let mailbox_response = match (mailbox_response, stdout_bridge_config.as_deref()) {
+                    (Some(response), _) => Some(response),
+                    (None, Some(config_path)) => child_agent_bridge_theme_control_response(
+                        &stdout_app.state::<ChildAgentState>(),
+                        config_path,
+                        &stdout_permission,
+                        &stdout_cwd,
+                        &message,
+                    ).await,
+                    (None, None) => None,
                 };
                 if let Some(response) = mailbox_response
                     .or_else(|| claude_full_access_approval(full_access, &message))

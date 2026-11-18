@@ -1,7 +1,7 @@
 import { memo, useEffect, useState } from "react";
 import { Check, ChevronRight, CircleDashed, CircleDot, ListChecks, ShieldAlert, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { latestCompactActivity, type CompactWorkEntry, type CompactWorkState } from "../lib/compactActivity";
-import { WorkingIndicator } from "./WorkingIndicator";
+import { PixelWorkingMark } from "./PixelWorkingMark";
 import "./ActivityStatus.css";
 
 export type ActivityStatusCategory =
@@ -192,7 +192,7 @@ export const ActivityStatus = memo(function ActivityStatus({
         }}
       >
         <span className={`activity-status-mark${Icon ? "" : " working"}`} aria-hidden="true">
-          {Icon ? <Icon size={11} strokeWidth={2.2} /> : <WorkingIndicator size={12} />}
+          {Icon ? <Icon size={11} strokeWidth={2.2} /> : <PixelWorkingMark />}
         </span>
         <span className="activity-status-text" aria-hidden="true">
           <span className={`activity-status-label${shownLabel !== semanticLabel ? " playful" : ""}`} key={shownLabel}>{shownLabel}</span>

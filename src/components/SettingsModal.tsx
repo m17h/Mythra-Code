@@ -40,7 +40,7 @@ import { cancelClaudeLogin, isClaudeDefaultModel, isClaudeModelSuperseded, visib
 import { claudeUsesApiKey, codexAccountReady } from "../lib/providerAuth";
 import { ClaudeBillingPanel, OpenAiApiKeyPanel, useProviderAuthOperation } from "./ProviderApiKeyPanel";
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
-import { DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PARENT_FOLLOW_UP_LIMIT, DEFAULT_SETTINGS, DEFAULT_TERMINAL_TIMEOUT_MINUTES, EFFORT_SLIDER_STYLES, MAX_PARENT_FOLLOW_UP_LIMIT, MAX_TERMINAL_TIMEOUT_MINUTES, RELEASE_NOTES_URL, THEMES, sanitizeParentFollowUpLimit, sanitizeTerminalTimeoutMinutes } from "../lib/appConfig";
+import { DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PARENT_FOLLOW_UP_LIMIT, DEFAULT_SETTINGS, DEFAULT_TERMINAL_TIMEOUT_MINUTES, EFFORT_SLIDER_STYLES, MAX_PARENT_FOLLOW_UP_LIMIT, MAX_TERMINAL_TIMEOUT_MINUTES, RELEASE_NOTES_URL, THEMES, customThemeIdOf, sanitizeParentFollowUpLimit, sanitizeTerminalTimeoutMinutes } from "../lib/appConfig";
 import { latestSolModel } from "../lib/threadProvider";
 import { resolveThreadTitleModel } from "../lib/threadTitles";
 import { formatGitError, friendlyError } from "../lib/errors";
@@ -104,12 +104,15 @@ import type {
   Provider,
   ScheduledTask,
   ScheduleRunRecord,
-  ThemeName,
+  ThemeId,
   SettingsSection,
   SkillDependencyReport,
   UsageDisplayMode,
 } from "../types";
 import { usagePercentLabel } from "../lib/providerUsage";
+import { CustomThemesSettings, type DeletedCustomTheme, type ThemeDesignerChoice } from "./CustomThemesSettings";
+import { headSpec, useCustomThemes, type CustomThemeLibrary } from "../lib/customThemes/store";
+import { providerSignInIssue } from "../lib/childAgents";
 import { isWindowsPlatform } from "../lib/platform";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import { ProjectProfiles } from "./ProjectProfiles";
@@ -211,7 +214,7 @@ type SettingsRow = {
   label: string;
   keywords?: string;
   /** Stable target for controls outside the shared setting-row markup. */
-  target?: "openrouter-key" | "lmstudio-server" | "transcription-key" | "openai-api-key" | "claude-billing" | "general-shortcuts";
+  target?: "openrouter-key" | "lmstudio-server" | "transcription-key" | "openai-api-key" | "claude-billing" | "general-shortcuts" | "appearance-theme-tools";
   accountProvider?: Provider;
 };
 
@@ -227,6 +230,9 @@ const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
   { id: "general.guided-setup", pane: "general", label: "Guided setup", keywords: "onboarding tour getting started help" },
   { id: "general.keyboard-shortcuts", pane: "general", label: "Keyboard shortcuts", keywords: "keys hotkeys keyboard cheat sheet help", target: "general-shortcuts" },
   { id: "appearance.theme", pane: "appearance", label: "Theme", keywords: "dark light colour color appearance" },
+  { id: "appearance.custom-themes", pane: "appearance", label: "Custom themes", keywords: "custom theme ai design animated background aurora generate create" },
+  { id: "appearance.theme-animations", pane: "appearance", label: "Theme animations", keywords: "motion animation pause reduce" },
+  { id: "appearance.theme-tools", pane: "appearance", label: "Theme tools in chats", keywords: "model ai create change theme tools allow", target: "appearance-theme-tools" },
   { id: "appearance.app-scale", pane: "appearance", label: "App scale", keywords: "zoom size interface text bigger smaller" },
   { id: "appearance.chat-font", pane: "appearance", label: "Chat font", keywords: "font typeface serif mono" },
   { id: "appearance.custom-fonts", pane: "appearance", label: "Custom fonts", keywords: "font file installed typeface add" },
@@ -554,6 +560,8 @@ export function SettingsModal({
   onThemePreview,
   onEffortSliderPreview,
   onChatFontPreview,
+  onDesignTheme,
+  onCustomThemeDeleted,
   onUiScalePreview = () => {},
   onSignIn,
   onSignOut = async () => {
@@ -682,9 +690,13 @@ export function SettingsModal({
   onSave: (settings: AppSettings) => void;
   /** Reject a stale workflow draft before persisting any settings sections. */
   onBeforeSave?: (settings: AppSettings) => boolean;
-  onThemePreview: (theme: ThemeName) => void;
+  onThemePreview: (theme: ThemeId) => void;
   onEffortSliderPreview: (style: EffortSliderStyle) => void;
   onChatFontPreview: (font: ChatFont) => void;
+  /** "Design a theme with AI": Settings has saved and should close; App opens the chat. */
+  onDesignTheme?: (choice: ThemeDesignerChoice) => void;
+  /** A custom theme was deleted here; App offers Undo. */
+  onCustomThemeDeleted?: (deleted: DeletedCustomTheme & { projectIds: string[] }) => void;
   /** Interface size applies at once, like the other appearance choices. */
   onUiScalePreview?: (scale: number) => void;
   onSignIn: () => Promise<void>;
@@ -787,6 +799,7 @@ export function SettingsModal({
   // preserves a pasted key and the result of an in-flight account operation.
   const [mountedAccounts, setMountedAccounts] = useState<Provider[]>([]);
   const appCustomFonts = useCustomFonts();
+  const appCustomThemes = useCustomThemes();
   /** A look carried from the tour, previewed but not saved until applied. */
   const [appearanceOffer, setAppearanceOffer] = useState<OnboardingAppearance | null>(null);
   const [openAiBilling, setOpenAiBilling] = useState<"subscription" | "apiKey" | null>(null);
@@ -860,6 +873,21 @@ export function SettingsModal({
     openRouterModels,
     lmStudioModels,
   }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
+
+  const themeDesigner = useMemo(() => {
+    const models = (provider: Provider) => modelOptionsForProvider(provider, "", modelCatalogs).filter((option) => option.value);
+    const provider = local.themeDesignerProvider ?? local.provider;
+    const remembered = local.themeDesignerProvider === provider ? local.themeDesignerModel : undefined;
+    const fallback = provider === local.provider ? local.model : "";
+    const options = models(provider);
+    const model = remembered || fallback || options.find((option) => !option.disabled)?.value || "";
+    return {
+      providers: PROJECT_PROVIDER_OPTIONS,
+      models,
+      issue: (next: Provider) => providerSignInIssue(next, childAgentReadiness),
+      initial: { provider, model },
+    };
+  }, [childAgentReadiness, local.model, local.provider, local.themeDesignerModel, local.themeDesignerProvider, modelCatalogs]);
 
   // Show the same implicit OpenAI default as a fresh thread without turning
   // a catalog refresh or opening Settings into a saved model selection.
@@ -1000,6 +1028,11 @@ export function SettingsModal({
   const requestShortcuts = async () => {
     if (!onOpenShortcuts || !await settleBeforeLeaving()) return;
     onOpenShortcuts();
+  };
+  // "Design a theme with AI" saves what's open here, then App opens the chat.
+  const requestDesignTheme = async (choice: ThemeDesignerChoice) => {
+    if (!onDesignTheme || !await settleBeforeLeaving()) return;
+    onDesignTheme(choice);
   };
 
   // Snapshot of the props the current drafts were seeded from, so external
@@ -1354,7 +1387,7 @@ export function SettingsModal({
     if (kind !== "chatFont") onChatFontPreview(local.chatFont);
   };
 
-  const previewTheme = (theme: ThemeName) => {
+  const previewTheme = (theme: ThemeId) => {
     dropOfferFor("theme");
     setLocal((current) => ({ ...current, theme }));
     onThemePreview(theme);
@@ -2097,7 +2130,7 @@ export function SettingsModal({
               <div className="settings-preview-offer-copy">
                 <strong>Previewing the look from the tour</strong>
                 <small>{[
-                  appearanceOffer.theme !== local.theme ? THEMES.find((theme) => theme.id === appearanceOffer.theme)?.name ?? appearanceOffer.theme : "",
+                  appearanceOffer.theme !== local.theme ? themeSettingName(appearanceOffer.theme, appCustomThemes) : "",
                   appearanceOffer.chatFont !== local.chatFont ? `${chatFontName(appearanceOffer.chatFont, appCustomFonts)} font` : "",
                   appearanceOffer.effortSlider !== local.effortSlider ? `${EFFORT_SLIDER_STYLES.find((style) => style.id === appearanceOffer.effortSlider)?.name ?? appearanceOffer.effortSlider} slider` : "",
                 ].filter(Boolean).join(" · ")}. Nothing is saved unless you apply it.</small>
@@ -2108,18 +2141,20 @@ export function SettingsModal({
               </div>
             </div>}
             {activeProjectHasAppearanceOverride && <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>This project has its own appearance, so changes here apply to your other projects. Edit this one in Projects.</span></p>}
-            <div className="set-group">
-              <div className="set-group-head"><h4>Theme</h4>{local.theme !== DEFAULT_SETTINGS.theme && <button type="button" className="secondary-button" onClick={() => previewTheme(DEFAULT_SETTINGS.theme)}><RotateCcw size={12} /> Use default theme</button>}</div>
+            <SettingsJumpList label="Appearance sections" items={APPEARANCE_SECTIONS} scrollRef={contentRef} />
+            <div className="set-group" id="appearance-theme">
+              <div className="set-group-head"><h4 tabIndex={-1}>Theme</h4>{local.theme !== DEFAULT_SETTINGS.theme && <button type="button" className="secondary-button" onClick={() => previewTheme(DEFAULT_SETTINGS.theme)}><RotateCcw size={12} /> Use default theme</button>}</div>
               <div className="set-card bare"><div className="set-body">
                 <div className="theme-grid" role="radiogroup" aria-label="Theme" onKeyDown={rovingChoiceKeyDown}>
-                  {THEMES.map((theme) => (
+                  {THEMES.map((theme, index) => (
                     <button
                       type="button"
                       key={theme.id}
                       className={`theme-card ${local.theme === theme.id ? "selected" : ""}`}
                       role="radio"
                       aria-checked={local.theme === theme.id}
-                      tabIndex={local.theme === theme.id ? 0 : -1}
+                      // With a custom theme chosen, the first card keeps this group reachable by Tab.
+                      tabIndex={local.theme === theme.id || (customThemeIdOf(local.theme) && index === 0) ? 0 : -1}
                       title={theme.description}
                       onClick={() => previewTheme(theme.id)}
                     >
@@ -2140,8 +2175,33 @@ export function SettingsModal({
               </div></div>
             </div>
 
-            <div className="set-group">
-              <h4>Size</h4>
+            <CustomThemesSettings
+              selectedTheme={local.theme}
+              onSelectTheme={previewTheme}
+              settings={local}
+              onSettingsChange={(patch) => setLocal((current) => ({ ...current, ...patch }))}
+              active={open && settingsSection === "appearance"}
+              designer={themeDesigner}
+              onDesign={(choice) => void requestDesignTheme(choice)}
+              onDeleted={(deleted) => {
+                const setting = `custom:${deleted.record.id}`;
+                const projectIds = localProjects.filter((project) => project.overrides?.defaults?.theme === setting).map((project) => project.id);
+                if (projectIds.length) {
+                  // Projects that used it follow the global theme again.
+                  setLocalProjects((current) => current.map((project) => {
+                    const defaults = project.overrides?.defaults;
+                    if (!defaults || defaults.theme !== setting) return project;
+                    const { theme: _removed, ...rest } = defaults;
+                    return { ...project, overrides: { ...(project.overrides ?? {}), defaults: rest } };
+                  }));
+                  if (activeProjectId && projectIds.includes(activeProjectId)) onThemePreview(deleted.wasSelected ? headSpec(deleted.record).base : local.theme);
+                }
+                onCustomThemeDeleted?.({ ...deleted, projectIds });
+              }}
+            />
+
+            <div className="set-group" id="appearance-size">
+              <h4 tabIndex={-1}>Size</h4>
               <div className="set-card"><div className="set-row">
                 <div className="set-copy">
                   <strong>App scale</strong>
@@ -2159,13 +2219,13 @@ export function SettingsModal({
               </div></div>
             </div>
 
-            <div className="set-group">
-              <h4>Chat font</h4>
+            <div className="set-group" id="appearance-chat-font">
+              <h4 tabIndex={-1}>Chat font</h4>
               <ChatFontSettings value={local.chatFont} onChange={previewChatFont} active={open && settingsSection === "appearance"} />
             </div>
 
-            <div className="set-group">
-              <h4>Effort slider</h4>
+            <div className="set-group" id="appearance-effort-slider">
+              <h4 tabIndex={-1}>Effort slider</h4>
               <p>How the reasoning slider looks for every provider.</p>
               <div className="set-card bare"><div className="set-body">
                     <div className="slider-style-grid" role="radiogroup" aria-label="Effort slider" onKeyDown={rovingChoiceKeyDown}>
@@ -2191,8 +2251,8 @@ export function SettingsModal({
               </div></div>
             </div>
 
-            <div className="set-group">
-              <h4>Provider logos</h4>
+            <div className="set-group" id="appearance-provider-logos">
+              <h4 tabIndex={-1}>Provider logos</h4>
               <div className="set-card">
                 <div className="set-row">
                   <div className="set-copy">
@@ -3163,11 +3223,12 @@ function ProjectDefaultsSettings({ active, projects, activeProjectId, settings, 
   onToggleModelFavorite?: (provider: Provider, model: string) => void;
   onDiscoverOpenRouterModels?: (query: string) => void;
   onProjects: (value: Project[]) => void;
-  onThemePreview: (theme: ThemeName) => void;
+  onThemePreview: (theme: ThemeId) => void;
   onEffortSliderPreview: (style: EffortSliderStyle) => void;
   onChatFontPreview: (font: ChatFont) => void;
 }) {
   const customFonts = useCustomFonts();
+  const customThemes = useCustomThemes();
   useCustomFontFaces(customFonts, active);
   const [projectToAdd, setProjectToAdd] = useState("");
   const configured = projects.filter((project) => project.overrides?.defaults);
@@ -3180,13 +3241,23 @@ function ProjectDefaultsSettings({ active, projects, activeProjectId, settings, 
     icon: <FolderCog size={14} />,
   }));
   const themeOptions: AppSelectOption[] = [
-    { value: "", label: "Use global theme", detail: THEMES.find((theme) => theme.id === settings.theme)?.name ?? settings.theme, icon: <Palette size={14} /> },
+    { value: "", label: "Use global theme", detail: themeSettingName(settings.theme, customThemes), icon: <Palette size={14} /> },
     ...THEMES.map((theme) => ({
       value: theme.id,
       label: theme.name,
       detail: theme.description,
       icon: <span className="project-theme-swatch" style={{ background: theme.swatches[0] }}><i style={{ background: theme.swatches[2] }} /></span>,
     })),
+    ...customThemes.themes.map((record) => {
+      const spec = headSpec(record);
+      return {
+        value: `custom:${record.id}`,
+        label: spec.name,
+        detail: spec.description || "Custom theme",
+        keywords: "custom",
+        icon: <span className="project-theme-swatch" style={{ background: "var(--panel-3)" }}><i style={{ background: "var(--accent)" }} /></span>,
+      };
+    }),
   ];
   const effortOptions: AppSelectOption[] = [
     { value: "", label: "Use global slider", detail: EFFORT_SLIDER_STYLES.find((style) => style.id === settings.effortSlider)?.name ?? settings.effortSlider, icon: <RotateCcw size={14} /> },
@@ -3265,7 +3336,7 @@ function ProjectDefaultsSettings({ active, projects, activeProjectId, settings, 
             <div className="project-default-grid">
               <div className="project-default-field"><span>Provider</span><AppSelectMenu value={defaults.provider} options={PROJECT_PROVIDER_OPTIONS} ariaLabel={`Default provider for ${project.name}`} menuPlacement="top" onChange={(value) => setProvider(value as Provider)} /></div>
               <div className="project-default-field project-default-model"><span>Model</span><AppSelectMenu value={defaults.model} options={modelOptions} selectedDisplay={selectedDisplay} ariaLabel={`Default model for ${project.name}`} placeholder="Choose a model…" searchable={modelOptions.length > 8 || defaults.provider === "openrouter" || defaults.provider === "lmstudio" || defaults.provider === "cursor"} menuPlacement="top" favorites={favoriteModels(modelFavorites, defaults.provider)} {...(onToggleModelFavorite ? { onToggleFavorite: (model: string) => onToggleModelFavorite(defaults.provider, model) } : {})} {...(defaults.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})} emptyMessage={defaults.provider === "lmstudio" ? "Connect LM Studio and refresh its catalog first." : "No models are currently available for this provider."} onChange={(model) => updateDefaults(project.id, (current) => ({ ...current, model }))} /></div>
-              <div className="project-default-field"><span>App theme</span><AppSelectMenu value={defaults.theme ?? ""} options={themeOptions} ariaLabel={`App theme for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.theme = value as ThemeName; else delete next.theme; return next; }); if (project.id === activeProjectId) onThemePreview((value || settings.theme) as ThemeName); }} /></div>
+              <div className="project-default-field"><span>App theme</span><AppSelectMenu value={defaults.theme ?? ""} options={themeOptions} ariaLabel={`App theme for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.theme = value as ThemeId; else delete next.theme; return next; }); if (project.id === activeProjectId) onThemePreview((value || settings.theme) as ThemeId); }} /></div>
               <div className="project-default-field"><span>Effort slider</span><AppSelectMenu value={defaults.effortSlider ?? ""} options={effortOptions} ariaLabel={`Effort slider for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.effortSlider = value as EffortSliderStyle; else delete next.effortSlider; return next; }); if (project.id === activeProjectId) onEffortSliderPreview((value || settings.effortSlider) as EffortSliderStyle); }} /></div>
               <div className="project-default-field"><span>Chat font</span><AppSelectMenu value={selectedFont} options={fontOptions} ariaLabel={`Chat font for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.chatFont = value as ChatFont; else delete next.chatFont; return next; }); if (project.id === activeProjectId) onChatFontPreview((value || settings.chatFont) as ChatFont); }} /></div>
             </div>
@@ -3314,6 +3385,23 @@ function titleProviderReady(provider: Provider, readiness: ChildAgentReadiness):
   // reason to tell someone their local server is missing.
   return readiness.lmStudioReady !== false;
 }
+
+/** A theme setting's display name: a built-in's name, or a custom theme's current name. */
+function themeSettingName(theme: ThemeId, library: CustomThemeLibrary): string {
+  const custom = customThemeIdOf(theme);
+  if (!custom) return THEMES.find((entry) => entry.id === theme)?.name ?? theme;
+  const record = library.themes.find((entry) => entry.id === custom);
+  return record ? headSpec(record).name : "A deleted custom theme";
+}
+
+const APPEARANCE_SECTIONS = [
+  { id: "appearance-theme", label: "Theme" },
+  { id: "appearance-custom-themes", label: "Custom themes" },
+  { id: "appearance-size", label: "Size" },
+  { id: "appearance-chat-font", label: "Chat font" },
+  { id: "appearance-effort-slider", label: "Effort slider" },
+  { id: "appearance-provider-logos", label: "Provider logos" },
+] as const;
 
 function ThreadTitleFields({ settings, catalogs, readiness, onChange, onAccounts }: {
   settings: AppSettings;

@@ -1,0 +1,19 @@
+/* Action buttons inside the app toast (App.tsx), e.g. the receipt when a
+   model changes a theme. Tokens only; same shape as secondary buttons. */
+.app-shell[data-theme][data-color-scheme] .app-toast-actions { display: flex; align-items: center; gap: 4px; margin-left: 4px; }
+.app-shell[data-theme][data-color-scheme] .app-toast-actions > button {
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: var(--lm-press);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .app-toast-actions > button:hover { background: var(--lm-hover); border-color: var(--line-strong); }
+.app-shell[data-theme][data-color-scheme] .app-toast-actions > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+

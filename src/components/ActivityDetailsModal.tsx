@@ -9,7 +9,7 @@ import { isWindowsPlatform } from "../lib/platform";
 import { containTab, useModalFocus } from "../hooks/useModalFocus";
 import { useTimelineEnvironment } from "./TimelineEnvironment";
 import { SETTLED_ACTIVITY_LABELS, UNCONFIRMED_ACTIVITY_LABEL, type ActivityStatusCategory } from "./ActivityStatus";
-import { WorkingIndicator } from "./WorkingIndicator";
+import { PixelWorkingMark } from "./PixelWorkingMark";
 import { InfoPopover } from "./InfoPopover";
 import { usedSkillsForRun } from "../lib/skillUsage";
 import { isMythraNoticeMessage } from "../lib/userMessageEcho";
@@ -242,7 +242,7 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
     )}
   </> : <pre className="activity-step-output">{detail}</pre>;
   const row = <li className={`activity-step kind-${activity.kind}${tone === "bad" ? " is-failed" : ""}${flags}`} data-step-id={step.id}>
-    <span className={`activity-step-node${thinkingNow ? " working" : ""}`} aria-hidden="true">{thinkingNow ? <WorkingIndicator size={11} /> : <Icon size={11} />}</span>
+    <span className={`activity-step-node${thinkingNow ? " working" : ""}`} aria-hidden="true">{thinkingNow ? <PixelWorkingMark /> : <Icon size={11} />}</span>
     <div className="activity-step-body">
       <div className="activity-step-head">
         {collapsible ? (
@@ -679,7 +679,7 @@ export function ActivityDetailsModal({
       )}
       {stepCount === 0 && (
         <div className="activity-details-empty">
-          <span className={`activity-details-empty-mark${live ? " live" : ""}`} aria-hidden="true">{live ? <WorkingIndicator size={13} /> : <Sparkles size={13} />}</span>
+          <span className={`activity-details-empty-mark${live ? " live" : ""}`} aria-hidden="true">{live ? <PixelWorkingMark /> : <Sparkles size={13} />}</span>
           <p>{live ? "Steps will appear here as the agent works." : "No steps were recorded for this run."}</p>
         </div>
       )}

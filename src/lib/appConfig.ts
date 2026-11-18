@@ -1,5 +1,5 @@
 import { DEFAULT_USAGE_DISPLAY } from "./providerUsage";
-import type { AppSettings, ChatFont, ChildAgentSettings, EffortSliderStyle, PromptProfile, ThemeName } from "../types";
+import type { AppSettings, ChatFont, ChildAgentSettings, CustomThemeId, EffortSliderStyle, PromptProfile, ThemeId, ThemeName } from "../types";
 
 /** Cross-provider delegation is off by default; every enabled destination is user-approved. */
 export const DEFAULT_CHILD_AGENT_SETTINGS: ChildAgentSettings = { enabled: false, targets: [] };
@@ -67,6 +67,38 @@ export function themeColorScheme(theme: ThemeName): "light" | "dark" {
   return theme === "light-mythra" || theme === "daylight" || theme === "atari" ? "light" : "dark";
 }
 
+const CUSTOM_THEME_ID = /^ct_[a-z0-9]{10}$/;
+
+export function isCustomThemeId(value: unknown): value is CustomThemeId {
+  return typeof value === "string" && CUSTOM_THEME_ID.test(value);
+}
+
+/** The library id inside a `custom:ct_…` theme setting, or null for a built-in. */
+export function customThemeIdOf(theme: unknown): CustomThemeId | null {
+  return typeof theme === "string" && theme.startsWith("custom:") && isCustomThemeId(theme.slice(7)) ? theme.slice(7) as CustomThemeId : null;
+}
+
+export function customThemeSetting(id: CustomThemeId): ThemeId {
+  return `custom:${id}`;
+}
+
+/**
+ * A theme setting: a built-in id or `custom:ct_…`. Whether the custom theme
+ * still exists is decided at render time (a missing one shows its fallback),
+ * so a library that loads late never rewrites the saved choice.
+ */
+export function sanitizeThemeId(value: unknown): ThemeId {
+  const custom = customThemeIdOf(value);
+  return custom ? customThemeSetting(custom) : sanitizeTheme(value);
+}
+
+/** The built-in theme a theme setting renders on: itself, or a custom theme's base. */
+export function builtinThemeFor(theme: ThemeId, baseOf: (id: CustomThemeId) => ThemeName | undefined, fallback: ThemeName = "mythra"): ThemeName {
+  const custom = customThemeIdOf(theme);
+  if (!custom) return sanitizeTheme(theme);
+  return baseOf(custom) ?? fallback;
+}
+
 export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; description: string }> = [
   { id: "studio", name: "Studio", description: "Simple dots in the theme's accent color" },
   { id: "aurora", name: "Aurora", description: "A slow drift of northern-light pastels" },
@@ -116,6 +148,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ultra: false,
   serviceTier: null,
   theme: "mythra",
+  themeMotion: "on",
+  themePauseInBackground: true,
+  customThemeTools: true,
   effortSlider: "studio",
   chatFont: "system",
   escapeStopsRun: false,

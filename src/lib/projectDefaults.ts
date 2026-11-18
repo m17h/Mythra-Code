@@ -1,5 +1,5 @@
 import type { Project, ProjectDefaults, Provider } from "../types";
-import { parseEffortSlider, sanitizeChatFont, sanitizeTheme, THEMES } from "./appConfig";
+import { customThemeIdOf, customThemeSetting, parseEffortSlider, sanitizeChatFont, sanitizeTheme, THEMES } from "./appConfig";
 import { modelForProvider } from "./threadProvider";
 import { sanitizeProjectPromptProfileOverrides } from "./projectPromptProfiles";
 
@@ -23,6 +23,11 @@ export function sanitizeProjectDefaults(value: unknown): ProjectDefaults | null 
   // replacement, rather than silently following a different global theme.
   if (theme === "midnight" || theme === "monochrome" || THEMES.some((entry) => entry.id === theme)) {
     defaults.theme = sanitizeTheme(theme);
+  } else {
+    // A custom theme is kept by id; if it was deleted the project follows the
+    // global theme at render time.
+    const custom = customThemeIdOf(theme);
+    if (custom) defaults.theme = customThemeSetting(custom);
   }
   const effortSlider = parseEffortSlider(raw.effortSlider);
   if (effortSlider) defaults.effortSlider = effortSlider;

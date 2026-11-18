@@ -303,6 +303,14 @@ export interface ChildAgentBridgeInput {
   newSessionId?: () => string;
   /** Trusted execution folder selected by the app, never by a model tool. */
   projectPath?: string;
+  /**
+   * Offer the custom-theme tools to this root conversation, even a plain chat
+   * with no project and delegation off. Callers pass
+   * `settings.customThemeTools !== false` for interactive root turns and
+   * false for child runs, workflows and scheduled runs (nobody is watching
+   * to undo). Ignored for child threads. Omitted means false.
+   */
+  themeToolsEnabled?: boolean;
 }
 
 export interface ChildAgentBridgeResult {
@@ -342,6 +350,8 @@ async function ensureChildAgentBridgeOnce(
   // children keep their language-only bridge exactly as before.
   const managedChild = Boolean(input.threadId && input.links[input.threadId]);
   const childConversations = Boolean(input.threadId && input.links[input.threadId]?.signoff === "required");
+  // App-appearance scope: never for children, independent of project/crew.
+  const themeTools = input.themeToolsEnabled === true && !childThread;
   const projectContext: ProjectBridgeContext = {
     ...(input.projectPath ? { projectPath: input.projectPath } : {}),
     permission: input.permission,
@@ -352,6 +362,8 @@ async function ensureChildAgentBridgeOnce(
     // but its ownership still grants only its own parent mailbox. Native
     // children remain language-only and never acquire this managed authority.
     ...(!managedChild && input.settings.subagentEngine === "native" ? { nativeDelegation: true } : {}),
+    // Part of the context identity, so toggling the switch rotates the bridge.
+    ...(themeTools ? { themeTools: true } : {}),
   };
   // Only a real prompt re-reads the saved notes. The roster stays frozen;
   // just the advice shown for it follows the user's current preferences.
@@ -412,7 +424,15 @@ async function ensureChildAgentBridgeOnce(
       launchContexts.delete(sessionId);
       terminalScopes.delete(sessionId);
     }
-    return launches.get(sessionId);
+    const launch = launches.get(sessionId);
+    // A descriptor whose theme tools disagree with the current switch is
+    // never reused; the context identity above normally catches this first.
+    if (launch && launch.toolNames.includes("create_custom_theme") !== themeTools) {
+      launches.delete(sessionId);
+      launchContexts.delete(sessionId);
+      return undefined;
+    }
+    return launch;
   };
   const assertLifetime = (sessionId: string) => {
     if (!lifetime || sessionLifetimes.get(sessionId) !== lifetime) {
@@ -493,7 +513,7 @@ async function ensureChildAgentBridgeOnce(
       // turning delegation back on must not forget children already running.
       const launch = await startChildAgentSession(
         policy, knownChildren, finishedChildren,
-        input.projectPath || projectContext.childThread ? projectContext : undefined,
+        input.projectPath || projectContext.childThread || themeTools ? projectContext : undefined,
         guidance, recoveredChildren,
       );
       if (!current()) {
@@ -668,7 +688,10 @@ async function ensureChildAgentBridgeOnce(
     return { policy: adopted.owner.policy, launch: adopted.launch, captured: false };
   }
   if (!delegationEnabled) {
-    if (!input.settingsProposalsEnabled && !input.projectPath) {
+    // A plain chat with theme tools still registers a targets-empty root
+    // policy (the same shape as the proposal-only bridge). Without a project
+    // the backend grants it only the theme tools.
+    if (!input.settingsProposalsEnabled && !input.projectPath && !themeTools) {
       if (existing) await releaseChildAgentSession(existing.sessionId);
       return null;
     }
@@ -693,7 +716,9 @@ async function ensureChildAgentBridgeOnce(
     const cached = cachedLaunch(policy);
     cacheChildAgentPolicy(policy);
     if (cached && !cached.toolNames.includes("spawn_mythra_agent")
-      && (input.settings.subagentEngine === "native" || cached.toolNames.includes("propose_agent_settings"))) {
+      && (input.settings.subagentEngine === "native" || cached.toolNames.includes("propose_agent_settings")
+        // A projectless theme-only bridge has no proposal tool to look for.
+        || (!input.projectPath && themeTools && cached.toolNames.includes("create_custom_theme")))) {
       return { policy, launch: cached, captured: !stored };
     }
     if (cached || existing) await revokeChildAgentSession(policy.sessionId, lifetime);

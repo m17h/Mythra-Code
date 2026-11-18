@@ -22,7 +22,10 @@ use tokio::{
     time::{timeout, timeout_at, Duration, Instant},
 };
 
-use crate::agents::{child_agent_bridge_launch_registered, ChildAgentState};
+use crate::agents::{
+    child_agent_bridge_launch_registered, child_agent_bridge_theme_permission_allowed,
+    ChildAgentState,
+};
 use crate::process_launch::background_command;
 #[cfg(windows)]
 use crate::process_launch::interactive_command;
@@ -123,6 +126,9 @@ struct CursorProcess {
     remote_start: Mutex<Option<crate::remote::work::NativePermit>>,
     local_owner: Mutex<Option<crate::remote::owners::LocalPermit>>,
     remote_permission: Option<String>,
+    /// This turn's registered bridge launch arguments, used only to recognise
+    /// its own theme-tool permission requests (see the request handler).
+    theme_bridge: Mutex<Option<(AppHandle, Vec<String>)>>,
     emit: CursorEmit,
 }
 
@@ -1374,6 +1380,33 @@ fn permission_result(params: &Value, allow: bool) -> Value {
         .unwrap_or_else(|| json!({ "outcome": { "outcome": "cancelled" } }))
 }
 
+/// Allow once, never "always": an app-scoped grant must not become a
+/// persistent Cursor permission that outlives this bridge or the user's
+/// theme-tools switch. Without an allow-once option the request takes the
+/// normal permission path instead (a prompt in Ask mode).
+fn allow_once_permission_result(params: &Value) -> Option<Value> {
+    params
+        .get("options")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|option| option.get("kind").and_then(Value::as_str) == Some("allow_once"))
+        .and_then(|option| option.get("optionId"))
+        .and_then(Value::as_str)
+        .map(|option_id| json!({ "outcome": { "outcome": "selected", "optionId": option_id } }))
+}
+
+/// Theme tools are app-appearance changes the user can always undo, so they
+/// are approved in every permission mode, including Read-only, but only when
+/// the request is recognisably one of this turn's own bridge theme tools.
+async fn theme_tool_permission_result(process: &CursorProcess, params: &Value) -> Option<Value> {
+    let bridge = process.theme_bridge.lock().await.clone();
+    let (app, args) = bridge?;
+    child_agent_bridge_theme_permission_allowed(&app.state::<ChildAgentState>(), &args, params)
+        .await
+        .then(|| allow_once_permission_result(params))
+        .flatten()
+}
+
 fn automatic_permission_result(
     permission: &str,
     interactive: bool,
@@ -1504,6 +1537,7 @@ fn attach_cursor_process(
         remote_start: Mutex::new(None),
         local_owner: Mutex::new(None),
         remote_permission: event_context.as_ref().map(|(_,_,permission,_)|permission.clone()),
+        theme_bridge: Mutex::new(None),
         emit,
     });
     let stderr_task = stderr.map(|stderr| {
@@ -1611,7 +1645,9 @@ async fn read_cursor_output(
             if let (Some(id), Some((thread_id, turn_id, permission, interactive))) =
                 (message.get("id").cloned(), event_context.as_ref())
             {
-                if let Some(result) = automatic_permission_result(permission, *interactive, &params)
+                let theme_result = theme_tool_permission_result(&process, &params).await;
+                if let Some(result) = theme_result
+                    .or_else(|| automatic_permission_result(permission, *interactive, &params))
                 {
                     let _ = process.respond(id, result).await;
                 } else {
@@ -1977,6 +2013,10 @@ pub async fn cursor_turn_start(
     )
     .await?;
     *process.remote_start.lock().await=remote_permit;
+    *process.theme_bridge.lock().await = options
+        .child_agent_bridge
+        .as_ref()
+        .map(|bridge| (app.clone(), bridge.args.clone()));
     *process.local_owner.lock().await=local_owner;
     if !super::claim_turn_slot(&state.turns, &options.thread_id, &process, |existing| {
         existing.alive.load(Ordering::Acquire) || existing.cutoff_uncertain.load(Ordering::Acquire)
@@ -2446,4 +2486,26 @@ pub(crate) fn remote_row_gate<T>(app:&AppHandle,thread:&str,op:&str,commit:impl 
 
 pub(crate) fn adopt_local_archive_snapshot(app:&AppHandle,value:&Value){
  if let Some(state)=app.try_state::<CursorState>(){state.starts.adopt_local_archives(value);}
+}
+
+#[cfg(test)]
+mod theme_permission_tests {
+    use super::allow_once_permission_result;
+    use serde_json::json;
+
+    #[test]
+    fn theme_tools_are_allowed_once_and_never_always() {
+        let both = json!({ "options": [
+            { "kind": "allow_always", "optionId": "always" },
+            { "kind": "allow_once", "optionId": "once" },
+            { "kind": "reject_once", "optionId": "no" },
+        ] });
+        assert_eq!(
+            allow_once_permission_result(&both),
+            Some(json!({ "outcome": { "outcome": "selected", "optionId": "once" } }))
+        );
+        let always_only = json!({ "options": [{ "kind": "allow_always", "optionId": "always" }] });
+        assert_eq!(allow_once_permission_result(&always_only), None);
+        assert_eq!(allow_once_permission_result(&json!({})), None);
+    }
 }
