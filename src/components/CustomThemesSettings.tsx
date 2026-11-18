@@ -1,31 +1,26 @@
 import "./CustomThemesSettings.css";
-import { useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
-import { Check, Pencil, RotateCcw, Sparkles, Trash2, TriangleAlert, Undo2 } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Check, ChevronRight, Pencil, Sparkles, Trash2, TriangleAlert } from "lucide-react";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import { CustomThemePreview } from "./CustomThemePreview";
 import { RowMenu } from "./RowMenu";
 import { EmptyState, rovingChoiceKeyDown, SettingInfo, Switch } from "./SettingsBits";
 import { SmoothDisclosure } from "./SmoothDisclosure";
+import { ThemeLibraryDialog, type ThemeLibraryFocus } from "./ThemeLibraryDialog";
+import { tileMeta, useReducedMotion } from "./customThemeBits";
 import { THEMES, customThemeIdOf, customThemeSetting } from "../lib/appConfig";
 import { confirmDialog } from "../lib/confirmDialog";
 import { formatShortcut } from "../lib/shortcuts";
 import {
-  canUndo,
-  commitCustomThemeRevision,
   deleteCustomTheme,
   headSpec,
-  providerName,
-  renameCustomTheme,
-  revisionAuthor,
   setThemeDisabled,
-  undoCustomTheme,
   useCustomThemes,
   type CustomThemeRecord,
-  type CustomThemeRevision,
   type ThemeDisabledReason,
 } from "../lib/customThemes/store";
-import { builtInScheme, type CustomThemeId, type EffectType } from "../lib/customThemes/spec";
-import { effectMoves } from "../lib/customThemes/compile";
+import { settingsTiles } from "../lib/customThemes/library";
+import type { CustomThemeId } from "../lib/customThemes/spec";
 import type { AppSettings, Provider, ThemeId } from "../types";
 
 /** What "Design a theme with AI" starts: a new chat on this model, ready for theming. */
@@ -50,40 +45,8 @@ export interface ThemeDesignerOptions {
   initial: { provider: Provider; model: string };
 }
 
-const USER = { kind: "user" } as const;
-
-/** "just now", "3 min ago", "2 h ago", "4 days ago", then a date. */
-export function ago(at: number, now = Date.now()): string {
-  const seconds = Math.max(0, Math.round((now - at) / 1000));
-  if (seconds < 45) return "just now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 7) return `${days} day${days === 1 ? "" : "s"} ago`;
-  return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function hasMotion(record: CustomThemeRecord): boolean {
-  const spec = headSpec(record);
-  // Only effects that actually move (static grain or a vignette is not "Animated").
-  return Object.entries(spec.effects ?? {}).some(([type, params]) => Boolean(params) && effectMoves(type as EffectType, (params ?? {}) as Record<string, unknown>))
-    || /animation/i.test(spec.customCss ?? "");
-}
-
-function tileMeta(record: CustomThemeRecord): string {
-  const spec = headSpec(record);
-  const parts: string[] = [];
-  if (record.disabledReason) parts.push("Turned off");
-  else if (hasMotion(record) && spec.motion?.enabled !== false) parts.push("Animated");
-  parts.push(builtInScheme(spec.base) === "light" ? "Light" : "Dark");
-  return parts.join(" · ");
-}
-
-function authorPhrase(record: CustomThemeRecord): string {
-  return record.createdBy.kind === "user" ? "Made by you" : `Made by ${providerName(record.createdBy.provider)}`;
-}
+/** The newest palette request already answered (see `libraryRequest`). */
+let handledLibraryRequest = 0;
 
 const SAFE_MODE_COPY: Record<ThemeDisabledReason, (name: string) => string> = {
   "boot-failure": (name) => `“${name}” was turned off because Mythra Code didn't start cleanly with it.`,
@@ -100,6 +63,7 @@ export function CustomThemesSettings({
   designer,
   onDesign,
   onDeleted,
+  libraryRequest = 0,
 }: {
   /** The theme chosen in Settings (the draft). */
   selectedTheme: ThemeId;
@@ -111,24 +75,37 @@ export function CustomThemesSettings({
   designer: ThemeDesignerOptions;
   onDesign: (choice: ThemeDesignerChoice) => void;
   onDeleted: (deleted: DeletedCustomTheme) => void;
+  /** Changes (to a new non-zero value) to open the Theme library, e.g. from the command palette. */
+  libraryRequest?: number;
 }) {
   const library = useCustomThemes();
   const themes = library.themes;
   const selectedId = customThemeIdOf(selectedTheme);
-  const [detailId, setDetailId] = useState<CustomThemeId | null>(null);
-  const shownId = selectedId && themes.some((record) => record.id === selectedId) ? (detailId ?? selectedId) : detailId;
-  const detail = themes.find((record) => record.id === shownId) ?? null;
+  const tiles = useMemo(() => settingsTiles(themes, selectedId), [themes, selectedId]);
   const [designOpen, setDesignOpen] = useState(false);
   const [designTarget, setDesignTarget] = useState<CustomThemeId | undefined>(undefined);
   const [hovered, setHovered] = useState<CustomThemeId | null>(null);
-  const nameInputRef = useRef<HTMLInputElement>(null);
+  // Open with an optional theme to land on; null while closed.
+  const [libraryOpen, setLibraryOpen] = useState<{ focus: ThemeLibraryFocus | null } | null>(null);
+  const sectionRef = useRef<HTMLDivElement>(null);
+  const libraryButtonRef = useRef<HTMLButtonElement>(null);
+  const libraryOpenerRef = useRef<HTMLElement | null>(null);
   const designId = useId();
   const reducedMotion = useReducedMotion();
   const motionPaused = settings.themeMotion === "paused";
+  const motionAllowed = active && !motionPaused && !reducedMotion;
 
-  // A tile picked from the built-in grid closes a detail card opened from a menu.
-  useEffect(() => { if (!selectedId) setDetailId(null); }, [selectedId]);
-  useEffect(() => { if (detailId && !themes.some((record) => record.id === detailId)) setDetailId(null); }, [detailId, themes]);
+  const openLibrary = useCallback((focus: ThemeLibraryFocus | null = null, opener?: HTMLElement | null) => {
+    libraryOpenerRef.current = opener ?? libraryButtonRef.current;
+    setLibraryOpen({ focus });
+  }, []);
+  // The palette's "Open theme library" arrives as a new request number. It is
+  // remembered outside the component: switching panes remounts this section.
+  useEffect(() => {
+    if (!libraryRequest || !active || libraryRequest <= handledLibraryRequest) return;
+    handledLibraryRequest = libraryRequest;
+    if (themes.length) openLibrary();
+  }, [libraryRequest, active, themes.length, openLibrary]);
 
   const disabledThemes = themes.filter((record) => record.disabledReason);
   const openDesigner = (target?: CustomThemeId) => {
@@ -136,7 +113,7 @@ export function CustomThemesSettings({
     setDesignOpen(true);
   };
 
-  const removeTheme = async (record: CustomThemeRecord) => {
+  const removeTheme = async (record: CustomThemeRecord): Promise<boolean> => {
     const spec = headSpec(record);
     const wasSelected = selectedId === record.id;
     const baseName = THEMES.find((theme) => theme.id === spec.base)?.name ?? spec.base;
@@ -144,25 +121,27 @@ export function CustomThemesSettings({
       `Delete “${spec.name}”?\n\nThis removes the theme and all of its history.${wasSelected ? ` Mythra Code will switch to ${baseName}, its base theme.` : ""}`,
       { confirmLabel: "Delete theme", cancelLabel: "Keep theme" },
     );
-    if (!confirmed) return;
+    if (!confirmed) return false;
     const { record: removed, restore } = deleteCustomTheme(record.id);
-    if (!removed) return;
+    if (!removed) return false;
     if (wasSelected) onSelectTheme(spec.base);
-    if (detailId === record.id) setDetailId(null);
     onDeleted({ record: removed, wasSelected, restore });
+    return true;
   };
 
   const tileMenu = (record: CustomThemeRecord) => [
     { label: "Rename", icon: <Pencil size={13} />, onSelect: () => {
-      setDetailId(record.id);
-      requestAnimationFrame(() => { nameInputRef.current?.focus(); nameInputRef.current?.select(); });
+      const trigger = sectionRef.current?.querySelector<HTMLElement>(`[data-ct-tile="${record.id}"] .row-menu-trigger`);
+      openLibrary({ id: record.id, field: "name" }, trigger);
     } },
     { label: "Adjust with AI", icon: <Sparkles size={13} />, onSelect: () => openDesigner(record.id) },
     { label: "Delete…", icon: <Trash2 size={13} />, danger: true, separatorBefore: true, onSelect: () => void removeTheme(record) },
   ];
 
+  const hiddenCount = themes.length - tiles.length;
+
   return (
-    <div className="set-group ct-settings" id="appearance-custom-themes">
+    <div ref={sectionRef} className="set-group ct-settings" id="appearance-custom-themes">
       <div className="set-group-head">
         <h4 tabIndex={-1}>Custom themes</h4>
         {themes.length > 0 && !designOpen && (
@@ -213,14 +192,14 @@ export function CustomThemesSettings({
       {themes.length > 0 && (
         <div className="set-card bare"><div className="set-body">
           <div className="theme-grid ct-grid" role="radiogroup" aria-label="Custom themes" onKeyDown={rovingChoiceKeyDown}>
-            {themes.map((record, index) => {
+            {tiles.map((record, index) => {
               const spec = headSpec(record);
               const selected = selectedId === record.id;
-              const tabbable = selected || (!themes.some((entry) => entry.id === selectedId) && index === 0);
-              const animate = active && !motionPaused && !reducedMotion && spec.motion?.enabled !== false
-                && (selected || hovered === record.id) && !record.disabledReason;
+              const tabbable = selected || (!tiles.some((entry) => entry.id === selectedId) && index === 0);
+              const animate = motionAllowed && spec.motion?.enabled !== false
+                && (selected || hovered === record.id) && !record.disabledReason && !libraryOpen;
               return (
-                <div key={record.id} className={`ct-tile${selected ? " selected" : ""}`}
+                <div key={record.id} data-ct-tile={record.id} className={`ct-tile${selected ? " selected" : ""}`}
                   onPointerEnter={() => setHovered(record.id)} onPointerLeave={() => setHovered((current) => current === record.id ? null : current)}>
                   <button
                     type="button"
@@ -231,7 +210,7 @@ export function CustomThemesSettings({
                     title={spec.description || undefined}
                     onFocus={() => setHovered(record.id)}
                     onBlur={() => setHovered((current) => current === record.id ? null : current)}
-                    onClick={() => { setDetailId(null); onSelectTheme(customThemeSetting(record.id)); }}
+                    onClick={() => onSelectTheme(customThemeSetting(record.id))}
                   >
                     <span className="ct-preview-slot" aria-hidden="true">
                       <CustomThemePreview id={record.id} spec={spec} animate={animate} />
@@ -249,15 +228,38 @@ export function CustomThemesSettings({
               );
             })}
           </div>
+          <div className="ct-library-link-row">
+            <button ref={libraryButtonRef} type="button" className="ct-library-link" aria-haspopup="dialog" onClick={(event) => openLibrary(null, event.currentTarget)}>
+              {hiddenCount > 0 ? `See all ${themes.length} themes` : "Manage themes"}
+              <ChevronRight size={13} aria-hidden="true" />
+            </button>
+          </div>
         </div></div>
       )}
 
-      {detail && <ThemeDetail
-        key={detail.id}
-        record={detail}
-        nameInputRef={nameInputRef}
-        selected={selectedId === detail.id}
-        onUse={() => { setDetailId(null); onSelectTheme(customThemeSetting(detail.id)); }}
+      {libraryOpen && <ThemeLibraryDialog
+        themes={themes}
+        selectedId={selectedId && themes.some((record) => record.id === selectedId) ? selectedId : null}
+        initialFocus={libraryOpen.focus}
+        motionAllowed={motionAllowed}
+        host={sectionRef.current?.closest<HTMLElement>(".settings-backdrop") ?? null}
+        returnFocus={() => {
+          const opener = libraryOpenerRef.current;
+          return opener && opener.isConnected ? opener : libraryButtonRef.current;
+        }}
+        onUse={(id) => onSelectTheme(customThemeSetting(id))}
+        onDesign={(target) => {
+          // One design flow: close the library and open the panel here.
+          setLibraryOpen(null);
+          openDesigner(target);
+          requestAnimationFrame(() => document.getElementById(designId)?.scrollIntoView?.({ block: "nearest" }));
+        }}
+        onDelete={removeTheme}
+        onClose={() => {
+          setLibraryOpen(null);
+          // Opened from the palette, the link may be below the fold: bring it into view with its focus.
+          if (libraryOpenerRef.current === libraryButtonRef.current) requestAnimationFrame(() => libraryButtonRef.current?.scrollIntoView?.({ block: "nearest" }));
+        }}
       />}
 
       <div className="set-card ct-behaviour">
@@ -319,18 +321,6 @@ export function CustomThemesSettings({
   );
 }
 
-function useReducedMotion(): boolean {
-  const query = typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
-  const [reduced, setReduced] = useState(Boolean(query?.matches));
-  useEffect(() => {
-    if (!query) return;
-    const update = () => setReduced(query.matches);
-    query.addEventListener?.("change", update);
-    return () => query.removeEventListener?.("change", update);
-  }, [query]);
-  return reduced;
-}
-
 function DesignPanel({ options, target, toolsOff, onCancel, onStart }: {
   options: ThemeDesignerOptions;
   target: CustomThemeRecord | null;
@@ -379,132 +369,5 @@ function DesignPanel({ options, target, toolsOff, onCancel, onStart }: {
         </button>
       </div>
     </div>
-  );
-}
-
-function ThemeDetail({ record, nameInputRef, selected, onUse }: {
-  record: CustomThemeRecord;
-  nameInputRef: RefObject<HTMLInputElement | null>;
-  selected: boolean;
-  onUse: () => void;
-}) {
-  const spec = headSpec(record);
-  const [name, setName] = useState(spec.name);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
-  const historyId = useId();
-  const nameId = useId();
-  const editing = useRef(false);
-  useEffect(() => { if (!editing.current) setName(spec.name); }, [spec.name]);
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const commitName = () => {
-    editing.current = false;
-    const next = name.trim();
-    if (!next) { setName(spec.name); return; }
-    if (next !== spec.name) renameCustomTheme(record.id, next, USER);
-  };
-  // Typing autosaves after a pause, like the rest of Settings.
-  useEffect(() => {
-    if (!editing.current) return;
-    const timer = window.setTimeout(() => {
-      const next = name.trim();
-      if (next && next !== headSpec(record).name) renameCustomTheme(record.id, next, USER);
-    }, 450);
-    return () => window.clearTimeout(timer);
-  }, [name, record]);
-
-  const undo = canUndo(record);
-  const baseTheme = THEMES.find((theme) => theme.id === spec.base);
-  const scheme = builtInScheme(spec.base);
-  const animated = hasMotion(record);
-  const revisions = [...record.revisions].reverse();
-  const adjusted = record.revisions.find((revision) => revision.n === record.head)?.adjustments?.length ?? 0;
-
-  return (
-    <div className="set-card ct-detail" aria-label={`${spec.name} details`} role="group">
-      <div className="set-row">
-        <label className="set-copy" htmlFor={nameId}><strong>Name</strong></label>
-        <div className="set-control">
-          <input
-            id={nameId}
-            ref={nameInputRef}
-            className="ct-name-input"
-            value={name}
-            maxLength={40}
-            spellCheck={false}
-            onChange={(event) => { editing.current = true; setName(event.target.value); }}
-            onBlur={commitName}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") { event.preventDefault(); commitName(); event.currentTarget.blur(); }
-              if (event.key === "Escape" && name !== spec.name) { event.preventDefault(); event.stopPropagation(); editing.current = false; setName(spec.name); }
-            }}
-          />
-        </div>
-      </div>
-      {spec.description && <div className="set-row">
-        <div className="set-copy"><strong>Description</strong></div>
-        <div className="set-control ct-detail-value"><span>{spec.description}</span></div>
-      </div>}
-      <div className="set-row">
-        <div className="set-copy"><strong>Based on</strong></div>
-        <div className="set-control ct-detail-value">
-          <span>{baseTheme?.name ?? spec.base} ({scheme}) · {authorPhrase(record)} · Edited {ago(record.updatedAt, now)}</span>
-          {!selected && <button type="button" className="secondary-button" onClick={onUse}>Use this theme</button>}
-        </div>
-      </div>
-      {animated && <div className="set-row">
-        <div className="set-copy">
-          <strong id={`${nameId}-motion`}>Animations</strong>
-          <small>Play this theme's animations.</small>
-        </div>
-        <div className="set-control">
-          <Switch
-            checked={spec.motion?.enabled !== false}
-            labelledBy={`${nameId}-motion`}
-            onChange={(next) => commitCustomThemeRevision(record.id, { ...spec, motion: { ...spec.motion, enabled: next } }, { by: USER, kind: "edit", summary: next ? "Animations on" : "Animations off" })}
-          />
-        </div>
-      </div>}
-      <div className="set-row ct-history-row">
-        <button type="button" className="ct-history-toggle" aria-expanded={historyOpen} aria-controls={historyId} onClick={() => setHistoryOpen((open) => !open)}>
-          <span className="ct-chevron" aria-hidden="true" />
-          <strong>History</strong>
-          <small>{record.revisions.length} version{record.revisions.length === 1 ? "" : "s"}{adjusted ? ` · ${adjusted} colour${adjusted === 1 ? "" : "s"} adjusted for readability` : ""}</small>
-        </button>
-        <div className="set-control">
-          <button type="button" className="secondary-button" disabled={!undo.ok} title={undo.ok ? undefined : undo.reason}
-            onClick={() => undoCustomTheme(record.id, { by: USER })}>
-            <Undo2 size={13} aria-hidden="true" /> Undo last change
-          </button>
-        </div>
-      </div>
-      <SmoothDisclosure open={historyOpen} id={historyId} className="ct-history-disclosure">
-        <ol className="ct-history" aria-label={`${spec.name} history`}>
-          {revisions.map((revision) => <HistoryRow key={revision.n} record={record} revision={revision} now={now} />)}
-          {record.revisions[0]!.n > 1 && <li className="ct-history-pruned">Earlier versions were cleared to save space.</li>}
-        </ol>
-      </SmoothDisclosure>
-    </div>
-  );
-}
-
-function HistoryRow({ record, revision, now }: { record: CustomThemeRecord; revision: CustomThemeRevision; now: number }) {
-  const current = revision.n === record.head;
-  const author = revisionAuthor(revision);
-  return (
-    <li className={current ? "current" : undefined} aria-current={current ? "true" : undefined}>
-      <span className="ct-rev">r{revision.n}</span>
-      <span className="ct-rev-copy">
-        <span className="ct-rev-summary">{revision.summary}</span>
-        <small>{author === "you" ? "You" : author} · {ago(revision.at, now)}{revision.adjustments?.length ? ` · ${revision.adjustments.length} colour${revision.adjustments.length === 1 ? "" : "s"} adjusted for readability` : ""}</small>
-      </span>
-      {current
-        ? <span className="ct-rev-current">Current</span>
-        : <button type="button" className="secondary-button ct-rev-restore" onClick={() => undoCustomTheme(record.id, { by: USER, toRevision: revision.n })}><RotateCcw size={12} aria-hidden="true" /> Restore</button>}
-    </li>
   );
 }

@@ -65,8 +65,29 @@
 .app-shell[data-theme][data-color-scheme] .ct-design-note { margin: 0; color: var(--orange); font-size: 12px; line-height: 1.45; }
 .app-shell[data-theme][data-color-scheme] .ct-design-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-/* ---- Detail card ---- */
-.app-shell[data-theme][data-color-scheme] .ct-detail { margin-top: 8px; }
+/* ---- The way into the Theme library, under the tiles ---- */
+.app-shell[data-theme][data-color-scheme] .ct-library-link-row { display: flex; justify-content: flex-end; margin-top: 2px; }
+.app-shell[data-theme][data-color-scheme] .ct-library-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 26px;
+  padding: 0 6px 0 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .ct-library-link > svg { color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .ct-library-link:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .ct-library-link:hover > svg { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .ct-library-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---- Fields shared with the library's name field ---- */
 .app-shell[data-theme][data-color-scheme] .ct-name-input,
 .app-shell[data-theme][data-color-scheme] .ct-model-input {
   width: min(260px, 100%);
@@ -82,55 +103,6 @@
 .app-shell[data-theme][data-color-scheme] .ct-model-input { width: 100%; }
 .app-shell[data-theme][data-color-scheme] .ct-name-input:focus,
 .app-shell[data-theme][data-color-scheme] .ct-model-input:focus { border-color: var(--accent-line); outline: none; box-shadow: var(--ring); }
-.app-shell[data-theme][data-color-scheme] .ct-detail-value { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; text-align: right; }
-.app-shell[data-theme][data-color-scheme] .ct-detail-value > span { min-width: 0; overflow-wrap: anywhere; }
-
-/* History: a disclosure row, then a hairline list with the head marked. */
-.app-shell[data-theme][data-color-scheme] .ct-history-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  border-radius: var(--r-control);
-  color: var(--text);
-  background: none;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.app-shell[data-theme][data-color-scheme] .ct-history-toggle strong { font-size: var(--fs-ui); font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .ct-history-toggle small { color: var(--muted); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .ct-history-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.app-shell[data-theme][data-color-scheme] .ct-chevron {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-right: 1.5px solid var(--muted);
-  border-bottom: 1.5px solid var(--muted);
-  transform: rotate(-45deg);
-  transition: transform var(--lm-d-3) var(--lm-ease-out);
-}
-.app-shell[data-theme][data-color-scheme] .ct-history-toggle[aria-expanded="true"] .ct-chevron { transform: rotate(45deg); }
-.app-shell[data-theme][data-color-scheme] .ct-history { margin: 0; padding: 0 14px 8px; list-style: none; }
-.app-shell[data-theme][data-color-scheme] .ct-history > li {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  min-height: 40px;
-  padding: 6px 0;
-  border-top: 1px solid var(--line-quiet);
-}
-.app-shell[data-theme][data-color-scheme] .ct-history > li.ct-history-pruned { display: block; min-height: 0; padding: 8px 0 2px; color: var(--muted-2); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .ct-rev { color: var(--muted-2); font-size: 12px; font-variant-numeric: tabular-nums; }
-.app-shell[data-theme][data-color-scheme] .ct-rev-copy { display: grid; gap: 1px; min-width: 0; }
-.app-shell[data-theme][data-color-scheme] .ct-rev-summary { overflow: hidden; color: var(--text); font-size: var(--fs-ui); white-space: nowrap; text-overflow: ellipsis; }
-.app-shell[data-theme][data-color-scheme] .ct-rev-copy small { color: var(--muted); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .ct-rev-current { color: var(--muted); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .ct-history > li.current .ct-rev { color: var(--accent); }
-.app-shell[data-theme][data-color-scheme] .ct-rev-restore { height: 26px; }
 
 /* ---- Behaviour card ---- */
 .app-shell[data-theme][data-color-scheme] .ct-behaviour { margin-top: 8px; }
@@ -147,9 +119,6 @@
   line-height: 18px;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .app-shell[data-theme][data-color-scheme] .ct-chevron { transition: none; }
-}
 @media (max-width: 720px) {
   .app-shell[data-theme][data-color-scheme] .ct-safe-notice { flex-wrap: wrap; }
 }

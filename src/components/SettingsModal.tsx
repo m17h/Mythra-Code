@@ -2183,6 +2183,7 @@ export function SettingsModal({
               active={open && settingsSection === "appearance"}
               designer={themeDesigner}
               onDesign={(choice) => void requestDesignTheme(choice)}
+              libraryRequest={initialDraft?.themeLibrary}
               onDeleted={(deleted) => {
                 const setting = `custom:${deleted.record.id}`;
                 const projectIds = localProjects.filter((project) => project.overrides?.defaults?.theme === setting).map((project) => project.id);
