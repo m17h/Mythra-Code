@@ -97,11 +97,11 @@
   transition: border-color var(--t-fast) ease, background var(--t-fast) ease, color var(--t-fast) ease;
 }
 .checkpoint-git-toast-primary {
-  border: 1px solid color-mix(in srgb, var(--green) 40%, var(--line-strong));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line-strong));
   color: var(--text);
-  background: color-mix(in srgb, var(--green) 12%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
-.checkpoint-git-toast-primary:hover:not(:disabled) { border-color: color-mix(in srgb, var(--green) 62%, var(--line-strong)); background: color-mix(in srgb, var(--green) 18%, transparent); }
+.checkpoint-git-toast-primary:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 62%, var(--line-strong)); background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .checkpoint-git-toast-primary:disabled { cursor: progress; opacity: .78; }
 .checkpoint-git-toast-dismiss { border: 1px solid var(--line); color: var(--muted); background: transparent; }
 .checkpoint-git-toast-dismiss:hover { color: var(--text); border-color: var(--line-strong); background: var(--line-quiet); }
@@ -113,8 +113,8 @@
 .app-shell[data-theme][data-color-scheme] .checkpoint-git-toast { border-radius: var(--r-xl); box-shadow: var(--lm-pop-shadow, var(--elev-2)); }
 .app-shell[data-theme][data-color-scheme] .checkpoint-git-toast-icon { border-radius: var(--r-md); }
 .app-shell[data-theme][data-color-scheme] .checkpoint-git-toast-actions button { border-radius: var(--r-control, var(--r-sm)); }
-.app-shell[data-theme][data-color-scheme] .checkpoint-git-toast-primary { border-color: transparent; color: var(--on-accent, var(--text)); background: var(--lm-fill, var(--green)); }
-.app-shell[data-theme][data-color-scheme] .checkpoint-git-toast-primary:hover:not(:disabled) { border-color: transparent; background: var(--lm-fill, var(--green)); filter: brightness(1.06); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-git-toast-primary { border-color: transparent; color: var(--on-accent, var(--text)); background: var(--lm-fill, var(--accent)); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-git-toast-primary:hover:not(:disabled) { border-color: transparent; background: var(--lm-fill, var(--accent)); filter: brightness(1.06); }
 
 /* A narrow panel stacks the actions under the copy instead of squeezing it. */
 @container chat-main (max-width: 560px) {

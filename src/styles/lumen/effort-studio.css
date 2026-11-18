@@ -23,11 +23,9 @@
    :focus-visible inside a selector list.
    ========================================================================== */
 
-.app-shell[data-theme][data-color-scheme] { --studio-accent: var(--provider-accent-openai); --studio-accent-soft: var(--provider-accent-openai-soft); }
-.app-shell[data-theme][data-color-scheme][data-model-provider="claude"] { --studio-accent: var(--provider-accent-claude); --studio-accent-soft: var(--provider-accent-claude-soft); }
-.app-shell[data-theme][data-color-scheme][data-model-provider="cursor"] { --studio-accent: var(--provider-accent-cursor); --studio-accent-soft: var(--provider-accent-cursor-soft); }
-.app-shell[data-theme][data-color-scheme][data-model-provider="openrouter"] { --studio-accent: var(--provider-accent-openrouter); --studio-accent-soft: var(--provider-accent-openrouter-soft); }
-.app-shell[data-theme][data-color-scheme][data-model-provider="lmstudio"] { --studio-accent: var(--provider-accent-lmstudio); --studio-accent-soft: var(--provider-accent-lmstudio-soft); }
+/* The default look follows the theme accent (2026-11-17): a provider colour
+   (olive, sage, orange) clashed with every theme's own accent. */
+.app-shell[data-theme][data-color-scheme] { --studio-accent: var(--accent); --studio-accent-soft: var(--accent-soft); }
 
 /* ---- Heading ---- */
 .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .reasoning-heading > svg:first-child,
@@ -283,3 +281,26 @@
     box-shadow: none;
   }
 }
+
+/* Reduced motion, for every effort-slider style (Studio, Poet, Aurora, Astra,
+   Reactor, Comet, Coil, Pixel, Ink): the control holds still. Levels, colours
+   and readouts still change; nothing drifts, pulses, sparks or glides. */
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-theme][data-color-scheme] .composer .reasoning-control *,
+  .app-shell[data-theme][data-color-scheme] .composer .reasoning-control *::before,
+  .app-shell[data-theme][data-color-scheme] .composer .reasoning-control *::after,
+  .app-shell[data-theme][data-color-scheme] .composer .openrouter-reasoning *,
+  .app-shell[data-theme][data-color-scheme] .composer .openrouter-reasoning *::before,
+  .app-shell[data-theme][data-color-scheme] .composer .openrouter-reasoning *::after,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell *,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell *::before,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell *::after,
+  .app-shell[data-theme][data-color-scheme] .slider-style-preview *,
+  .app-shell[data-theme][data-color-scheme] .slider-style-preview *::before,
+  .app-shell[data-theme][data-color-scheme] .slider-style-preview *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .app-shell[data-theme][data-color-scheme] .effort-sparks { display: none; }
+}
+

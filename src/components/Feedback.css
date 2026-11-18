@@ -17,7 +17,7 @@
 .feedback-float {
   position: fixed;
   inset: auto;
-  z-index: 250;
+  z-index: var(--z-popover);
   margin: 0;
   padding: 0;
   overflow: visible;
@@ -52,9 +52,9 @@
   cursor: pointer;
   transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease;
 }
-.feedback-selection-button > svg { color: var(--green); }
+.feedback-selection-button > svg { color: var(--accent); }
 .feedback-selection-button:hover, .feedback-selection-button:focus-visible { color: var(--text); background-image: linear-gradient(var(--lm-hover, transparent), var(--lm-hover, transparent)); }
-.feedback-selection-button:focus-visible { outline: none; box-shadow: var(--ring, 0 0 0 3px var(--green-soft)), var(--lm-pop-shadow, var(--shadow)); }
+.feedback-selection-button:focus-visible { outline: none; box-shadow: var(--ring, 0 0 0 3px var(--accent-soft)), var(--lm-pop-shadow, var(--shadow)); }
 
 /* ---- Note card ---- */
 .feedback-card {
@@ -108,7 +108,7 @@
   font: var(--fs-ui)/1.5 var(--font-sans);
   transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease;
 }
-.feedback-card textarea:focus { border-color: var(--green-line); box-shadow: var(--ring, 0 0 0 3px var(--green-soft)); }
+.feedback-card textarea:focus { border-color: var(--accent-line); box-shadow: var(--ring, 0 0 0 3px var(--accent-soft)); }
 .feedback-card-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .feedback-card-actions button {
   height: 28px;
@@ -126,8 +126,8 @@
 .feedback-card-actions .feedback-card-cancel { border-color: transparent; color: var(--muted); background: transparent; }
 .feedback-card-actions .feedback-card-cancel:hover:not(:disabled) { border-color: transparent; background: var(--lm-hover, transparent); }
 /* Submit is the sheet's primary push button: flat accent, no glow. */
-.feedback-card-actions .feedback-card-submit { border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--green)); font-weight: 600; }
-.feedback-card-actions .feedback-card-submit:hover:not(:disabled) { border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--green)); filter: brightness(1.06); }
+.feedback-card-actions .feedback-card-submit { border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--accent)); font-weight: 600; }
+.feedback-card-actions .feedback-card-submit:hover:not(:disabled) { border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--accent)); filter: brightness(1.06); }
 .feedback-card-actions .feedback-card-remove { margin-right: auto; border-color: transparent; color: var(--red); background: transparent; }
 .feedback-card-actions .feedback-card-remove:hover:not(:disabled) { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--line)); background: color-mix(in srgb, var(--red) 10%, transparent); }
 .feedback-card-actions button:disabled { opacity: .42; cursor: default; }
@@ -145,7 +145,7 @@
 .feedback-tray-inner { display: flex; flex-direction: column; gap: 6px; padding: 9px var(--s-4) 1px; }
 .feedback-tray-heading { min-height: 18px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: 0 1px; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; text-transform: none; }
 .feedback-tray-heading > span { display: flex; align-items: center; gap: 5px; }
-.feedback-tray-heading > span > svg { color: var(--green); }
+.feedback-tray-heading > span > svg { color: var(--accent); }
 .feedback-tray-heading em { min-width: 16px; height: 16px; display: inline-grid; place-items: center; padding: 0 4px; border-radius: var(--r-chip, 4px); color: var(--ink-2); background: var(--lm-press, color-mix(in srgb, var(--text) 7%, transparent)); font-style: normal; font-variant-numeric: tabular-nums; letter-spacing: 0; }
 .feedback-tray-heading small { overflow: hidden; color: var(--muted-2); font-size: inherit; font-weight: 400; letter-spacing: 0; text-transform: none; white-space: nowrap; text-overflow: ellipsis; }
 .feedback-tray-list { max-height: 62px; display: flex; flex-wrap: wrap; gap: 4px; overflow-y: auto; padding: 1px; scrollbar-width: thin; }
@@ -171,7 +171,7 @@
 @keyframes feedback-chip-in { from { opacity: 0; transform: translateY(3px); } }
 .feedback-chip-main { min-width: 0; height: 100%; display: flex; align-items: center; gap: 5px; padding: 0 4px 0 8px; border: 0; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .feedback-chip-main:disabled { cursor: default; }
-.feedback-chip-main:focus-visible { outline: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 50%, transparent); border-radius: var(--r-xs); }
+.feedback-chip-main:focus-visible { outline: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent); border-radius: var(--r-xs); }
 .feedback-chip-main > svg { flex: 0 0 auto; color: var(--ink-2); }
 .feedback-chip-main strong { flex: 0 0 auto; max-width: 120px; overflow: hidden; color: var(--ink-2); font-weight: 560; white-space: nowrap; text-overflow: ellipsis; }
 .feedback-chip-main span:last-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

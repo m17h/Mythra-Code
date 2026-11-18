@@ -1,3 +1,4 @@
+import { EmptyState } from "./EmptyState";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -40,7 +41,7 @@ import { EFFORT_SLIDER_STYLES, THEMES, sanitizeChatFont, sanitizeEffortSlider, s
 import { chatFontCss, customFontFor, useCustomFonts } from "../lib/customFonts";
 import type { Account, ChatFont, EffortSliderStyle, Provider, SettingsSection, ThemeName } from "../types";
 import { useModalFocus } from "../hooks/useModalFocus";
-import { ClaudeLogo, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo } from "./BrandLogos";
+import { ClaudeLogo, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo, ProviderLogo } from "./BrandLogos";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import { MythraMark } from "./MythraMark";
 
@@ -60,7 +61,7 @@ const STEPS = [
 ] as const;
 
 /** Opens a Settings section while onboarding is suspended; `trigger` regains focus on resume.
-    A draft seeds unsaved Settings values that only take effect on Save. */
+    A draft only opens things in Settings (an account row, a look preview); nothing changes until the person acts there. */
 type OpenSettings = (section: SettingsSection, trigger: HTMLElement, draft?: OnboardingSettingsDraft) => void;
 type Readiness = Record<Provider, OnboardingProviderStatus>;
 type RuntimeInputs = { runtimeStatus: CodexRuntimeStatus | null; claudeStatus: ClaudeRuntimeStatus | null; cursorStatus: CursorRuntimeStatus | null };
@@ -222,13 +223,13 @@ function ConnectPage({ headingRef, readiness, inputs, onSettings, preferredProvi
   const selected = PROVIDERS.find((provider) => provider.id === selectedId) ?? null;
   const anyReady = PROVIDERS.some((provider) => readiness[provider.id].ready);
 
-  let panel: ReactNode = <p className="ob-panel-empty">Choose a provider to see how to connect it.</p>;
+  let panel: ReactNode = <EmptyState variant="compact" className="ob-panel-empty" title="Choose a provider" text="Pick one to see how to connect it." />;
   if (selected) {
     const status = readiness[selected.id];
     const stage = providerStage(selected.id, inputs, status);
     const installGuide = selected.runtime === "Codex CLI" ? CODEX_INSTALL_URL : selected.guide;
-    // Settings opens with this provider in an unsaved draft; the default only changes on Save.
-    const openModels = (event: { currentTarget: HTMLElement }) => onSettings("models", event.currentTarget, { provider: selected.id });
+    // Settings opens this account's row; the default provider is left alone.
+    const openModels = (event: { currentTarget: HTMLElement }) => onSettings("models", event.currentTarget, { account: selected.id });
     panel = <div key={selected.id} className="ob-panel-body">
       <div className="ob-panel-head">
         <strong>{selected.name}</strong>
@@ -243,7 +244,9 @@ function ConnectPage({ headingRef, readiness, inputs, onSettings, preferredProvi
         {selected.id === "openrouter" && stage !== "ready" && <button type="button" className="ob-link" onClick={() => void openUrl(OPENROUTER_KEYS_URL)}>Create API key <ExternalLink size={12} /></button>}
         {stage !== "install" && stage !== "update" && <button type="button" className="ob-link" onClick={() => void openUrl(selected.guide)}>Setup guide <ExternalLink size={12} /></button>}
       </div>
-      <small className="ob-panel-note">Opens with {selected.name} selected. Your default provider changes only if you Save.</small>
+      <small className="ob-panel-note">{selected.id === preferredProvider
+        ? `Opens your ${selected.name} account. It’s already the default for new threads.`
+        : `Opens your ${selected.name} account. New threads keep using ${PROVIDERS.find((provider) => provider.id === preferredProvider)?.name ?? "your current default"} unless you choose “Use ${selected.name} as default” there.`}</small>
     </div>;
   }
 
@@ -259,19 +262,20 @@ function ConnectPage({ headingRef, readiness, inputs, onSettings, preferredProvi
       className="ob-providers"
       value={selectedId}
       onChange={setPicked}
-      options={PROVIDERS.map(({ id, name, kind, Logo }) => ({
+      options={PROVIDERS.map(({ id, name, kind }) => ({
         id,
         label: name,
         description: `${kind}. ${readiness[id].detail}`,
         className: "ob-tile",
         content: <>
           {pulse?.id === id && <i key={pulse.key} className="ob-tile-ring" aria-hidden="true" />}
-          {/* Readiness is a corner dot, not a second text line; the kind and
-              status stay in the tile's accessible description and the
-              selected provider's panel. */}
-          <i className={`ob-tile-status ${readiness[id].ready && readiness[id].verified !== false ? "on" : ""}`} aria-hidden="true" />
-          <span className="ob-tile-logo" aria-hidden="true"><Logo size={18} /></span>
+          <span className={`ob-tile-logo provider-logo ${id}`} aria-hidden="true"><ProviderLogo provider={id} size={18} /></span>
           <span className="ob-tile-name" aria-hidden="true">{name}</span>
+          {/* Readiness in words under the name (a bare corner dot was
+              unexplained); the full detail stays in the description. */}
+          <span className={`ob-tile-state ${readiness[id].ready && readiness[id].verified !== false ? "on" : ""}`} aria-hidden="true">
+            {readiness[id].ready ? readiness[id].verified === false ? "Check sign-in" : "Connected" : "Not set up"}
+          </span>
         </>,
       }))}
     />
@@ -295,7 +299,7 @@ function ProjectsPage({ headingRef, onSettings }: { headingRef: HeadingRef; onSe
   const [place, setPlace] = useState<"project" | "chat">("project");
   return <section className="ob-page" aria-labelledby={headingId}>
     <PageHeading headingRef={headingRef} id={headingId} eyebrow="Projects & chats" title="Work in a folder, or just talk.">
-      Every thread belongs to a project folder or to Normal chats.
+      Every thread belongs to a project folder or to Chats.
     </PageHeading>
     <RadioGroup
       label="Where a thread lives"
@@ -304,14 +308,14 @@ function ProjectsPage({ headingRef, onSettings }: { headingRef: HeadingRef; onSe
       onChange={setPlace}
       options={[
         { id: "project", label: "Project", content: <><FolderOpen size={15} aria-hidden="true" />Project</> },
-        { id: "chat", label: "Normal chat", content: <><MessageSquare size={15} aria-hidden="true" />Normal chat</> },
+        { id: "chat", label: "Chats", content: <><MessageSquare size={15} aria-hidden="true" />Chats</> },
       ]}
     />
     <div className="ob-place ob-plinth">
       <span className="ob-place-icon" aria-hidden="true">{place === "project" ? <FolderOpen size={22} /> : <MessageSquare size={22} />}</span>
       <p key={place} aria-live="polite">{place === "project"
-        ? "Threads run in a real folder on this computer: files, commands, Git, and Thread tools. Edits follow the permission you choose."
-        : "Saved under Normal chats with no folder attached. Good for questions and planning."}</p>
+        ? "Threads run in a real folder on this computer: files, commands, Git, and the Tools panel. Edits follow the permission you choose."
+        : "Saved under Chats with no folder attached. Good for questions and planning."}</p>
     </div>
     <Disclosure summary="Optional: Git, worktrees, and GitHub" hint="Local first">
       <ol className="ob-route">
@@ -379,7 +383,7 @@ function DirectPage({ headingRef, onSettings }: { headingRef: HeadingRef; onSett
         <span><strong>Stop</strong><small>Ends the turn. Thinking and commands stay in the transcript.</small></span>
       </div>
     </div>
-    <p className="ob-note"><NotebookPen size={13} aria-hidden="true" />Your instructions: <button type="button" className="ob-link" onClick={(event) => onSettings("prompts", event.currentTarget)}>Settings → Prompts</button>, or <b>Project instructions</b> beside the project name in a project chat.</p>
+    <p className="ob-note"><NotebookPen size={13} aria-hidden="true" />Your instructions: <button type="button" className="ob-link" onClick={(event) => onSettings("prompts", event.currentTarget)}>Settings → Instructions</button>, or <b>Project instructions</b> in the top bar&rsquo;s &hellip; menu of any project thread.</p>
   </section>;
 }
 
@@ -459,7 +463,7 @@ function PersonalizePage({ headingRef, open, preview, onPreview, onThemeChange, 
 
   return <section ref={rootRef} className="ob-page" aria-labelledby={headingId}>
     <PageHeading headingRef={headingRef} id={headingId} eyebrow="Make it yours" title="Make it feel like yours.">
-      Selecting a theme applies it to the app and saves it. Fonts and slider styles preview here; save those in Settings → Interface.
+      Selecting a theme applies it to the app and saves it. Fonts and slider styles only preview here; to keep one, choose “Review this look in Settings” and apply it there.
     </PageHeading>
     <div className="ob-personalize">
       <div className="ob-fields">
@@ -536,12 +540,12 @@ function PersonalizePage({ headingRef, open, preview, onPreview, onThemeChange, 
     <div className="ob-foot-row">
       <div className="ob-inline-note">
         <span className="ob-perm-icon" aria-hidden="true"><Sparkles size={14} /></span>
-        <span><strong>Automatic thread titles</strong><small>Off by default. When on, your first message goes to the title model you choose and uses that provider’s subscription or credits. <button type="button" className="ob-link" onClick={(event) => onSettings("projects", event.currentTarget)}>Settings → Projects</button></small></span>
+        <span><strong>Automatic thread titles</strong><small>Off by default. When on, your first message goes to the title model you choose and uses that provider’s subscription or credits. <button type="button" className="ob-link" onClick={(event) => onSettings("general", event.currentTarget)}>Settings → General</button></small></span>
       </div>
       <button
         type="button"
         className="secondary-button"
-        onClick={(event) => onSettings("general", event.currentTarget, { appearance: { theme: current.theme, chatFont: current.chatFont, effortSlider: current.effortSlider } })}
+        onClick={(event) => onSettings("appearance", event.currentTarget, { appearance: { theme: current.theme, chatFont: current.chatFont, effortSlider: current.effortSlider } })}
       ><Palette size={14} aria-hidden="true" />Review this look in Settings</button>
     </div>
   </section>;
@@ -566,7 +570,7 @@ function ReadyPage({ headingRef, readiness, skillsFolder, projectPending, projec
   return <section className="ob-page ob-ready" aria-labelledby={headingId}>
     <span className={`ob-ready-mark ${anyReady ? "" : "pending"}`} aria-hidden="true">{anyReady ? <Check size={24} strokeWidth={2.5} /> : <KeyRound size={22} />}</span>
     <PageHeading headingRef={headingRef} id={headingId} eyebrow={anyReady ? "All set" : "Almost there"} title={anyReady ? "You’re ready to build." : "Set up a provider to start."} centered>
-      Replay this guide anytime from Settings → Runtime.
+      Replay this guide anytime from Settings → General.
     </PageHeading>
     <div className="ob-status-line">
       {anyReady
@@ -585,7 +589,7 @@ function ReadyPage({ headingRef, readiness, skillsFolder, projectPending, projec
       </button>
       <button type="button" className="ob-destination" onClick={onStartChat}>
         <span className="ob-dest-icon" aria-hidden="true"><MessageSquare size={17} /></span>
-        <span><strong>Start a normal chat</strong><small>No folder attached</small></span>
+        <span><strong>Start a chat</strong><small>No folder attached</small></span>
         <ArrowRight size={14} className="ob-dest-arrow" aria-hidden="true" />
       </button>
     </div>
@@ -593,7 +597,7 @@ function ReadyPage({ headingRef, readiness, skillsFolder, projectPending, projec
     <Disclosure summary="Useful once you’re working" className="ob-tools-disclosure">
       <ul className="ob-tools">
         <li><span className="ob-perm-icon" aria-hidden="true"><Play size={13} /></span><span><strong>Run</strong><small>Find run command investigates the project and proposes a dev command for you to review and save. Nothing launches until you press Run.</small></span><em className="ob-scope">Top bar</em></li>
-        <li><span className="ob-perm-icon" aria-hidden="true"><Sparkles size={13} /></span><span><strong>Review</strong><small>Inspect a thread’s changes. Inline AI review is available for supported providers.</small></span><em className="ob-scope">Thread tools</em></li>
+        <li><span className="ob-perm-icon" aria-hidden="true"><Sparkles size={13} /></span><span><strong>Changes</strong><small>Inspect a thread’s changes. Inline AI review is available for supported providers.</small></span><em className="ob-scope">Tools</em></li>
         <li><span className="ob-perm-icon" aria-hidden="true"><Undo2 size={13} /></span><span><strong>Checkpoints</strong><small>When a run records a checkpoint, you can restore its file changes.</small></span></li>
         <li><span className="ob-perm-icon" aria-hidden="true"><Boxes size={13} /></span><span><strong>Skills</strong><small>{skillsFolder ? `Markdown playbooks from ${skillsFolder}.` : "Markdown playbooks from one local folder, called by name."} <button type="button" className="ob-link" onClick={(event) => onSettings("skills", event.currentTarget)}>Settings → Skills</button></small></span><button type="button" className="secondary-button" onClick={onChooseSkillsFolder}>{skillsFolder ? "Change folder" : "Choose folder"}</button></li>
         <li><span className="ob-perm-icon" aria-hidden="true"><Workflow size={13} /></span><span><strong>Automation</strong><small>Workflows and scheduled tasks.</small></span><em className="ob-scope">Settings</em></li>
@@ -633,7 +637,7 @@ export function OnboardingModal({
   /** A deliberate theme choice applies and persists the app-wide preference. */
   onThemeChange: (theme: ThemeName) => void;
   /** Suspends the tour (the caller sets `open` false) and reopens it on the same page afterwards.
-      `draft` seeds unsaved Settings values; nothing is persisted unless the user saves. */
+      `draft` opens an account or previews a look; nothing is persisted unless the user acts in Settings. */
   onOpenSettings: (section: SettingsSection, draft?: OnboardingSettingsDraft) => void;
   onChooseSkillsFolder: () => void;
   /** Resolves true once a project was added; false when the folder picker was cancelled. */
@@ -701,8 +705,8 @@ export function OnboardingModal({
 
   const openSettings: OpenSettings = (section, trigger, draft) => {
     returnFocusRef.current = trigger;
-    // Settings receives any carried look as a draft and may change the real
-    // appearance; the preview restarts from the app shell on resume.
+    // Settings previews any carried look and applies it only on request; the
+    // tour preview restarts from the app shell on resume.
     setAppearance(null);
     if (draft) onOpenSettings(section, draft);
     else onOpenSettings(section);
@@ -764,7 +768,7 @@ export function OnboardingModal({
         <button type="button" className="ob-skip" onClick={complete}>Skip tour</button>
         <div className="ob-footer-nav">
           <span className="ob-count">{stepIndex + 1} of {STEPS.length}</span>
-          <button type="button" className="secondary-button" onClick={() => goTo(stepIndex - 1)} disabled={stepIndex === 0}><ChevronLeft size={13} /> Back</button>
+          {stepIndex > 0 && <button type="button" className="secondary-button" onClick={() => goTo(stepIndex - 1)}><ChevronLeft size={13} /> Back</button>}
           {last
             ? <button type="button" className={anyReady ? "primary-button" : "secondary-button"} onClick={complete}>Done <Check size={13} /></button>
             : <button type="button" className="primary-button" onClick={() => goTo(stepIndex + 1)}>Continue <ChevronRight size={13} /></button>}

@@ -148,7 +148,7 @@ export async function saveAndConnectOpenAiApiKey(apiKey: string): Promise<void> 
       await invoke<void>("openai_api_key_use");
     } catch (reason) {
       // The native command returns fixed messages that never contain the key.
-      throw new Error(`The key was saved, but Codex couldn't connect it: ${safeErrorText(reason)} Use Connect saved key to retry; the billing choice has not changed.`);
+      throw new Error(`The key was saved, but the Codex CLI couldn't connect it: ${safeErrorText(reason)} Use Connect saved key to retry; the billing choice has not changed.`);
     }
   });
 }

@@ -6,10 +6,10 @@ import type { CompactWorkEntry, CompactWorkState } from "../lib/compactActivity"
 import { adoptPortalTheme, effectiveZoom } from "../lib/floatingLayer";
 import { prefersReducedMotion } from "../lib/flipRoster";
 import { isWindowsPlatform } from "../lib/platform";
-import { useModalFocus } from "../hooks/useModalFocus";
+import { containTab, useModalFocus } from "../hooks/useModalFocus";
 import { useTimelineEnvironment } from "./TimelineEnvironment";
 import { SETTLED_ACTIVITY_LABELS, UNCONFIRMED_ACTIVITY_LABEL, type ActivityStatusCategory } from "./ActivityStatus";
-import { PixelWorkingMark } from "./PixelWorkingMark";
+import { WorkingIndicator } from "./WorkingIndicator";
 import { InfoPopover } from "./InfoPopover";
 import { usedSkillsForRun } from "../lib/skillUsage";
 import { isMythraNoticeMessage } from "../lib/userMessageEcho";
@@ -186,7 +186,11 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
           {message.streaming && <span className="activity-step-chip tone-live">Writing</span>}
           {inChat && !user && <span className="activity-step-chip">In chat</span>}
         </div>
-        <div className="activity-step-message">{notice ? "Continued the parent" : renderMessage(message)}</div>
+        {/* A reply already shown in chat isn't repeated here: the final
+            answer gets no body at all, an update keeps a one-line preview. */}
+        {inChat && !user && !question && !message.streaming
+          ? message.phase === "final" ? null : <p className="activity-step-preview">{message.text.replace(/\s+/g, " ").slice(0, 180)}</p>
+          : <div className="activity-step-message">{notice ? "Continued the parent" : renderMessage(message)}</div>}
         {question && onAnswerQuestion && (
           <button type="button" className="activity-step-action" onClick={() => onAnswerQuestion(message)}>Answer in chat</button>
         )}
@@ -214,9 +218,12 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
   const word = statusWord(activity.status);
   const tone = statusTone(activity.status);
   const coordination = coordinationRecord(activity);
-  const chip = word ? <span className={`activity-step-chip tone-${tone || "quiet"}`}>{word}</span> : null;
+  // Only exceptions get a status chip: running, failed or stopped. A row
+  // that simply finished says nothing, so "Done" isn't repeated on every row.
+  const chip = word && tone ? <span className={`activity-step-chip tone-${tone}`}>{word}</span> : null;
   const title = reasoning ? "Thinking" : activity.title;
-  const mono = activity.kind === "command" || activity.kind === "file";
+  // Commands are code; a file step's title is a sentence ("2 file changes").
+  const mono = activity.kind === "command";
   const toggleLabel = reasoning ? "thinking" : activity.kind === "command" ? "output" : "details";
   const thinkingNow = reasoning && live && tone === "live";
   // Live thinking keeps growing at its end, so it is never cut short.
@@ -235,7 +242,7 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
     )}
   </> : <pre className="activity-step-output">{detail}</pre>;
   const row = <li className={`activity-step kind-${activity.kind}${tone === "bad" ? " is-failed" : ""}${flags}`} data-step-id={step.id}>
-    <span className={`activity-step-node${thinkingNow ? " working" : ""}`} aria-hidden="true">{thinkingNow ? <PixelWorkingMark /> : <Icon size={11} />}</span>
+    <span className={`activity-step-node${thinkingNow ? " working" : ""}`} aria-hidden="true">{thinkingNow ? <WorkingIndicator size={11} /> : <Icon size={11} />}</span>
     <div className="activity-step-body">
       <div className="activity-step-head">
         {collapsible ? (
@@ -245,7 +252,7 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
             {label}
           </button>
         ) : label}
-        {activity.itemCount && activity.itemCount > 1 ? <span className="activity-step-chip">{activity.itemCount} items</span> : null}
+        {activity.itemCount && activity.itemCount > 1 && !activity.title.trim().startsWith(String(activity.itemCount)) ? <span className="activity-step-chip">{activity.itemCount} items</span> : null}
         {coordination ? <CoordinationState fallback={chip}
           render={(state) => <span className={`activity-step-chip tone-${state.tone || "quiet"}`}>{state.label}</span>} /> : chip}
       </div>
@@ -577,7 +584,7 @@ export function ActivityDetailsModal({
         <div className="activity-details-subline">
           <div className="activity-details-status" role={live ? "status" : undefined}>
             <span className={`activity-details-state state-${run.state}${run.unconfirmed ? " unconfirmed" : ""}`}>{live ? run.label || "Working" : settledLabel}</span>
-            <span className="activity-details-meta">{[run.summary, stepText].filter(Boolean).join(" · ")}</span>
+            <span className="activity-details-meta">{run.summary || stepText}</span>
           </div>
           {/* Outside the live status so opening the names is not announced
               as a status change. Hidden when no skill was actually used. */}
@@ -672,7 +679,7 @@ export function ActivityDetailsModal({
       )}
       {stepCount === 0 && (
         <div className="activity-details-empty">
-          <span className={`activity-details-empty-mark${live ? " live" : ""}`} aria-hidden="true">{live ? <PixelWorkingMark /> : <Sparkles size={13} />}</span>
+          <span className={`activity-details-empty-mark${live ? " live" : ""}`} aria-hidden="true">{live ? <WorkingIndicator size={13} /> : <Sparkles size={13} />}</span>
           <p>{live ? "Steps will appear here as the agent works." : "No steps were recorded for this run."}</p>
         </div>
       )}
@@ -692,6 +699,10 @@ export function ActivityDetailsModal({
       event.preventDefault();
       requestClose();
     }
+    // A native modal dialog inerts the page, but Tab from its last control
+    // still leaves for the browser/WebView chrome (focus lands on <body>).
+    // Cycle inside it like every other dialog (B04).
+    else if (event.key === "Tab" && nativeDialog && dialogRef.current) containTab(dialogRef.current, event.nativeEvent);
   };
 
   if (!nativeDialog) {

@@ -17,7 +17,7 @@ export type CompactionStatus = "inProgress" | "completed" | "failed" | "unconfir
 export type CompactionState = "active" | "complete" | "incomplete" | "unconfirmed";
 
 const PROVIDER_LABEL: Record<CompactionProvider, string> = {
-  openai: "Codex",
+  openai: "Codex CLI",
   claude: "Claude Code",
 };
 

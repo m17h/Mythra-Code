@@ -1,0 +1,9 @@
+{
+  "entries": [
+    { "file": "src/styles.css", "max": 452, "reason": "Legacy cascade under Lumen (mostly retired theme blocks it overrides). Budget only goes down; new colours go in tokens.css." },
+    { "file": "src/components/SettingsModal.css", "selector": "slider-style-preview", "reason": "Miniature previews of the effort-slider skins: each paints that skin's own art palette" },
+    { "file": "src/styles/lumen/effort-poet.css", "selector": "data-effort-slider=\"poet\"|slider-style-preview\\.poet", "reason": "The Poet slider skin's named --cc-* palette" },
+    { "file": "src/components/PerformanceOverlay.css", "reason": "Developer-only performance overlay, outside the themed shell" },
+    { "file": "src/components/MythraMarkColors.css", "reason": "Brand-colour fallbacks for the Mythra mark outside a themed shell" }
+  ]
+}

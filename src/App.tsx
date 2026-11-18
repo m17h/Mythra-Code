@@ -20,7 +20,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, TerminalSquare, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, ChevronDown, Circle, CircleAlert, CircleStop, Code2, Cpu, Keyboard, TextCursorInput, UsersRound, Download, Folder, FolderOpen, Gauge, GitBranch, Hand, Wrench, GitFork, GitPullRequest, ListFilter, LoaderCircle, MessageSquare, NotebookPen, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, RotateCcw, Search, Settings, ShieldAlert, Shrink, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, RuntimeRestartBusyError, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeDefaultModel, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging, providerAuthGeneration } from "./lib/providerAuth";
@@ -47,7 +47,7 @@ import { startProjectPointerDrag } from "./lib/projectPointerDrag";
 import { ConversationSearchBar } from "./components/ConversationSearchBar";
 import { ChatsRow, ThreadRenameInput, ThreadSearch, ThreadsSection, WorkspaceRow, WorkspacesSection } from "./components/SidebarLists";
 import { localMachineLabel, useRemoteDevices } from "./lib/remote/devices";
-import { PermissionPicker, permissionLabel } from "./components/PermissionPicker";
+import { PermissionPicker, permissionDescriptions, permissionLabel } from "./components/PermissionPicker";
 import { isRemoteMachineActive, LOCAL_MACHINE, machineActions, machineSwitchGeneration, useActiveMachine } from "./lib/remote/activeMachine";
 import { SpellingMenu } from "./components/SpellingMenu";
 import { useSpellingMenu } from "./lib/spelling";
@@ -64,8 +64,10 @@ import { SubAgentParentGroup } from "./components/SubAgentParentGroup";
 import { createSubAgentParentResolver, groupSubAgentThreads, subAgentCardParent, subAgentGroupTitle, UNAVAILABLE_PARENT_TITLE, type SubAgentParentSources } from "./lib/subAgentParents";
 import { ScheduledCountBadge } from "./components/ScheduledCountBadge";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
+import { AppActionMenu } from "./components/AppActionMenu";
 import { ProjectRunControl } from "./components/ProjectRunControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
+import { TimelineProjectRoot } from "./components/TimelineProjectRoot";
 import { Composer, discardDraft, draftFor, type ComposerHandle } from "./components/Composer";
 import { ParentRunLine, ParentRunTurnLabel } from "./components/ParentRunLine";
 import { sanitizeTranscriptionSettings, transcriptionModelFor } from "./lib/transcription";
@@ -92,7 +94,7 @@ import type { RemoteWorkflowEngine } from "./lib/remote/host/workflowExecution";
 import type { WireExecutionSettings } from "./lib/remote/wire";
 import { hostProviderCatalog, hostWorkspaceGit, refreshHostWorkspaceGit, selectedHostWorkspaceGit, synthesizedArchivedThread } from "./lib/remote/hostSources";
 import { createHostParity } from "./lib/remote/hostParity";
-import { isStudioTab, type StudioTab } from "./lib/studioTabs";
+import { migrateStudioTab, studioTabForGitRoute, type StudioTab } from "./lib/studioTabs";
 import type { GitRoute, ProjectGitInspection, ProjectPullRequestAccess } from "./lib/projectGit";
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
 import { ThreadPullRequestChip } from "./components/ThreadPullRequestChip";
@@ -166,6 +168,13 @@ import { clearCommitMessageSuggestion } from "./lib/commitMessages";
 import { useCheckpoints } from "./hooks/useCheckpoints";
 import { useCheckpointGitNotice } from "./hooks/useCheckpointGitNotice";
 import { useAppShortcuts, workspaceShortcutLabel } from "./hooks/useAppShortcuts";
+import { useMediaQueryMatch } from "./hooks/useMediaQueryMatch";
+import { EmptyState } from "./components/EmptyState";
+import { FOCUS_APPROVAL_EVENT, FOCUS_COMPOSER_EVENT, OPEN_MODEL_PICKER_EVENT, formatShortcut, withShortcut } from "./lib/shortcuts";
+import { missingProviderRuntime } from "./lib/statusLabels";
+import { STUDIO_TAB_IDS } from "./lib/studioTabs";
+import { STUDIO_TAB_META } from "./components/studioTabMeta";
+import type { PaletteCommand } from "./components/CommandPalette";
 import { useThreadHealth } from "./hooks/useThreadHealth";
 import { useCodexEvents } from "./hooks/useCodexEvents";
 import { useClaudeEvents } from "./hooks/useClaudeEvents";
@@ -194,10 +203,11 @@ import { draftModelForProvider, isClaudeThread, isCursorThread, isLocalSubscript
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { EMPTY_MODEL_FAVORITES, MODEL_FAVORITES_KEY, favoriteModels, sanitizeModelFavorites, toggleFavoriteModel, type ModelFavorites } from "./lib/modelFavorites";
 import { fetchOpenRouterCatalog, mergeOpenRouterModels, resolveOpenRouterSlug } from "./lib/openRouterCatalog";
-import { basename, isAbsolutePath, joinPath, normalizedProjectPath } from "./lib/paths";
+import { basename, homeRelativePath, isAbsolutePath, joinPath, normalizedProjectPath } from "./lib/paths";
 import { attachmentKind, attachmentRecord, unsupportedImageReason, withAttachedPaths } from "./lib/attachments";
 import { attachmentsFor, forgetAttachmentDraft, withAttachmentDraft, type AttachmentDrafts } from "./lib/attachmentDrafts";
 import { EMPTY_REVIEW_DIFF, parseDiffSections, type ReviewDiff } from "./lib/gitDiff";
+import { EMPTY_WORKING_REVIEW_DIFF, readChangesScope, writeChangesScope, type ChangesScope } from "./lib/changesScope";
 import { getProjectGitChanges, getProjectGitDiff, getProjectGitFileDiff, getProjectGitHistory } from "./lib/gitInspection";
 import { shellCommand } from "./lib/shellCommand";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
@@ -211,7 +221,6 @@ import { contextUsagePercent } from "./lib/contextUsage";
 import { mythraCodeDeveloperInstructions } from "./lib/completionPrompt";
 import { projectRunExecCommand, projectRunShellCommand, sanitizeProjectRunCommand, sanitizeProjectRunOverrides } from "./lib/projectRun";
 import { isLmStudioProviderId, runtimeModelProviderId } from "./lib/providerIds";
-import { primaryModifierLabel } from "./lib/platform";
 import { archiveAfterTitleCancellation, activeThreadRemovalBlockedReason, archivedThreadsForInbox, finishThreadBlockedReason, providerForArchivedThread } from "./lib/threadArchive";
 import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
 import { EMPTY_PROJECT_PROMPT_PROFILES, updateProjectPromptOverrides, type ProjectPromptProfileState } from "./lib/projectPromptProfiles";
@@ -254,6 +263,11 @@ import { nativeRuntimeRestartBlocker } from "./lib/runtimeRestartActivity";
 import { collectSubAgentWorkers, createClaudeCommandWorkerReconciler, isActiveAgentRecord, isSubAgentWorkerActive, workerStatusFromAgentRecord, workerStatusFromLifecycle, type SubAgentWorker } from "./lib/subAgentActivity";
 import { childReviewToken, ensureManagedChildTranscriptHydrated, managedChildCursorSessionId, useChildAgents, type ProjectRunOutcome } from "./hooks/useChildAgents";
 import { reorderProjects, sortProjectsByPin, toggleProjectPinned, type ProjectDropPosition } from "./lib/projectOrdering";
+import { containTab, reachableFocusables } from "./hooks/useModalFocus";
+import { useTopbarFit } from "./hooks/useTopbarFit";
+import { attentionIdsFromKey, attentionThreadKey, countAttentionByWorkspace, projectIndicator } from "./lib/sidebarAttention";
+import { WorkingIndicator } from "./components/WorkingIndicator";
+import { TOPBAR_SHED_PULL_REQUESTS, TOPBAR_SHED_SHORT_STATUS, TOPBAR_SHED_USAGE, topbarStatusLabel } from "./lib/topbarFit";
 import {
   deleteCheckpointSnapshot,
   type CheckpointRecord,
@@ -276,6 +290,7 @@ import {
 const WorkflowRunDialog = lazy(() => import("./components/WorkflowRunDialog").then((module) => ({ default: module.WorkflowRunDialog })));
 const loadRemoteShell = () => import("./components/remote/RemoteShell");
 const CommandPalette = lazy(() => import("./components/CommandPalette").then((module) => ({ default: module.CommandPalette })));
+const ShortcutsSheet = lazy(() => import("./components/ShortcutsSheet").then((module) => ({ default: module.ShortcutsSheet })));
 let loadedChatTimeline: typeof import("./components/ChatTimeline").ChatTimeline | null = null;
 // Set during the first commit of a resolved timeline. After that the mounted
 // view is never swapped, so a late idle preload cannot remount it.
@@ -915,7 +930,7 @@ export default function App() {
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
   const [previewEffortSlider, setPreviewEffortSlider] = useState<EffortSliderStyle | null>(null);
   const [previewChatFont, setPreviewChatFont] = useState<ChatFont | null>(null);
-  // Custom chat fonts (Settings > Interface), persisted per device.
+  // Custom chat fonts (Settings > Appearance), persisted per device.
   const customFonts = useCustomFonts();
   const [previewUiScale, setPreviewUiScale] = useState<number | null>(null);
   const [promptProfiles, setPromptProfiles] = usePersistedState<PromptProfile[]>("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES);
@@ -981,6 +996,10 @@ export default function App() {
   const openSkillNonceRef = useRef(0);
   const [promptFocusRequest, setPromptFocusRequest] = useState<{ target: "global" | "codex" | "claude"; name: string; nonce: number } | null>(null);
   const [projectPromptOpenRequest, setProjectPromptOpenRequest] = useState<{ name: string; nonce: number } | null>(null);
+  const [projectPromptState, setProjectPromptState] = useState("Inherited");
+  const threadMenuRef = useRef<HTMLDivElement>(null);
+  const topbarRef = useRef<HTMLElement>(null);
+  const topbarShed = useTopbarFit(topbarRef);
   const promptFocusNonceRef = useRef(0);
   const [settingsMounted, setSettingsMounted] = useState(false);
   const [settingsLoadAttempt, setSettingsLoadAttempt] = useState(0);
@@ -1005,6 +1024,7 @@ export default function App() {
   const [onboardingSession, setOnboardingSession] = useState(0);
   const onboardingExitTimerRef = useRef<number | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [workflowLaunch, setWorkflowLaunch] = useState<{
     workflow: WorkflowDefinition; projectId?: string; prompt?: string; sourceThreadId?: string;
     resolve?: (accepted: boolean) => void;
@@ -1062,6 +1082,10 @@ export default function App() {
   const [cursorModelsLoading, setCursorModelsLoading] = useState(false);
   const [cursorModelsError, setCursorModelsError] = useState("");
   const [runtimeSetupOpen, setRuntimeSetupOpen] = useState(false);
+  /** Threads whose last open failed. They keep their sidebar row and title
+   * until the person retries successfully or removes them (B06). */
+  const [unavailableThreads, setUnavailableThreads] = useState<Record<string, { title: string; provider: Provider }>>({});
+  const [threadLoadFailure, setThreadLoadFailure] = useState<{ id: string; title: string; provider: Provider } | null>(null);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
   const [authRequiredOpen, setAuthRequiredOpen] = useState(false);
   const [loginStarting, setLoginStarting] = useState(false);
@@ -1114,12 +1138,13 @@ export default function App() {
   // came back for. The chosen surface is persisted, so reopening lands where
   // the last session left off.
   const [studioOpen, setStudioOpen] = useState(false);
-  const [studioTab, setStudioTab] = usePersistedState<StudioTab>("kiwi.studioTab", "review", {
-    init: (load) => {
-      const stored: unknown = load();
-      if (stored === "context") return "files";
-      return isStudioTab(stored) ? stored : "review";
-    },
+  // Tools → Changes "Widen": a drawer below the top bar that covers the
+  // conversation, which is inert meanwhile (StudioDock draws the drawer).
+  const [reviewWide, setReviewWide] = useState(false);
+  useEffect(() => { if (!studioOpen) setReviewWide(false); }, [studioOpen]);
+  const [studioTab, setStudioTab] = usePersistedState<StudioTab>("kiwi.studioTab", "changes", {
+    // Older saved ids ("review", "tools", "context") land on the tab that now holds them.
+    init: (load) => migrateStudioTab(load()) ?? "changes",
   });
   // Shortcuts and the command palette name a Git view and a control to focus.
   // They never run the Git action themselves.
@@ -1245,10 +1270,81 @@ export default function App() {
   const activeProjectIdRef = useRef(activeProjectId);
   activeProjectIdRef.current = activeProjectId;
   const activeProject = workspaceMode === "project" ? selectedProject : null;
+  // D11: between 901 and 1250px the Tools panel can't share the window with the
+  // sidebar and still leave a usable chat column, so opening it tucks the
+  // sidebar away. The preference is kept: the sidebar returns when the
+  // Tools closes, and showing the sidebar closes the Tools panel.
+  const narrowWindow = useMediaQueryMatch("(min-width: 901px) and (max-width: 1250px)");
+  // Sol R5 B02: pane widths are fitted to the window and UI scale (a saved
+  // Tools width never squeezes the chat below its minimum), and the
+  // sidebar also tucks away when even the narrowest Tools wouldn't fit.
+  const dockBesideChat = studioOpen && Boolean(activeProject) && !remoteActive;
+  const { paneSizes, dockWidth, dockMax, sidebarCrowded, paneRefs, startPaneResize, resizePaneWithKeyboard } = usePaneResize(((previewUiScale ?? settings.uiScale) || 100) / 100, { sidebarOpen, sidebarTucked: narrowWindow && dockBesideChat, dockOpen: dockBesideChat });
+  const sidebarTucked = (narrowWindow || sidebarCrowded) && dockBesideChat;
+  // B05: asking for the sidebar while it is tucked no longer closes the
+  // Tools. It floats over the chat until Escape, a click outside, or
+  // opening a thread or project; the Tools panel keeps its tab and state.
+  const [sidebarPeek, setSidebarPeek] = useState(false);
+  const sidebarPeeking = sidebarTucked && sidebarPeek;
+  const sidebarShown = sidebarPeeking || (sidebarOpen && !sidebarTucked);
+  const showSidebar = () => {
+    if (sidebarTucked) {
+      setSidebarPeek(true);
+      requestAnimationFrame(() => {
+        const sidebar = document.querySelector<HTMLElement>(".sidebar.peek");
+        // In priority order (a selector list would pick whichever comes first
+        // in the DOM): the open thread, the open project, then New thread.
+        const target = [".thread-card[aria-current='page']", ".thread-row-wrap.active > .thread-card", ".workspace-row[aria-current='page']", ".new-thread-button"]
+          .map((selector) => sidebar?.querySelector<HTMLElement>(selector))
+          .find(Boolean);
+        (target ?? (sidebar ? reachableFocusables(sidebar)[0] : null))?.focus();
+      });
+    }
+    setSidebarOpen(true);
+  };
+  const closeSidebarPeek = (returnFocus = false) => {
+    setSidebarPeek(false);
+    if (returnFocus) requestAnimationFrame(() => document.querySelector<HTMLElement>(".topbar .sidebar-show-button")?.focus());
+  };
+  const toggleSidebar = () => {
+    if (sidebarPeeking) closeSidebarPeek(true);
+    else if (sidebarShown) setSidebarOpen(false);
+    else showSidebar();
+  };
+  useEffect(() => {
+    if (!sidebarTucked) setSidebarPeek(false);
+  }, [sidebarTucked]);
+  // B04: the peek is a real modal drawer. Everything it covers (top bar,
+  // stage, Tools) is inert while it's open, so Tab wraps inside it and
+  // Escape closes it wherever focus has ended up (the body after a click on
+  // a non-focusable area, for instance), then focus returns to the toggle.
+  // Keys from inside the drawer go through the aside's own handler (below),
+  // after any open row menu has had its chance at Escape. This capture
+  // listener only catches keys whose target is the page itself, before the
+  // app-level Escape would close the Tools panel instead.
+  useEffect(() => {
+    if (!sidebarPeeking) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const sidebar = document.querySelector<HTMLElement>(".sidebar.peek");
+      if (!sidebar || event.defaultPrevented) return;
+      if (event.target !== document.body && event.target !== document.documentElement) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSidebarPeek(true);
+      } else if (event.key === "Tab") {
+        containTab(sidebar, event);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+    // closeSidebarPeek only sets state and focuses the toggle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarPeeking]);
   const chatWorkspace = useMemo<Project | null>(() => (chatWorkspacePath ? { id: "openkiwi-normal-chats", name: "Chats", path: chatWorkspacePath, isChat: true } : null), [chatWorkspacePath]);
   const activeWorkspace = workspaceMode === "chat" ? chatWorkspace : activeProject;
   useEffect(() => {
     setThreadKindView("main");
+    setAttentionOnly(false);
   }, [activeWorkspace?.id]);
   // Current workspace identity for async continuations (sendMessage) that
   // must not install UI state after a mid-flight workspace switch.
@@ -1587,7 +1683,14 @@ export default function App() {
   const threadReviewDiff = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.diff ?? EMPTY_REVIEW_DIFF) : EMPTY_REVIEW_DIFF));
   const [projectReview, setProjectReview] = useState<{ scope: string; diff: ReviewDiff } | null>(null);
   const projectReviewSequence = useRef(0);
-  const reviewDiff = activeThreadId ? threadReviewDiff : projectReview?.scope === gitWorkspaceScope ? projectReview.diff : EMPTY_REVIEW_DIFF;
+  // Changes compares the uncommitted working tree by default (the same set as
+  // its Files list and the commit). The thread's push comparison is an
+  // explicit alternate scope, available once the runtime has produced it.
+  const [changesScope, setChangesScopeState] = useState<ChangesScope>(readChangesScope);
+  const setChangesScope = useCallback((scope: ChangesScope) => { setChangesScopeState(scope); writeChangesScope(scope); }, []);
+  const workingReviewDiff = projectReview?.scope === gitWorkspaceScope ? projectReview.diff : EMPTY_WORKING_REVIEW_DIFF;
+  const pushedReviewDiff = activeThreadId && threadReviewDiff.source === "runtime" && threadReviewDiff.successfulText !== undefined ? threadReviewDiff : null;
+  const reviewDiff = changesScope === "pushed" && pushedReviewDiff ? pushedReviewDiff : workingReviewDiff;
   const addCheckFeedback = (result: ProjectCheckResult): boolean => {
     if (result.projectId !== activeProject?.id || result.cwd !== activeExecutionPath || result.id !== checks.latest?.id) return false;
     if (feedback.notes.some(({ anchor }) => anchor.kind === "check"
@@ -1654,7 +1757,9 @@ export default function App() {
     // large diff on every streaming notification. No timer without notes.
     const timer = window.setTimeout(() => {
       const messages = activeThreadId ? useTaskStore.getState().tasks[activeThreadId]?.messages : undefined;
-      const sections = feedback.notes.some((note) => note.anchor.kind === "diff") ? parseDiffSections(reviewDiff.text) : [];
+      // A note is checked against the scope it was written in.
+      const hasDiffNotes = feedback.notes.some((note) => note.anchor.kind === "diff");
+      const sectionsFor = { runtime: hasDiffNotes ? parseDiffSections(threadReviewDiff.text) : [], repository: hasDiffNotes ? parseDiffSections(workingReviewDiff.text) : [] };
       const ids = feedback.notes.filter(({ anchor }) => {
         if (anchor.kind === "assistant") {
           const message = messages?.find((entry) => entry.id === anchor.messageId);
@@ -1662,13 +1767,14 @@ export default function App() {
           return message ? isFeedbackAnchorStale(anchor, { message }) : false;
         }
         return anchor.kind === "diff" && isFeedbackAnchorStale(anchor, {
-          section: sections.find((section) => section.path === anchor.path), reviewDiff,
+          section: sectionsFor[anchor.source].find((section) => section.path === anchor.path),
+          reviewDiff: anchor.source === "runtime" ? threadReviewDiff : workingReviewDiff,
         });
       }).map((note) => note.id);
       setStaleFeedbackIds((current) => current.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids);
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [activeThreadId, feedback.notes, reviewDiff, taskStatus]);
+  }, [activeThreadId, feedback.notes, threadReviewDiff, workingReviewDiff, taskStatus]);
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
   const threadWorkflowOwners = useTaskStore((state) => state.workflowOwners);
   // Keep only positive ownership IDs across navigation. The view reconciler's
@@ -1815,6 +1921,16 @@ export default function App() {
     threadTaskStatuses,
     threadWorkflowOwners,
   );
+  // M05: threads waiting on the person (an unanswered approval), per project.
+  const attentionKey = useTaskStore((state) => attentionThreadKey(state.tasks));
+  const attentionIds = useMemo(() => attentionIdsFromKey(attentionKey), [attentionKey]);
+  const projectAttentionCounts = useMemo(
+    () => countAttentionByWorkspace(attentionIds, knownThreadsRef.current ?? {}, threadProjectBindingsRef.current ?? {}, normalizedProjectPath),
+    // The refs are read at the moment the attention set changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [attentionIds],
+  );
+  const [attentionOnly, setAttentionOnly] = useState(false);
   // Queue mutations change the counts; streaming transcript updates do not.
   // Read the durable cache, so a closed thread need not be hydrated to count.
   const queueRevision = useTaskStore((state) => state.queueRevision);
@@ -1870,10 +1986,12 @@ export default function App() {
       return Boolean(direct?.title?.toLowerCase().includes(query) || top?.title?.toLowerCase().includes(query));
     };
     const merged = workspaceKindThreads
+      .filter((thread) => !attentionOnly || attentionIds.has(thread.id))
       .filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query) || matchesParent(thread));
     const mergedIds = new Set(merged.map((thread) => thread.id));
     for (const found of filterThreadsForWorkspace(activeThreadSearch?.threads ?? [], activeWorkspace.path, threadProjectBindings)) {
       if (!filterThreadsByKind([found], childThreadLinks, threadKindView, childThreadRootIds).length) continue;
+      if (attentionOnly && !attentionIds.has(found.id)) continue;
       if (!mergedIds.has(found.id)) {
         mergedIds.add(found.id);
         merged.push(found);
@@ -1881,7 +1999,7 @@ export default function App() {
     }
     const pinned = new Set(pinnedThreadIds);
     return merged.sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)) || b.updatedAt - a.updatedAt);
-  }, [activeThreadSearch, activeWorkspace, childThreadLinks, childThreadRootIds, pinnedThreadIds, subAgentParents, threadKindView, threadSearch, workspaceKindThreads]);
+  }, [activeThreadSearch, activeWorkspace, attentionIds, attentionOnly, childThreadLinks, childThreadRootIds, pinnedThreadIds, subAgentParents, threadKindView, threadSearch, workspaceKindThreads]);
   const subAgentGroups = useMemo(() => (threadKindView === "subagents"
     ? groupSubAgentThreads(displayedThreads, (thread) => subAgentParents.info(thread.id, thread), new Set(pinnedThreadIds))
     : []), [displayedThreads, pinnedThreadIds, subAgentParents, threadKindView]);
@@ -2041,7 +2159,7 @@ export default function App() {
     openRouterCreditsError,
   }), [accountUsageView, effectiveSettings.provider, headerUsageWindows, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady]);
 
-  // Only offer "Check settings" for failures settings can actually fix, and
+  // Only offer a Settings button for failures settings can actually fix, and
   // land on the pane that contains the relevant controls after Interface became
   // interface-only.
   const errorSettingsSection = useMemo<SettingsSection | null>(() => {
@@ -2053,6 +2171,8 @@ export default function App() {
     return null;
   }, [error]);
   const errorSuggestsSettings = errorSettingsSection !== null;
+  /** Says where the button goes (G19), using the Settings rail's own names. */
+  const errorSettingsLabel = errorSettingsSection === "models" ? "Open Models & accounts" : errorSettingsSection === "updates" ? "Open Updates" : "Open Advanced settings";
   const workspaceArchived = useMemo(() => (activeWorkspace
     ? archivedThreadsForInbox(archivedThreads, activeWorkspace.path, childThreadLinks, threadKindView)
     : []), [activeWorkspace, archivedThreads, childThreadLinks, threadKindView]);
@@ -2461,7 +2581,7 @@ export default function App() {
     const project = activeProject;
     if (!project) return;
     const current = projectsRef.current.find((entry) => entry.id === project.id);
-    if (!current || current.path !== project.path) throw new Error("The project changed before discovery finished. Find checks again in the current project.");
+    if (!current || current.path !== project.path) throw new Error("The project changed before discovery finished. Choose Set up checks… again in the current project.");
     if (current.overrides?.check?.command !== project.overrides?.check?.command
       || current.overrides?.check?.updatedAt !== project.overrides?.check?.updatedAt) {
       throw new Error("The check command was updated while discovery was running. Your newer command was kept.");
@@ -2483,7 +2603,9 @@ export default function App() {
     [activeProject, setProjects],
   );
 
-  const { paneSizes, paneRefs, startPaneResize, resizePaneWithKeyboard } = usePaneResize((settings.uiScale || 100) / 100);
+  const reviewWideShown = reviewWide && studioOpen && studioTab === "changes" && !shownRemote && Boolean(activeProject);
+  const reviewWideShownRef = useRef(reviewWideShown);
+  reviewWideShownRef.current = reviewWideShown;
   const {
     splitRatio: sidebarSplitRatio,
     sidebarSectionsRef,
@@ -2825,7 +2947,7 @@ export default function App() {
         return null;
       }
       setClaudeStatus(result);
-      setAccountCheck("claude", result.loggedIn ? "" : "Sign-in required");
+      setAccountCheck("claude", result.loggedIn ? "" : "Needs sign-in");
       if (result.loggedIn) {
         const apiKeyBilling = claudeUsesApiKey(result);
         // An API key has no email; its identity lasts until a witnessed
@@ -2931,7 +3053,7 @@ export default function App() {
         return null;
       }
       setCursorStatus(result);
-      setAccountCheck("cursor", result.authVerified === false ? "Connection unverified" : result.loggedIn ? "" : "Sign-in required");
+      setAccountCheck("cursor", result.authVerified === false ? "Connection unverified" : result.loggedIn ? "" : "Needs sign-in");
       if (!cursorCanAttemptRequest(result)) {
         cursorModelsRequestRef.current += 1;
         setCursorModels([]);
@@ -3164,7 +3286,7 @@ export default function App() {
     setRuntimeModelsError("");
     setOpenAiAccountKey("");
     setAccount(null);
-    setAccountCheck("openai", "Sign-in required");
+    setAccountCheck("openai", "Needs sign-in");
     setOpenAiUsageSnapshot(null);
   }, [setAccountCheck]);
 
@@ -3173,7 +3295,7 @@ export default function App() {
     // The dialog has an API-key variant that links to Models & accounts, so a
     // background helper's auth error never opens Settings on its own.
     setAuthRequiredOpen(true);
-    setStatus(openAiBillingRef.current === "apiKey" ? "API key connection required" : "Sign-in required");
+    setStatus(openAiBillingRef.current === "apiKey" ? "Needs an API key" : "Needs sign-in");
   }, [clearOpenAiAccount]);
 
   // Set while the user is signing out on purpose. Codex confirms a logout
@@ -3261,7 +3383,7 @@ export default function App() {
       openAiBillingRef.current = result.billing ?? null;
       setOpenAiBilling(result.billing ?? null);
       setAccount(result.account);
-      setAccountCheck("openai", result.account ? "" : "Sign-in required");
+      setAccountCheck("openai", result.account ? "" : "Needs sign-in");
       if (codexAccountReady(result.account)) {
         // An API-key sign-in has no email or workspace; its identity lasts
         // until a witnessed change, and never shares a ChatGPT key.
@@ -3958,8 +4080,8 @@ export default function App() {
   // do not scan the skill library, and overlapping surfaces share its cadence.
   const [settingsSkillsPollMs, setSettingsSkillsPollMs] = useState<number | null>(null);
   const skillsPollMs = settingsOpen && settingsSkillsPollMs !== null
-    ? Math.min(settingsSkillsPollMs, studioOpen && studioTab === "tools" ? 5_000 : Infinity)
-    : studioOpen && studioTab === "tools" ? 5_000 : null;
+    ? Math.min(settingsSkillsPollMs, studioOpen && studioTab === "skills" ? 5_000 : Infinity)
+    : studioOpen && studioTab === "skills" ? 5_000 : null;
   useEffect(() => {
     if (!skillsFolder) return;
     const promise = refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
@@ -4085,21 +4207,30 @@ export default function App() {
     [executeCommand],
   );
 
-  const refreshDiff = useCallback(async () => {
+  /** The uncommitted diff (working tree against HEAD, plus new files), with or without a thread. */
+  const refreshWorkingDiff = useCallback(async () => {
     if (!activeProject || !activeExecutionPath) return;
-    if (activeThreadId) { await refreshDiffFor(activeThreadId, activeExecutionPath); return; }
     const scope = gitWorkspaceScope;
     const sequence = ++projectReviewSequence.current;
     try {
       const diff = await getProjectGitDiff(activeExecutionPath);
       if (sequence === projectReviewSequence.current && gitWorkspaceScopeRef.current === scope) setProjectReview({ scope, diff });
     } catch (reason) {
+      // Flagged as a failure, so Changes says it couldn't read the diff
+      // instead of "No differences" over the message.
+      const message = reason instanceof Error ? reason.message : String(reason);
       if (sequence === projectReviewSequence.current && gitWorkspaceScopeRef.current === scope) setProjectReview({ scope, diff: {
-        text: `Could not inspect repository changes: ${reason instanceof Error ? reason.message : String(reason)}`,
-        source: "repository", baseline: "HEAD", untrackedPaths: [],
+        text: `Could not inspect repository changes: ${message}`,
+        source: "repository", baseline: "HEAD", untrackedPaths: [], error: message,
       } });
     }
-  }, [activeExecutionPath, activeProject, activeThreadId, gitWorkspaceScope, refreshDiffFor]);
+  }, [activeExecutionPath, activeProject, gitWorkspaceScope]);
+
+  const refreshDiff = useCallback(async () => {
+    if (!activeProject || !activeExecutionPath) return;
+    if (activeThreadId) { await Promise.all([refreshDiffFor(activeThreadId, activeExecutionPath), refreshWorkingDiff()]); return; }
+    await refreshWorkingDiff();
+  }, [activeExecutionPath, activeProject, activeThreadId, refreshDiffFor, refreshWorkingDiff]);
 
   const {
     checkpoints,
@@ -4430,7 +4561,7 @@ export default function App() {
             setError("OpenRouter compatibility was refreshed. Send your message again.");
           })
           .catch((reason) => {
-            setStatus("Runtime issue");
+            setStatus("Connection issue");
             setError(friendlyError(reason));
           });
         return;
@@ -4782,12 +4913,12 @@ export default function App() {
       const runtime = await refreshCodexRuntimeStatus();
       if (runtimeModelsRequestRef.current !== request) return [];
       if (!runtime.available || !runtime.path || !runtime.version) {
-        throw new Error(runtime.warning || "The installed Codex runtime could not be checked. The current model catalog is still available; try again later.");
+        throw new Error(runtime.warning || "The installed Codex CLI could not be checked. The current model list is still available; try again later.");
       }
       const runtimeChanged = Boolean(runtime.runningVersion && runtime.runningPath && runtime.runtimeChanged);
       if (runtimeChanged) {
         if (runtime.installedOlder) {
-          throw new Error("The selected Codex installation is older than the version currently running. Mythra Code has kept the running version. Update Codex in Settings → Updates before refreshing the model catalog again.");
+          throw new Error("The selected Codex CLI installation is older than the version currently running. Mythra Code has kept the running version. Update the Codex CLI in Settings → Updates before refreshing the model catalog again.");
         }
         // Native reservation closes the gap between the initial idle check and
         // server shutdown: it refuses if a turn/command is active and rejects
@@ -4817,7 +4948,7 @@ export default function App() {
             statuses: taskState.statuses, tasks: taskState.tasks, observedNativeThreadIds: new Set(reservation.observedNativeThreadIds) });
           const unresolvedManagedWork = Object.values(childAgentLinksRef.current).some((link) => link.provider !== "claude" && link.provider !== "cursor" && !link.terminalStatus);
           if (hasActiveRuntimeTask || hasPendingRuntimeApproval || hasActiveTerminalCommand || unresolvedNativeWork || unresolvedManagedWork) {
-            throw new Error("A different Codex runtime is installed, but an AI task, terminal command, workflow, or approval is still using the current runtime. Finish active work and respond to pending approvals, then refresh the model catalog again.");
+            throw new Error("A different Codex CLI version is installed, but a task, terminal command, workflow or approval is still using the current one. Finish that work and answer any approvals, then refresh the model list again.");
           }
           await deliberateRestartRuntime(() => restartRuntimeReserved(reservation.token));
         } finally {
@@ -4949,11 +5080,11 @@ export default function App() {
           const owner = codexRuntimeOwnersRef.current.get(threadId);
           if (owner && owner !== instance) continue;
           store.upsertActivity(threadId, {
-            id: `runtime-cutoff-uncertain-${instance}`, kind: "warning", title: "Runtime cutoff could not be confirmed",
-            detail: "The Codex connection ended, but the app could not confirm its old process stopped. This work retains its ownership and is not reported as finished.",
+            id: `runtime-cutoff-uncertain-${instance}`, kind: "warning", title: "Couldn’t confirm the old run stopped",
+            detail: "The Codex CLI connection ended, but the app could not confirm its old process stopped. This work retains its ownership and is not reported as finished.",
           });
         }
-        setError("The Codex connection ended, but its process cutoff could not be confirmed. Its work remains owned until that uncertainty can be resolved.");
+        setError("The Codex CLI connection ended, but its process cutoff could not be confirmed. Its work remains owned until that uncertainty can be resolved.");
         return;
       }
       retiredCodexRuntimeInstancesRef.current.add(instance);
@@ -4968,12 +5099,12 @@ export default function App() {
           && !approval.method.startsWith("cursor/") && !approval.method.startsWith("openkiwi/")) ?? [];
         for (const approval of dropped) store.resolveApproval(threadId, approval.id);
         if (dropped.length) store.upsertActivity(threadId, {
-          id: `approvals-dropped-${instance}`, kind: "warning", title: "Runtime approvals expired",
-          detail: "The Codex process that owned these approvals disconnected. New work must request any still-needed approval again.",
+          id: `approvals-dropped-${instance}`, kind: "warning", title: "Approval requests expired",
+          detail: "The Codex CLI process that owned these approvals disconnected. New work must request any still-needed approval again.",
         });
         if (task?.status === "running" || task?.status === "starting") {
           store.completeTurn(threadId, task.activeTurnId, "error");
-          store.setTaskStatus(threadId, "error", "The Codex runtime disconnected during this task.");
+          store.setTaskStatus(threadId, "error", "The Codex CLI disconnected during this task.");
           void finalizeRunCheckpoint(threadId, undefined, "interrupted");
         }
         codexRuntimeOwnersRef.current.delete(threadId);
@@ -4989,16 +5120,16 @@ export default function App() {
       window.setTimeout(() => {
         if (!runtimeDownRef.current || disposed) return;
         if (Date.now() < suppressRuntimeRecoveryUntilRef.current) return;
-        setStatus("Runtime disconnected — reconnecting");
+        setStatus("Codex CLI disconnected — reconnecting");
         void rpc("model/list", { limit: 1 })
           .then(() => {
             if (disposed) return;
             setStatus("Ready");
-            setError("The Codex runtime restarted. Resend your last message if a task was interrupted.");
+            setError("The Codex CLI restarted. Resend your last message if a task was interrupted.");
           })
           .catch((reason) => {
             if (disposed) return;
-            setStatus("Runtime issue");
+            setStatus("Connection issue");
             setError(friendlyError(reason));
           });
       }, 1500);
@@ -5136,7 +5267,7 @@ export default function App() {
       void (async () => {
         try {
           if (!runtimeAvailable) {
-            if (workspaceHasRuntimeThreads) throw new Error("Codex runtime unavailable");
+            if (workspaceHasRuntimeThreads) throw new Error("The Codex CLI isn’t available");
             return;
           }
           // The runtime searches globally. Continue past pages that match
@@ -5240,8 +5371,11 @@ export default function App() {
   const renderProjectRow = (project: Project) => {
     const workingCount = projectThreadCounts[normalizedProjectPath(project.path)] ?? 0;
     const workingLabel = `${workingCount} thread${workingCount === 1 ? "" : "s"} working`;
+    const attentionCount = projectAttentionCounts[normalizedProjectPath(project.path)] ?? 0;
+    const attentionLabel = `${attentionCount} thread${attentionCount === 1 ? " needs" : "s need"} approval`;
     const scheduledCounts = scheduledPromptCounts.workspaces[normalizedProjectPath(project.path)];
-    const rowLabel = [project.name, workingCount > 0 ? workingLabel : "", scheduledCounts ? scheduledCountsLabel(scheduledCounts) : ""].filter(Boolean).join(", ");
+    const rowLabel = [project.name, attentionCount > 0 ? attentionLabel : "", workingCount > 0 ? workingLabel : "", scheduledCounts ? scheduledCountsLabel(scheduledCounts) : ""].filter(Boolean).join(", ");
+    const indicator = projectIndicator(attentionCount, workingCount);
     return <WorkspaceRow
       key={project.id}
       name={project.name}
@@ -5269,14 +5403,17 @@ export default function App() {
       }}
       counts={<>
         <ScheduledCountBadge {...scheduledCounts} />
-        {workingCount > 0 && (
-          <span
-            className="workspace-thread-count"
-            title={workingLabel}
-            aria-hidden="true"
-          >
-            {workingCount}
-          </span>
+        {/* M05: counts in words-and-numbers, not a bare dot. Waiting on
+            you outranks working; both are in the row's accessible name. */}
+        {/* I8 (round 6): one indicator per row, by priority — waiting on
+            you (hand + count) outranks working (the shared working mark +
+            count). The tooltip names both counts; the row's accessible name
+            already does. */}
+        {indicator?.kind === "attention" && (
+          <span className="workspace-attention-count" title={indicator.title} aria-hidden="true"><Hand size={11} />{indicator.count}</span>
+        )}
+        {indicator?.kind === "working" && (
+          <span className="workspace-working-count" title={indicator.title} aria-hidden="true"><WorkingIndicator size={11} />{indicator.count > 1 && <b>{indicator.count}</b>}</span>
         )}
       </>}
       menu={[
@@ -5296,7 +5433,7 @@ export default function App() {
         && record.status !== "removed",
     ).length;
     if (isolatedCount > 0) {
-      setError(`Remove the ${isolatedCount} isolated worktree${isolatedCount === 1 ? "" : "s"} in this project from the Worktrees workspace tab before removing the project from Mythra Code.`);
+      setError(`Remove the ${isolatedCount} isolated worktree${isolatedCount === 1 ? "" : "s"} in this project from the Worktree tab in Tools before removing the project from Mythra Code.`);
       return;
     }
     const confirmed = await confirmDialog(`Remove “${project.name}” from Mythra Code?\n\nIts folder and every file inside it will remain untouched on your computer.`);
@@ -5835,6 +5972,13 @@ export default function App() {
         }
       }
       markThreadRuntimeReady(thread.id);
+      setUnavailableThreads((current) => {
+        if (!current[thread.id]) return current;
+        const next = { ...current };
+        delete next[thread.id];
+        return next;
+      });
+      setThreadLoadFailure((current) => current?.id === thread.id ? null : current);
       setStatus("Ready");
     })();
     threadPreparationRef.current.set(thread.id, selectionWork);
@@ -5845,13 +5989,15 @@ export default function App() {
       failThreadOpen(thread.id, "selection");
       if (!durableHistoryLoaded && isMissingRuntimeThread(reason)) {
         // A remembered row can outlive its rollout after the active Codex
-        // profile changes or its files are removed externally. Drop only the
-        // rebuildable sidebar cache entry; never issue thread/delete here.
-        forgetThread(thread.id);
-        setThreads((current) => current.filter((entry) => entry.id !== thread.id));
+        // profile changes or its files are removed externally. Keep the row
+        // and its title, marked Unavailable, until the person retries or
+        // removes it; never issue thread/delete here.
+        const failed = { id: thread.id, title: thread.name || thread.preview || "Untitled thread", provider: providerFromThread(thread, projectDefaultProvider) };
+        setUnavailableThreads((current) => ({ ...current, [failed.id]: { title: failed.title, provider: failed.provider } }));
+        setThreadLoadFailure(failed);
         setActiveThread(null);
         useTaskStore.getState().setActiveThread(null);
-        setError("That thread is no longer available in the active provider profile. Mythra Code removed its stale sidebar entry; no transcript data was deleted.");
+        setError(null);
       } else {
         setError(friendlyError(reason));
       }
@@ -5977,7 +6123,9 @@ export default function App() {
 
   const editMessageIntoComposer = useCallback((text: string) => {
     if (localInputBlocked()) return;
-    composerRef.current?.setDraft(text);
+    const composer = composerRef.current;
+    if (composer?.editMessage) composer.editMessage(text);
+    else composer?.setDraft(text);
   }, []);
 
   const newThread = () => {
@@ -6067,7 +6215,13 @@ export default function App() {
     setDraftThreadModel(provider === projectDefaultProvider ? null : draftModelForProvider(provider));
     setDraftThreadIsolated(false);
     setError(null);
-    requestAnimationFrame(() => composerRef.current?.focus());
+    // Chosen from the provider menu: focus returns to the (new) provider chip,
+    // like every composer menu (B04); the message box is one Tab away.
+    requestAnimationFrame(() => {
+      const pill = document.querySelector<HTMLElement>(".composer-zone .provider-pill");
+      if (pill) pill.focus();
+      else composerRef.current?.focus();
+    });
   };
 
   const handleThreadCreated = useCallback((threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean; subagentEngine?: SubagentEngine; nativeSubagentMax?: number; nativeSubagentOptions?: import("./types").NativeSubagentOptions; autoCompactTokens?: number }) => {
@@ -6522,7 +6676,7 @@ export default function App() {
     if (permission === "read-only") return { started: false, reason: "This conversation is read-only and cannot run project commands." };
     const project = projectForThread(rootThreadId);
     if (!project) return { started: false, reason: "This conversation is not inside a saved project." };
-    if (!runtimeStatus?.available) return { started: false, reason: "The Codex runtime that powers the Terminal panel is not installed, so the command cannot be started from here." };
+    if (!runtimeStatus?.available) return { started: false, reason: "The Codex CLI, which powers the Terminal panel, isn’t installed, so the command can’t start from here." };
     const scope = executionPathFor(rootThreadId, project.path);
     const gitDir = threadWorktreesRef.current[rootThreadId]?.gitDir;
     await validateDispatch?.();
@@ -7005,7 +7159,7 @@ export default function App() {
     setError(null);
     try {
       const result = await rpc<{ authUrl?: string }>("account/login/start", { type: "chatgpt", useHostedLoginSuccessPage: true, appBrand: "codex" });
-      if (!result.authUrl) throw new Error("Codex did not return a ChatGPT sign-in URL.");
+      if (!result.authUrl) throw new Error("The Codex CLI did not return a ChatGPT sign-in URL.");
       setAuthRequiredOpen(false);
       setStatus("Waiting for sign-in");
       await openUrl(result.authUrl);
@@ -7461,7 +7615,7 @@ export default function App() {
     const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
     const isolation = threadWorktreesRef.current[threadId];
     if (isolation && isolation.status !== "removed") {
-      return refuse(`Remove “${isolation.branch}” from the Worktrees workspace tab before permanently deleting this thread.`);
+      return refuse(`Remove “${isolation.branch}” from the Worktree tab in Tools before permanently deleting this thread.`);
     }
     const initialBlock = threadRemovalBlockedReason(threadId, "delete");
     if (initialBlock) return refuse(initialBlock);
@@ -7482,7 +7636,7 @@ export default function App() {
         ? providerForArchivedThread(archived, legacyClaudeTranscript)
         : "openai";
     const localSubscription = provider === "claude" || provider === "cursor";
-    if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
+    if (confirmDelete && !await confirmDialog(`Delete “${label}”?\n\nThis permanently deletes the conversation. It can't be undone.`, { confirmLabel: "Delete thread" })) return false;
     const afterConfirmationBlock = threadRemovalBlockedReason(threadId, "delete");
     if (afterConfirmationBlock) return refuse(afterConfirmationBlock);
     if (archivingThreadIdsRef.current.has(threadId) || hostRowReservationsRef.current.has(threadId)) return strict ? refuse("This conversation is already being removed.") : false;
@@ -7599,6 +7753,7 @@ export default function App() {
     if (isRemoteMachineActive()) {
       gitRouteNonceRef.current += 1;
       setGitRoute({ ...route, nonce: gitRouteNonceRef.current });
+      // Another device's Git tab still holds its own commit box and file list.
       setStudioTab("git");
       setRemoteStudioOpen(true);
       return;
@@ -7606,8 +7761,17 @@ export default function App() {
     if (localInputBlocked()) return;
     gitRouteNonceRef.current += 1;
     setGitRoute({ ...route, nonce: gitRouteNonceRef.current });
-    openStudio("git");
+    openStudio(studioTabForGitRoute(route));
   };
+  // A changed file listed in the transcript asks for the Changes tab
+  // ("mythra:open-changes", detail.path); the dock may also select that file.
+  const openGitRouteRef = useRef(openGitRoute);
+  openGitRouteRef.current = openGitRoute;
+  useEffect(() => {
+    const openChanges = () => openGitRouteRef.current({ view: "changes" });
+    window.addEventListener("mythra:open-changes", openChanges);
+    return () => window.removeEventListener("mythra:open-changes", openChanges);
+  }, []);
 
   const reviewDisabledReason = !activeProject
     ? "Open a project to review its changes."
@@ -7845,9 +8009,9 @@ export default function App() {
 
   const applyActiveWorktree = async () => {
     if (!activeThread || !activeThreadWorktree) return;
-    if (effectiveSettings.permission === "read-only") { setError("Switch this thread to Ask or Full access before changing worktrees."); return; }
+    if (effectiveSettings.permission === "read-only") { setError("Switch this thread to Ask to act or Full access before changing worktrees."); return; }
     if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
-      setError("Wait for the pull request operation to finish before changing this workspace.");
+      setError("Wait for the pull request operation to finish before changing this project.");
       return;
     }
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
@@ -7862,11 +8026,11 @@ export default function App() {
       + `Mythra Code will save the shared project as a safety checkpoint first. The isolated branch and worktree remain unchanged, and Git staging and commits are not modified.${recreationWarning}`,
     )) return;
     if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
-      setError("Wait for the pull request operation to finish before changing this workspace.");
+      setError("Wait for the pull request operation to finish before changing this project.");
       return;
     }
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
-      setError("The workspace became busy. Try again after its current operation finishes.");
+      setError("The project became busy. Try again after its current operation finishes.");
       return;
     }
     setWorktreeBusy(true);
@@ -7910,9 +8074,9 @@ export default function App() {
 
   const mergeActiveWorktree = async () => {
     if (!activeThread || !activeThreadWorktree) return;
-    if (effectiveSettings.permission === "read-only") { setError("Switch this thread to Ask or Full access before changing worktrees."); return; }
+    if (effectiveSettings.permission === "read-only") { setError("Switch this thread to Ask to act or Full access before changing worktrees."); return; }
     if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
-      setError("Wait for the pull request operation to finish before changing this workspace.");
+      setError("Wait for the pull request operation to finish before changing this project.");
       return;
     }
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
@@ -7929,10 +8093,10 @@ export default function App() {
       + "Both working folders must be clean and all isolated changes must be committed. Mythra Code saves a safety checkpoint first and aborts automatically if Git reports a conflict.",
     )) return;
     if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
-      setError("Wait for the pull request operation to finish before changing this workspace.");
+      setError("Wait for the pull request operation to finish before changing this project.");
       return;
     }
-    if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) { setError("The workspace became busy. Try again after its current operation finishes."); return; }
+    if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) { setError("The project became busy. Try again after its current operation finishes."); return; }
     setWorktreeBusy(true);
     try {
       await runCheckpointProjectOperation(activeThreadWorktree.projectPath, async () => {
@@ -7974,9 +8138,9 @@ export default function App() {
 
   const removeActiveWorktree = async (returnToShared = false) => {
     if (!activeThread || !activeThreadWorktree) return;
-    if (effectiveSettings.permission === "read-only") { setError("Switch this thread to Ask or Full access before changing worktrees."); return; }
+    if (effectiveSettings.permission === "read-only") { setError("Switch this thread to Ask to act or Full access before changing worktrees."); return; }
     if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
-      setError("Wait for the pull request operation to finish before changing this workspace.");
+      setError("Wait for the pull request operation to finish before changing this project.");
       return;
     }
     if (projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
@@ -8005,7 +8169,7 @@ export default function App() {
       )) return;
       if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)
         || projectHasActiveTask(activeThreadWorktree.path) || projectHasActiveTask(activeThreadWorktree.projectPath)) {
-        setError("The workspace became busy. Try again after its current operation finishes.");
+        setError("The project became busy. Try again after its current operation finishes.");
         return;
       }
       const worktreeCheckpoints = checkpointsRef.current.filter(
@@ -8100,7 +8264,7 @@ export default function App() {
       "Recreate this worktree from its committed branch?\n\nUncommitted files from the missing folder cannot be recovered. Changes already applied to the shared project remain there, but a later Apply may reconcile them with the recreated branch and will save a safety checkpoint first.",
     )) return;
     if ([activeThreadWorktree.path, activeThreadWorktree.projectPath].some(isPullRequestMutationRunning)) {
-      setError("Wait for the pull request operation to finish before changing this workspace.");
+      setError("Wait for the pull request operation to finish before changing this project.");
       return;
     }
     setWorktreeBusy(true);
@@ -8328,11 +8492,11 @@ export default function App() {
   const gitWorkspace = useGitWorkspace({
     cwd: activeProject && !activeWorkspace?.isChat ? activeExecutionPath || activeProject.path : null,
     projectPath: activeProject?.path ?? null,
-    enabled: Boolean(activeProject && !activeWorkspace?.isChat && studioOpen && ["git", "review", "worktrees"].includes(studioTab)),
+    enabled: Boolean(activeProject && !activeWorkspace?.isChat && studioOpen && ["git", "changes", "worktrees"].includes(studioTab)),
     isolated: Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed"),
     blocked: (paths) => {
-      if (effectiveSettings.permission === "read-only") return "Switch this thread to Ask or Full access before changing Git.";
-      if (worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
+      if (effectiveSettings.permission === "read-only") return "Switch this thread to Ask to act or Full access before changing Git.";
+      if (worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId) return "Wait for the current operation in this project to finish.";
       if (paths.some(projectHasActiveTask)) return "Wait for agents in this folder to finish before changing Git.";
       return null;
     },
@@ -8373,7 +8537,7 @@ export default function App() {
       message: publishConfig?.message ?? "Automatic publishing is off.",
       repository: publishConfig?.binding.repository ?? githubRepoStatus?.repository ?? undefined,
       onToggle: (enabled) => {
-        if (effectiveSettings.permission === "read-only") { setGitOutput("Switch this thread to Ask or Full access before changing automatic publishing."); return; }
+        if (effectiveSettings.permission === "read-only") { setGitOutput("Switch this thread to Ask to act or Full access before changing automatic publishing."); return; }
         if (enabled) void enablePublishing(activeProject.id, activeProject.path).catch((reason) => setGitOutput(formatGitError(reason)));
         else disablePublishing(activeProject.id);
       },
@@ -8382,9 +8546,9 @@ export default function App() {
   }), [gitWorkspace.snapshot, gitWorkspace.readRevision, gitWorkspace.readError, gitWorkspace.busy, gitWorkspace.error, gitWorkspace.notice, gitWorkspace.branchNotice, gitWorkspace.lastFetchedAt, changeWorkspaceBranch, refreshWorkspace, refreshWorkspaceIfIdle, activeThreadWorktree, activeProject, githubRepoStatus?.repository, publishConfig, enablePublishing, disablePublishing, retryPublishing, effectiveSettings.permission, setGitOutput]);
 
   const prMutationBlockedReason = effectiveSettings.permission === "read-only"
-    ? "Switch this thread to Ask or Full access before changing Git or a pull request."
+    ? "Switch this thread to Ask to act or Full access before changing Git or a pull request."
     : worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId
-      ? "Wait for the current workspace operation to finish."
+      ? "Wait for the current operation in this project to finish."
       : activeExecutionPath && projectHasActiveTask(activeExecutionPath)
         ? "Wait for agents working in this folder to finish before changing Git."
         : null;
@@ -8422,8 +8586,8 @@ export default function App() {
       }
     },
     checkMutationAllowed: (cwd) => {
-      if (effectiveSettings.permission === "read-only") return "Switch this thread to Ask or Full access first.";
-      if (worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
+      if (effectiveSettings.permission === "read-only") return "Switch this thread to Ask to act or Full access first.";
+      if (worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId) return "Wait for the current operation in this project to finish.";
       if (projectHasActiveTask(cwd)) return "Wait for agents working in this folder to finish before changing Git.";
       return null;
     },
@@ -8445,8 +8609,8 @@ export default function App() {
   } : undefined, [projectGitCwd]);
   const projectGitMutationCheckRef = useRef<(cwd: string) => string | null>(() => null);
   projectGitMutationCheckRef.current = (cwd) => {
-    if (effectiveSettings.permission === "read-only") return "Switch to Ask or Full access before changing Git or a pull request.";
-    if (worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId) return "Wait for the current workspace operation to finish.";
+    if (effectiveSettings.permission === "read-only") return "Switch to Ask to act or Full access before changing Git or a pull request.";
+    if (worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || checkpointBusyId) return "Wait for the current operation in this project to finish.";
     if (projectHasActiveTask(cwd)) return "Wait for agents working in this folder to finish before changing Git.";
     return null;
   };
@@ -8694,7 +8858,7 @@ export default function App() {
     if (["status", "diff", "comments", "ci"].includes(action)) { await runGitActionUnlocked(action, commitMessageInput); return; }
     const commandPath = activeExecutionPath || activeProject.path;
     const paths = [...new Set([activeProject.path, commandPath].map(normalizedProjectPath))];
-    if (worktreeBusy || checkpointBusyId || gitWorkspace.busy || githubRepositoryBusy) { setGitOutput("Wait for the current workspace operation to finish."); return; }
+    if (worktreeBusy || checkpointBusyId || gitWorkspace.busy || githubRepositoryBusy) { setGitOutput("Wait for the current operation in this project to finish."); return; }
     if (paths.some(projectHasActiveTask)) { setGitOutput("Wait for agents in this folder to finish before changing Git."); return; }
     const leases: string[] = [];
     for (const path of paths) {
@@ -8737,7 +8901,7 @@ export default function App() {
     const paths = [...new Set([activeProject.path, cwd].map(normalizedProjectPath))];
     const unavailable = gitActionUnavailableReason(action, effectiveSettings.permission)
       || (worktreeBusy || checkpointBusyId || gitWorkspace.busy
-        ? "Wait for the current workspace operation to finish." : null)
+        ? "Wait for the current operation in this project to finish." : null)
       || (paths.some(projectHasActiveTask) ? "Wait for agents in this folder to finish before changing GitHub settings." : null);
     if (unavailable) { updateOperation(false, unavailable); setGitOutput(unavailable); return; }
     const leases: string[] = [];
@@ -8903,7 +9067,7 @@ export default function App() {
     const commandPath = activeExecutionPath || activeProject.path;
     const scope = gitWorkspaceScope;
     const paths = [...new Set([activeProject.path, commandPath].map(normalizedProjectPath))];
-    if (worktreeBusy || checkpointBusyId || gitWorkspace.busy || githubRepositoryBusy) { setGitOutput("Wait for the current workspace operation to finish."); return; }
+    if (worktreeBusy || checkpointBusyId || gitWorkspace.busy || githubRepositoryBusy) { setGitOutput("Wait for the current operation in this project to finish."); return; }
     if (paths.some(projectHasActiveTask)) { setGitOutput("Wait for agents in this folder to finish before changing Git."); return; }
     const leases: string[] = [];
     for (const root of paths) {
@@ -9154,26 +9318,117 @@ export default function App() {
     setScheduledTasks((current) => current.map((item) => (item.id === id ? patch(item) : item)));
   }, [setScheduledTasks]);
 
+  /** ⌘L: the message box on screen, local or remote. Wide review gives way first. */
+  const focusComposer = () => {
+    if (reviewWideShownRef.current) {
+      setReviewWide(false);
+      requestAnimationFrame(() => requestAnimationFrame(focusComposerField));
+      return;
+    }
+    focusComposerField();
+  };
+  const focusComposerField = () => {
+    const field = document.querySelector<HTMLTextAreaElement>(".composer-zone .composer textarea:not([disabled])")
+      ?? document.querySelector<HTMLTextAreaElement>(".composer textarea:not([disabled])");
+    field?.focus();
+    window.dispatchEvent(new CustomEvent(FOCUS_COMPOSER_EVENT));
+  };
+  /** ⌘⇧M: the composer's model control opens itself when it listens for the
+   * event; otherwise the keyboard layer opens the trigger the same way ↓ does. */
+  const openModelPicker = () => {
+    const request = new CustomEvent(OPEN_MODEL_PICKER_EVENT, { cancelable: true });
+    if (!window.dispatchEvent(request)) return;
+    const trigger = document.querySelector<HTMLElement>(".composer-zone [aria-haspopup][aria-label*=\"model:\"]");
+    if (!trigger) return;
+    trigger.focus();
+    trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    if (trigger.getAttribute("aria-expanded") !== "true") requestAnimationFrame(() => { if (trigger.getAttribute("aria-expanded") !== "true") trigger.click(); });
+  };
+  /** ⌘⇧[ / ⌘⇧]: the next row in the sidebar's current list, wrapping. */
+  const stepThread = (direction: -1 | 1) => {
+    if (isRemoteMachineActive()) return;
+    const list = threadKindView === "subagents" ? subAgentGroups.flatMap((group) => group.threads) : displayedThreads;
+    if (!list.length) return;
+    const index = activeThread ? list.findIndex((thread) => thread.id === activeThread.id) : -1;
+    const target = index < 0 ? list[direction > 0 ? 0 : list.length - 1] : list[(index + direction + list.length) % list.length];
+    if (target && target.id !== activeThread?.id) void selectThread(target);
+  };
+  // Opening something from the floating sidebar puts it away again.
+  useEffect(() => { setSidebarPeek(false); }, [activeThreadId, activeProjectId, workspaceMode]);
+  const retryUnavailableThread = () => {
+    const failure = threadLoadFailure;
+    if (!failure) return;
+    const thread = threads.find((entry) => entry.id === failure.id) ?? knownThreadsRef.current?.[failure.id];
+    if (thread) void selectThread(thread);
+  };
+  /** The only path that drops an unavailable row: an explicit request. Only
+   * the rebuildable sidebar entry goes; no conversation data is deleted. */
+  const removeUnavailableThread = (threadId: string) => {
+    forgetThread(threadId);
+    setThreads((current) => current.filter((entry) => entry.id !== threadId));
+    setUnavailableThreads((current) => {
+      const next = { ...current };
+      delete next[threadId];
+      return next;
+    });
+    setThreadLoadFailure((current) => current?.id === threadId ? null : current);
+    showToast("Removed from the sidebar. No conversation data was deleted.", "info");
+  };
+  /** An approval card for the thread on screen (inline, not the modal one). */
+  const activeApprovalWaiting = Boolean(inlineApproval) || Boolean(pendingApproval && activeThreadId && pendingApproval.threadId === activeThreadId);
+  /** Focus only. The card owns its buttons; nothing here can answer it. */
+  const focusApprovalRequest = () => {
+    // The request card sits in the conversation wide review covers.
+    if (reviewWideShownRef.current) {
+      setReviewWide(false);
+      requestAnimationFrame(() => requestAnimationFrame(() => window.dispatchEvent(new CustomEvent(FOCUS_APPROVAL_EVENT))));
+      return;
+    }
+    window.dispatchEvent(new CustomEvent(FOCUS_APPROVAL_EVENT));
+  };
+  const topBarMissingRuntime = missingProviderRuntime(activeProvider, { codex: runtimeStatus, claude: claudeStatus, cursor: cursorStatus });
+  /** The Codex CLI has its own setup guide; Claude Code and Cursor are set up from their account row. */
+  const openRuntimeSetup = () => {
+    if (topBarMissingRuntime === "Codex CLI") setRuntimeSetupOpen(true);
+    else openSettings("models", { account: activeProvider });
+  };
+  const openWorkspaceTab = (position: number) => {
+    const tab = STUDIO_TAB_IDS[position - 1];
+    if (!tab) return;
+    if (remoteActive) { setStudioTab(tab); setRemoteStudioOpen(true); } else openStudio(tab);
+  };
   useAppShortcuts({
     escapeStopsRun: settings.escapeStopsRun,
     // Hidden local work must not answer keys meant for the machine on screen.
     running: remoteActive ? remoteRunning : Boolean((running || childrenRunning || parentRunStoppable) && activeThread),
-    modalOpen: Boolean(voiceSession) || spellingMenuOpen || confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
+    modalOpen: Boolean(voiceSession) || spellingMenuOpen || confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || shortcutsOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
     threadOpen: remoteActive ? remoteThreadOpen : Boolean(activeThreadId),
     workspaceOpen: remoteActive ? remoteStudioOpen : studioOpen && Boolean(activeProject),
     workspaceAvailable: remoteActive || Boolean(activeProject),
     toggleWorkspace: () => { if (remoteActive) setRemoteStudioOpen((open) => !open); else if (studioOpen) setStudioOpen(false); else openStudio(studioTab); },
-    closeWorkspace: () => { if (remoteActive) setRemoteStudioOpen(false); else setStudioOpen(false); },
+    // Escape leaves wide review before it closes the Tools panel.
+    closeWorkspace: () => { if (remoteActive) setRemoteStudioOpen(false); else if (reviewWideShownRef.current) setReviewWide(false); else setStudioOpen(false); },
     toggleCommandPalette: () => setCommandPaletteOpen((open) => !open),
     openConversationSearch: () => {
       if (isRemoteMachineActive()) { machineActions()?.findInConversation(); return; }
+      setReviewWide(false);
       setConvSearchOpen(true);
       requestAnimationFrame(() => convSearchInputRef.current?.focus());
     },
     newThread: () => { if (isRemoteMachineActive()) machineActions()?.newThread(); else newThread(); },
     openSettings,
     stopTurn: () => { if (isRemoteMachineActive()) machineActions()?.stopTurn(); else void stopTurnAndChildren(); },
+    toggleSidebar,
+    focusComposer,
+    openModelPicker,
+    stepThread,
+    openWorkspaceTab,
+    openShortcuts: () => setShortcutsOpen(true),
+    focusApproval: remoteActive ? undefined : () => {
+      if (activeApprovalWaiting) focusApprovalRequest();
+      else showToast("Nothing in this thread is waiting for approval.", "info");
+    },
   });
   /** Things Settings can start only happen on this device, which isn't on
    * screen. Saying so beats a button that does nothing. */
@@ -9885,17 +10140,17 @@ export default function App() {
     && skillPromptRepair.workspacePath === (activeWorkspace?.path ?? null)
     ? skillPromptRepair.targets : [];
   const promptRepairActions = promptRepairTargets.map((target) => {
-    const label = target.layer === "project" ? "project" : target.layer === "codex" ? "Codex" : target.layer === "claude" ? "Claude" : "global";
+    const label = target.layer === "project" ? "project" : target.layer === "codex" ? "OpenAI" : target.layer === "claude" ? "Claude" : "global";
     return <button key={target.layer} className="error-settings" onClick={() => openPromptRepair(target)} title={`Open the ${label} prompt containing @${target.name}`}>
       Edit {label} prompt
     </button>;
   });
 
   const paletteTrigger = (
-    <button className="command-palette-trigger" onClick={() => setCommandPaletteOpen(true)} aria-label="Open command palette">
+    <button className="command-palette-trigger" onClick={() => setCommandPaletteOpen(true)} aria-label="Search commands, projects and threads" aria-keyshortcuts="Meta+K Control+K" title={withShortcut("Search commands, projects and threads", "palette")}>
       <Search size={13} aria-hidden="true" />
       <span>Search</span>
-      <kbd>{primaryModifierLabel()}+K</kbd>
+      <kbd>{formatShortcut("palette")}</kbd>
     </button>
   );
   const sidebarSplitter = (
@@ -9928,8 +10183,11 @@ export default function App() {
     return handler;
   };
   const pinnedThreadSet = useMemo(() => new Set(pinnedThreadIds), [pinnedThreadIds]);
+  // The row on screen: the open thread, or (D3) the thread whose open just
+  // failed, which the stage and top bar still name while it is Unavailable.
+  const currentSidebarThreadId = activeThread?.id ?? (!visiblePendingFirstPrompt ? threadLoadFailure?.id : undefined);
   const renderThreadRow = (thread: Thread, cardParent?: { label: string; via?: string }) => (
-    <div key={thread.id} className={`thread-row-wrap ${activeThread?.id === thread.id ? "active" : ""}`}>
+    <div key={thread.id} className={`thread-row-wrap ${currentSidebarThreadId === thread.id ? "active" : ""}`}>
       {renamingThreadId === thread.id ? (
         <div className="thread-rename-row">
           <MessageSquare size={14} />
@@ -9941,7 +10199,7 @@ export default function App() {
         </div>
       ) : (
         <ThreadInboxCard
-          active={sidebarOpen && !settingsOpen && !onboardingOpen}
+          active={sidebarShown && !settingsOpen && !onboardingOpen}
           threadId={thread.id}
           title={thread.name || thread.preview || "Untitled thread"}
           titlePending={automaticTitles.pendingIds.has(thread.id)}
@@ -9958,6 +10216,9 @@ export default function App() {
           parentVia={cardParent?.via}
           subAgentIds={threadKindView === "main" ? subAgentsByParent[thread.id] : undefined}
           nativeAgents={nativeAgentLinks}
+          current={currentSidebarThreadId === thread.id}
+          highlight={threadSearch}
+          unavailable={Boolean(unavailableThreads[thread.id])}
           onOpen={openHandlerFor(thread)}
         />
       )}
@@ -9965,6 +10226,7 @@ export default function App() {
         label={`Options for ${automaticTitles.pendingIds.has(thread.id) ? "Generating title" : thread.name || thread.preview || "thread"}`}
         scale={(settings.uiScale || 100) / 100}
         items={() => [
+          ...(unavailableThreads[thread.id] ? [{ label: "Remove from sidebar", icon: <X size={13} />, onSelect: () => removeUnavailableThread(thread.id) }] : []),
           { label: pinnedThreadSet.has(thread.id) ? "Unpin" : "Pin", icon: pinnedThreadSet.has(thread.id) ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleThreadPin(thread.id) },
           { label: "Rename", icon: <Pencil size={13} />, onSelect: () => startThreadRename(thread) },
           ...(activeProject ? [{ label: "Open folder", icon: <FolderOpen size={13} />, onSelect: () => void openThreadFolder(thread) }] : []),
@@ -9974,6 +10236,50 @@ export default function App() {
       />
     </div>
   );
+
+  // Everyday actions for the command palette. Each mirrors a control that is
+  // already on screen (Stop, the sidebar and Tools toggles, the thread
+  // "…" menu), so the palette never offers something the UI can't do.
+  const paletteRunning = remoteActive ? remoteRunning : Boolean((running || childrenRunning || parentRunStoppable) && activeThread);
+  const compactSupported = effectiveSettings.provider === "openai" || effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio";
+  const paletteCommands: PaletteCommand[] = [
+    ...(paletteRunning ? [{ id: "stop", label: "Stop running task", detail: "Stops the task and its sub-agents", icon: CircleStop, shortcut: formatShortcut("stop"),
+      run: () => { if (isRemoteMachineActive()) machineActions()?.stopTurn(); else void stopTurnAndChildren(); } }] : []),
+    ...(!remoteActive && activeApprovalWaiting ? [{ id: "focus-approval", label: "Go to the approval request", detail: "Moves focus to the request; you still choose Allow or Deny", icon: ShieldAlert, shortcut: formatShortcut("focusApproval"), run: () => requestAnimationFrame(focusApprovalRequest) }] : []),
+    { id: "focus-composer", label: "Focus message box", icon: TextCursorInput, shortcut: formatShortcut("focusComposer"), run: () => requestAnimationFrame(focusComposer) },
+    ...(activeWorkspace || remoteActive ? [{ id: "model-picker", label: "Choose model…", icon: Cpu, shortcut: formatShortcut("modelPicker"), run: () => requestAnimationFrame(openModelPicker) }] : []),
+    ...((remoteActive ? remoteThreadOpen : Boolean(activeThreadId)) ? [{ id: "search-conversation", label: "Search in conversation", icon: Search, shortcut: formatShortcut("searchConversation"),
+      run: () => {
+        if (isRemoteMachineActive()) { machineActions()?.findInConversation(); return; }
+        setConvSearchOpen(true);
+        requestAnimationFrame(() => convSearchInputRef.current?.focus());
+      } }] : []),
+    { id: "toggle-sidebar", label: sidebarShown ? "Hide sidebar" : "Show sidebar", icon: sidebarShown ? PanelLeftClose : PanelLeftOpen, shortcut: formatShortcut("toggleSidebar"), run: toggleSidebar },
+    ...(remoteActive || activeProject ? [{ id: "toggle-workspace", label: (remoteActive ? remoteStudioOpen : studioOpen) ? "Hide Tools" : "Show Tools", icon: PanelRight, shortcut: formatShortcut("toggleWorkspace"),
+      run: () => { if (remoteActive) setRemoteStudioOpen((open) => !open); else if (studioOpen) setStudioOpen(false); else openStudio(studioTab); } }] : []),
+    { id: "shortcuts", label: "Keyboard shortcuts", icon: Keyboard, shortcut: formatShortcut("shortcuts"), run: () => setShortcutsOpen(true) },
+    ...(!remoteActive && activeThread ? [
+      { id: "thread-rename", label: "Rename thread", group: "Thread", icon: Pencil, run: () => {
+        showSidebar();
+        setThreadKindView(activeThreadIsChild ? "subagents" : "main");
+        startThreadRename(activeThread);
+      } },
+      { id: "thread-pin", label: pinnedThreadSet.has(activeThread.id) ? "Unpin thread" : "Pin thread", group: "Thread", icon: pinnedThreadSet.has(activeThread.id) ? PinOff : Pin, run: () => toggleThreadPin(activeThread.id) },
+      { id: "thread-fork", label: "Fork thread", detail: "Continue in a new copy of this conversation", group: "Thread", icon: GitFork, run: () => void forkThread() },
+      { id: "thread-undo", label: "Undo last turn", detail: "Removes the latest exchange; files stay as they are", group: "Thread", icon: RotateCcw, run: () => void rollbackTurn() },
+      { id: "thread-compact", label: "Compact context", detail: "Summarize older turns to free context", group: "Thread", icon: Shrink,
+        disabledReason: compactSupported ? undefined : "This provider manages its own context compaction", run: () => void compactThread() },
+      { id: "thread-export", label: "Export conversation", detail: "Save as a Markdown file", group: "Thread", icon: Download, run: () => void exportTranscript() },
+      { id: "thread-archive", label: "Archive thread", group: "Thread", icon: Archive,
+        disabledReason: threadRemovalBlockedReason(activeThread.id, "archive") ?? undefined, run: () => void archiveThread(activeThread) },
+    ] : []),
+    ...(!remoteActive && activeProject && !activeWorkspace?.isChat ? [
+      { id: "project-instructions", label: "Project instructions…", detail: projectPromptState || undefined, group: "Project", icon: NotebookPen,
+        run: () => setProjectPromptOpenRequest((current) => ({ name: activeProject.name, nonce: (current?.nonce ?? 0) + 1 })) },
+      { id: "project-folder", label: "Open project folder", group: "Project", icon: FolderOpen, run: () => void (activeThread ? openThreadFolder(activeThread) : openWorkspaceFolder(activeProject.path)) },
+      { id: "project-settings", label: "Project settings…", group: "Project", icon: Settings, run: () => openSettings("projects") },
+    ] : []),
+  ];
 
   const maxReasoningWarning = useMemo(() => ({
     enabled: settings.warnOnMaxReasoning !== false,
@@ -10004,8 +10310,15 @@ export default function App() {
           directly so the edge tracks the pointer without rendering the app,
           and an unrelated render mid-drag cannot snap the sidebar back to the
           last committed width. */}
-      <aside ref={paneRefs.sidebar} inert={voiceSession || settingsOpen || onboardingOpen ? true : undefined} className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
-        {sidebarOpen && (
+      {sidebarPeeking && <div className="sidebar-peek-scrim" aria-hidden="true" onMouseDown={() => closeSidebarPeek()} />}
+      <aside ref={paneRefs.sidebar} inert={voiceSession || settingsOpen || onboardingOpen || !sidebarShown ? true : undefined} className={`sidebar ${sidebarShown ? "open" : "closed"}${sidebarPeeking ? " peek" : ""}`}
+        {...(sidebarPeeking ? { role: "dialog", "aria-modal": true, "aria-label": "Sidebar" } : {})}
+        onKeyDown={sidebarPeeking ? (event) => {
+          if (event.defaultPrevented) return;
+          if (event.key === "Escape") { event.preventDefault(); closeSidebarPeek(true); }
+          else if (event.key === "Tab") containTab(event.currentTarget, event.nativeEvent);
+        } : undefined}>
+        {sidebarShown && (
           <div
             className="pane-resize sidebar-resize"
             onPointerDown={startPaneResize("sidebar")}
@@ -10025,7 +10338,7 @@ export default function App() {
           </div>
           <span>Mythra Code</span>
           <MachineSwitcher onManageDevices={() => openSettings("devices")} />
-          <button className="icon-button subtle collapse-button" onClick={() => setSidebarOpen(false)} title="Hide sidebar" aria-label="Hide sidebar">
+          <button className="icon-button subtle collapse-button" onClick={() => setSidebarOpen(false)} title={withShortcut("Hide sidebar", "toggleSidebar")} aria-label="Hide sidebar" aria-keyshortcuts="Meta+Backslash Control+Backslash">
             <PanelLeftClose size={17} />
           </button>
         </div>
@@ -10033,7 +10346,7 @@ export default function App() {
         <button className="new-thread-button" onClick={remoteActive ? () => machineActions()?.newThread() : newThread} disabled={!remoteActive && !activeWorkspace} title={activeWorkspace?.isChat ? "Start a chat without a project folder" : activeProject ? `Start a thread in ${activeProject.name}` : "Select a workspace first"}>
           <Plus size={16} />
           <span>New thread</span>
-          <kbd>{primaryModifierLabel()}+N</kbd>
+          <kbd>{formatShortcut("newThread")}</kbd>
         </button>
 
         {/* Same arrangement as the sidebar edge: the split lives in
@@ -10065,33 +10378,52 @@ export default function App() {
         {sidebarSplitter}
 
         <ThreadsSection
-          kindSwitch={activeWorkspace && <div className="thread-kind-switch" role="group" aria-label="Thread type">
+          kindSwitch={activeWorkspace && (threadKindCounts.subagents > 0 || threadKindView === "subagents") && <div className="thread-kind-switch" role="group" aria-label="Thread type">
               <button className={threadKindView === "main" ? "active" : ""} onClick={() => setThreadKindView("main")} aria-pressed={threadKindView === "main"}>Main <span>{threadKindCounts.main + workspacePendingFirstPrompts.length}</span></button>
               <button className={threadKindView === "subagents" ? "active" : ""} onClick={() => setThreadKindView("subagents")} aria-pressed={threadKindView === "subagents"}>Sub-agents <span>{threadKindCounts.subagents}</span></button>
             </div>}
+          menu={activeWorkspace && <RowMenu
+            label="Filter threads and list actions"
+            title="Filter threads: main, sub-agent or archived"
+            icon={<ListFilter size={14} />}
+            scale={(settings.uiScale || 100) / 100}
+            items={() => [
+              // Filters first: this is the list's "Filter threads" control.
+              ...(threadKindView === "subagents"
+                ? [{ label: "Show main threads", icon: <MessageSquare size={13} />, onSelect: () => setThreadKindView("main") }]
+                : [{ label: "Show sub-agent threads", icon: <UsersRound size={13} />, disabledReason: threadKindCounts.subagents === 0 ? "No sub-agent threads in this list yet" : undefined, onSelect: () => setThreadKindView("subagents") }]),
+              { label: attentionOnly ? "Show all threads" : "Show only threads that need you", icon: <Hand size={13} />,
+                disabledReason: !attentionOnly && !workspaceKindThreads.some((thread) => attentionIds.has(thread.id)) ? "Nothing here is waiting for you" : undefined,
+                onSelect: () => setAttentionOnly((current) => !current) },
+              { label: archivedOpen ? "Hide archived" : "Show archived", icon: <ArchiveRestore size={13} />,
+                disabledReason: workspaceArchived.length === 0 ? "No archived threads here" : undefined,
+                onSelect: () => setArchivedOpen((open) => !open) },
+              { label: "New thread", icon: <Plus size={13} />, shortcut: formatShortcut("newThread"), separatorBefore: true, onSelect: newThread },
+              { label: `Archive all ${threadKindView === "subagents" ? "sub-agent" : "main"} threads`, icon: <Archive size={13} />,
+                disabledReason: workspaceKindThreads.length === 0 ? "There are no threads to archive here" : undefined,
+                onSelect: () => void archiveAllThreadsInInbox() },
+              ...(workspaceArchived.length > 0 ? [
+                { label: "Delete all archived…", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteAllArchivedThreads() },
+              ] : []),
+            ]}
+          />}
           search={activeWorkspace && (
             <ThreadSearch
               value={threadSearch}
               onChange={setThreadSearch}
               placeholder={`Search ${workspaceMode === "chat" ? "chats" : (activeProject?.name ?? "threads")}…`}
-              action={
-              <button
-                className="thread-bulk-button"
-                onClick={() => void archiveAllThreadsInInbox()}
-                disabled={workspaceKindThreads.length === 0}
-                title={`Archive all ${threadKindView === "subagents" ? "sub-agent" : "main"} threads in this ${workspaceMode === "chat" ? "workspace" : "project"}`}
-              >
-                <Archive size={12} />
-                <span>Archive all</span>
-              </button>
-              }
             />
           )}
           list={<>
+            {attentionOnly && <div className="thread-filter-note" role="status">
+              <Hand size={12} aria-hidden="true" />
+              <span>{displayedThreads.length ? `Showing ${displayedThreads.length} that need${displayedThreads.length === 1 ? "s" : ""} you` : "Nothing here needs you now"}</span>
+              <button type="button" onClick={() => setAttentionOnly(false)}>Show all</button>
+            </div>}
             {displayedPendingFirstPrompts.map((prompt) => (
               <div key={prompt.id} className={`thread-row-wrap ${selectedFirstPrompt?.id === prompt.id ? "active" : ""}`}>
                 <ThreadInboxCard
-                  active={sidebarOpen && !settingsOpen && !onboardingOpen}
+                  active={sidebarShown && !settingsOpen && !onboardingOpen}
                   threadId={prompt.id}
                   title={prompt.text || "New thread"}
                   pendingStatus={prompt.status}
@@ -10139,10 +10471,14 @@ export default function App() {
                 : "Conversation content search is unavailable. Only name and preview matches are shown."}
             </div>}
             {activeWorkspace && !displayedThreads.length && !displayedPendingFirstPrompts.length && !displayedSavedDraftKeys.length
-              && (!threadSearchStatus || threadSearchStatus === "complete") && <div className="empty-threads">
-                {threadSearchStatus ? "No matching conversations."
-                  : threadKindView === "subagents" ? "No sub-agent threads yet" : workspaceMode === "chat" ? "No normal chats yet" : "No threads in this project yet"}
-              </div>}
+              && (!threadSearchStatus || threadSearchStatus === "complete") && <EmptyState
+                variant="compact"
+                className="sidebar-empty"
+                role={threadSearchStatus ? "status" : undefined}
+                title={threadSearchStatus ? "No matching conversations"
+                  : threadKindView === "subagents" ? "No sub-agent threads yet" : workspaceMode === "chat" ? "No chats yet" : "No threads in this project yet"}
+                text={threadSearchStatus ? "Try fewer or different words." : undefined}
+              />}
           </>}
           footer={workspaceArchived.length > 0 && (
             <div className="archived-threads">
@@ -10154,14 +10490,6 @@ export default function App() {
                   <span className="thread-count">{workspaceArchived.length}</span>
                   <ScheduledCountBadge threadPrompts={archivedScheduledCount} label={`${archivedScheduledCount} scheduled prompts in archived threads`} />
                   <ChevronDown className={archivedOpen ? "open" : ""} size={12} />
-                </button>
-                <button
-                  className="archived-delete-all"
-                  onClick={() => void deleteAllArchivedThreads()}
-                  title={`Permanently delete all archived ${threadKindView === "subagents" ? "sub-agent" : "main"} threads in this ${workspaceMode === "chat" ? "workspace" : "project"}`}
-                >
-                  <Trash2 size={11} />
-                  <span>Delete all</span>
                 </button>
               </div>
               {archivedOpen &&
@@ -10195,34 +10523,34 @@ export default function App() {
         />
         </div>
         {shownRemote && remoteUi && <ErrorBoundary label="remote device" key={shownMachine}>
-          <remoteUi.RemoteSidebar device={shownMachine} splitter={sidebarSplitter} scale={(settings.uiScale || 100) / 100} active={sidebarOpen && !settingsOpen && !onboardingOpen} />
+          <remoteUi.RemoteSidebar device={shownMachine} splitter={sidebarSplitter} scale={(settings.uiScale || 100) / 100} active={sidebarShown && !settingsOpen && !onboardingOpen} />
         </ErrorBoundary>}
         </div>
 
         <div className="sidebar-footer">
-          <button className="sidebar-settings" onClick={() => openSettings()} onMouseEnter={preloadSettingsModal} onFocus={preloadSettingsModal} onPointerDown={preloadSettingsModal}>
+          <button className="sidebar-settings" aria-keyshortcuts="Meta+Comma Control+Comma" title={withShortcut("Settings", "settings")} onClick={() => openSettings()} onMouseEnter={preloadSettingsModal} onFocus={preloadSettingsModal} onPointerDown={preloadSettingsModal}>
             <Settings size={16} />
             <span>{remoteActive ? `Settings for ${localMachine}` : "Settings"}</span>
-            <span className={`provider-dot ${settings.provider}`} title={`Default provider: ${providerLabel(settings.provider)}`} />
+            <kbd aria-hidden="true">{formatShortcut("settings")}</kbd>
           </button>
         </div>
       </aside>
 
-      <main inert={settingsOpen || onboardingOpen ? true : undefined} className="main-panel">
+      <main inert={settingsOpen || onboardingOpen || sidebarPeeking ? true : undefined} className="main-panel" data-review-wide={reviewWideShown || undefined} style={reviewWideShown ? { "--review-slot": `${dockWidth}px` } as CSSProperties : undefined}>
         {/* Hidden, never unmounted: local turns, drafts and listeners carry on. */}
         <div className="local-machine-surface" inert={remoteActive || undefined} data-covered={shownRemote || undefined}>
-        <header className="topbar">
+        <header className="topbar" ref={topbarRef}>
           <div className="topbar-left">
-            {!sidebarOpen && (
-              <button className="icon-button" onClick={() => setSidebarOpen(true)} title="Show sidebar" aria-label="Show sidebar">
+            {!sidebarShown && (
+              <button className="icon-button sidebar-show-button" onClick={showSidebar} title={withShortcut(sidebarTucked ? "Show sidebar over the chat (Tools stays open)" : "Show sidebar", "toggleSidebar")} aria-label="Show sidebar" aria-keyshortcuts="Meta+Backslash Control+Backslash">
                 <PanelLeftOpen size={18} />
               </button>
             )}
             <div className="project-heading">
-              <span>{activeWorkspace?.isChat ? "Normal chat" : (activeProject?.name ?? "No project selected")}</span>
-              <small>{activeThreadWorktree && activeThreadWorktree.status !== "removed"
-                ? `${activeThreadWorktree.branch} · ${activeThreadWorktree.path}`
-                : activeThread ? <ThreadTitle key={activeThread.id} title={activeThread.name || activeThread.preview || "New thread"} pending={automaticTitles.pendingIds.has(activeThread.id)} /> : visiblePendingFirstPrompt ? <ThreadTitle key={visiblePendingFirstPrompt.id} title={visiblePendingFirstPrompt.text || "New thread"} pending={false} /> : activeWorkspace?.isChat ? "No project folder" : (activeProject?.path ?? "Choose a project or use Chats")}</small>
+              <span>{activeWorkspace?.isChat ? "Chats" : (activeProject?.name ?? "No project selected")}</span>
+              <small title={activeThreadWorktree && activeThreadWorktree.status !== "removed" ? activeThreadWorktree.path : !activeThread && !visiblePendingFirstPrompt && !activeWorkspace?.isChat ? activeProject?.path : undefined}>{activeThreadWorktree && activeThreadWorktree.status !== "removed"
+                ? `${activeThreadWorktree.branch} · ${homeRelativePath(activeThreadWorktree.path)}`
+                : activeThread ? <ThreadTitle key={activeThread.id} title={activeThread.name || activeThread.preview || "New thread"} pending={automaticTitles.pendingIds.has(activeThread.id)} /> : visiblePendingFirstPrompt ? <ThreadTitle key={visiblePendingFirstPrompt.id} title={visiblePendingFirstPrompt.text || "New thread"} pending={false} /> : threadLoadFailure ? threadLoadFailure.title : activeWorkspace?.isChat ? "New chat" : (activeProject ? <>New thread <span className="project-heading-path">· {homeRelativePath(activeProject.path)}</span></> : "Choose a project or use Chats")}</small>
             </div>
             {activeThreadWorktree && activeThreadWorktree.status !== "removed" && (
               <button className="isolation-chip" onClick={() => void revealItemInDir(activeThreadWorktree.path)} title={activeThreadWorktree.path}>
@@ -10254,31 +10582,54 @@ export default function App() {
                 <GitFork size={12} aria-hidden="true" /> <span>Parent: {activeParentChip.title}</span>
               </button>
             )}
-            {activeProject && (
-              <ProjectPromptControl
-                skills={skills}
-                openRequest={projectPromptOpenRequest}
-                onAnalyzeSkillDependencies={analyzeSkillDependencies}
-                key={activeProject.id}
-                projectName={activeProject.name}
-                projectPrompt={activeProject.overrides?.systemPrompt}
-                profiles={activeProject.overrides?.systemPromptProfiles ?? EMPTY_PROJECT_PROMPT_PROFILES}
-                selectedProfileId={activeProject.overrides?.systemPromptProfileId}
-                promptMode={activeProject.overrides?.systemPromptMode ?? "replace"}
-                appPrompt={resolveProviderSystemPrompt(settings.systemPrompt, effectiveSettings.provider, settings.codexSystemPrompt, settings.claudeSystemPrompt)}
-                provider={effectiveSettings.provider}
-                threadStarted={Boolean(activeThread)}
-                onSave={(prompt, mode, profileState) => {
-                  const changed = prompt !== activeProject.overrides?.systemPrompt || mode !== (activeProject.overrides?.systemPromptMode ?? "replace");
-                  persistActiveProjectPrompt(prompt, mode, profileState);
-                  if (changed && skillPromptRepair?.message === error && skillPromptRepair.targets.some((target) => target.layer === "project")) {
-                    setError(null);
-                    setSkillPromptRepair(null);
-                  }
-                }}
-                onAppPromptSettings={() => openSettings("prompts")}
-              />
-            )}
+          </div>
+          <div className="topbar-right">
+            {(() => {
+              // Blocked on the user beats "Working": the run can't move until
+              // they answer, and the sidebar already says so for this thread.
+              const awaitingApproval = Boolean(inlineApproval) || Boolean(pendingApproval && activeThreadId && pendingApproval.threadId === activeThreadId);
+              const busy = running || childrenWorking || Boolean(parentRunStatus);
+              // "Ready" is a readiness claim, not just "nothing is running": a
+              // provider whose runtime is known to be missing can't take a turn.
+              const setupNeeded = !awaitingApproval && !busy && !remoteActive ? topBarMissingRuntime : null;
+              // M03: a thread that failed to open keeps saying so in the bar
+              // until Retry works or the person starts or opens something else.
+              const openFailed = !awaitingApproval && !setupNeeded && !busy && !activeThread && !visiblePendingFirstPrompt && Boolean(threadLoadFailure);
+              const fullWord = awaitingApproval ? "Needs approval" : setupNeeded ? "Setup needed" : openFailed ? "Unavailable" : parentRunStatus?.status ?? (running || childrenWorking ? "Working" : childrenStatusUnknown ? "Status unknown" : "Ready");
+              const statusKind = awaitingApproval ? "approval" : setupNeeded ? "setup" : parentRunStatus || openFailed ? "other" : running || childrenWorking ? "working" : childrenStatusUnknown ? "unknown" : "ready";
+              // B06: the word is never shed. Only at the bar's last shedding
+              // step does a long word take its short form ("Set up").
+              const word = topbarStatusLabel(statusKind, fullWord, topbarShed >= TOPBAR_SHED_SHORT_STATUS);
+              const detail = awaitingApproval ? "This thread is waiting for you to allow or deny a request." : openFailed ? `“${threadLoadFailure?.title}” couldn’t be opened. Retry from the message in the conversation.` : setupNeeded ? `${providerLabel(activeProvider)} needs ${setupNeeded}, which isn’t installed on this computer.` : parentRunStatus ? parentRunStatus.title : childrenStatusUnknown && !running && !childrenWorking ? "A sub-agent's current status has not been confirmed." : status;
+              // Approval and setup are both amber actions, so each has its own
+              // shape as well as its own word: a raised hand vs. a wrench.
+              const icon = awaitingApproval ? <Hand size={13} aria-hidden="true" /> : setupNeeded ? <Wrench size={13} aria-hidden="true" /> : openFailed ? <CircleAlert size={13} aria-hidden="true" /> : (running || childrenWorking) && parentRunStatus?.kind !== "paused" ? <WorkingIndicator size={13} /> : <Circle size={8} fill="currentColor" aria-hidden="true" />;
+              // Both states ask something of the person, so both are buttons:
+              // one moves focus to the request (never answers it), the other
+              // opens the install guide for the missing runtime.
+              // One persistent status region carries the full state for
+              // assistive tech at every width; the visible word may be short.
+              const announced = <span className="sr-only" role="status">Status: {fullWord}.{detail && detail !== fullWord ? ` ${detail}` : ""}</span>;
+              if (awaitingApproval || setupNeeded) return <span className="runtime-status-slot" data-status={statusKind}>
+                {announced}
+                <button
+                  type="button"
+                  className={`runtime-status runtime-status-action ${awaitingApproval ? "attention" : "setup"}`}
+                  title={awaitingApproval ? withShortcut("Go to the approval request", "focusApproval") : `${detail} Open setup.`}
+                  aria-label={awaitingApproval ? "Needs approval: go to the request" : "Setup needed: open setup"}
+                  aria-keyshortcuts={awaitingApproval ? "Meta+Shift+A Control+Shift+A" : undefined}
+                  onClick={awaitingApproval ? focusApprovalRequest : openRuntimeSetup}
+                >
+                  {icon}
+                  <span aria-hidden="true">{word}</span>
+                </button>
+              </span>;
+              return <div className={`runtime-status ${running || childrenWorking ? "working" : openFailed ? "unavailable" : ""}`} data-status={statusKind} title={detail}>
+                {announced}
+                {icon}
+                <span aria-hidden="true">{word}</span>
+              </div>;
+            })()}
             {activeProject && !activeWorkspace?.isChat && (
               <ProjectRunControl
                 key={`run-${activeProject.id}`}
@@ -10296,19 +10647,8 @@ export default function App() {
                 onDiscovered={persistDiscoveredProjectRun}
               />
             )}
-          </div>
-          <div className="topbar-right">
-            {activeThread && (
-              <button className="icon-button topbar-export-button" onClick={() => void exportTranscript()} title="Export conversation as Markdown" aria-label="Export conversation as Markdown">
-                <Download size={15} />
-              </button>
-            )}
             {paletteTrigger}
-            <div className="runtime-status" title={parentRunStatus ? parentRunStatus.title : childrenStatusUnknown && !running && !childrenWorking ? "A sub-agent's current status has not been confirmed." : status}>
-              {(running || childrenWorking) && parentRunStatus?.kind !== "paused" ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
-              <span>{parentRunStatus?.status ?? (running || childrenWorking ? "Working" : childrenStatusUnknown ? "Status unknown" : "Ready")}</span>
-            </div>
-            {headerUsageView && (effectiveSettings.provider === "openai" || effectiveSettings.provider === "claude" ? (
+            {headerUsageView && <span className={`topbar-usage-slot${headerUsageView.needsConnection ? " needs-action" : ""}`}>{(effectiveSettings.provider === "openai" || effectiveSettings.provider === "claude" ? (
               <UsagePopover
                 key={effectiveSettings.provider}
                 provider={effectiveSettings.provider}
@@ -10338,12 +10678,86 @@ export default function App() {
                 <Gauge size={13} aria-hidden="true" />
                 <span>{headerUsageView.text}</span>
               </button>
-            ))}
-            <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={activeProject ? `${studioOpen ? "Close" : "Open"} thread tools (${workspaceShortcutLabel()})` : "Thread tools are available inside projects"} aria-label={studioOpen ? "Close thread tools" : "Open thread tools"} aria-expanded={studioOpen} disabled={!activeProject}>
+            ))}</span>}
+            {(activeProject || activeThread) && (
+              <div className="thread-menu" ref={threadMenuRef}>
+                <AppActionMenu
+                  compact
+                  descriptions="tooltip"
+                  label="Thread actions"
+                  ariaLabel="Thread and project actions"
+                  triggerTitle="Thread and project actions"
+                  items={[
+                    ...(activeThread ? [
+                      { id: "rename", label: "Rename thread", icon: <Pencil size={14} />, onSelect: () => {
+                        showSidebar();
+                        setThreadKindView(activeThreadIsChild ? "subagents" : "main");
+                        startThreadRename(activeThread);
+                      } },
+                      { id: "fork", label: "Fork thread", description: "Continue in a new copy of this conversation", icon: <GitFork size={14} />, onSelect: () => void forkThread() },
+                      { id: "undo", label: "Undo last turn", description: "Remove the latest exchange; files stay as they are", icon: <RotateCcw size={14} />, onSelect: () => void rollbackTurn() },
+                      { id: "compact", label: "Compact context", icon: <Shrink size={14} />,
+                        disabled: !compactSupported,
+                        title: compactSupported ? "Summarize older turns to free context" : "This provider manages its own context compaction",
+                        onSelect: () => void compactThread() },
+                      { id: "export", label: "Export conversation", description: "Save as a Markdown file", icon: <Download size={14} />, onSelect: () => void exportTranscript() },
+                    ] : []),
+                    ...(activeProject ? [{ id: "instructions", label: "Project instructions…", value: projectPromptState, separatorBefore: Boolean(activeThread), icon: <NotebookPen size={14} />, onSelect: () => setProjectPromptOpenRequest((current) => ({ name: activeProject.name, nonce: (current?.nonce ?? 0) + 1 })) }] : []),
+                    ...(activeProject && !activeWorkspace?.isChat ? [
+                      { id: "folder", label: "Open folder", icon: <FolderOpen size={14} />, onSelect: () => void (activeThread ? openThreadFolder(activeThread) : openWorkspaceFolder(activeProject.path)) },
+                      { id: "project-settings", label: "Project settings…", icon: <Settings size={14} />, onSelect: () => openSettings("projects") },
+                      // D12: the empty "Pull requests" chip folds into this menu
+                      // only when the bar is too tight to show it; a linked
+                      // PR chip never folds, so it never appears twice.
+                      ...(!threadPullRequest.pullRequest && topbarShed >= TOPBAR_SHED_PULL_REQUESTS ? [{ id: "pull-requests", label: "Pull requests", icon: <GitPullRequest size={14} />, onSelect: () => openGitRoute({ view: "pulls", focus: activeThreadId ? "conversationPullRequest" : "pullRequestSearch" }) }] : []),
+                    ] : []),
+                    // Help: keys for things this menu can't hold, with their hints (D12, M14).
+                    ...(activeThread ? [{ id: "find", label: "Search in conversation", separatorBefore: true, icon: <Search size={14} />, shortcut: formatShortcut("searchConversation"), onSelect: () => { setConvSearchOpen(true); requestAnimationFrame(() => convSearchInputRef.current?.focus()); } }] : []),
+                    { id: "shortcuts", label: "Keyboard shortcuts", separatorBefore: !activeThread, icon: <Keyboard size={14} />, shortcut: formatShortcut("shortcuts"), onSelect: () => setShortcutsOpen(true) },
+                    // B06: idle usage leaves the bar before any label does.
+                    ...(headerUsageView && !headerUsageView.needsConnection && topbarShed >= TOPBAR_SHED_USAGE ? [{ id: "usage", label: `Quota · ${headerUsageView.text}`, separatorBefore: true, icon: <Gauge size={14} />, onSelect: () => openSettings("usage") }] : []),
+                    // M09: at the last step the sign-in chip folds here too, so
+                    // the status word ("Set up") keeps the room.
+                    ...(headerUsageView?.needsConnection && topbarShed >= TOPBAR_SHED_SHORT_STATUS ? [{ id: "usage-connect", label: headerUsageView.text, separatorBefore: true, icon: <Gauge size={14} />, onSelect: () => openSettings("models") }] : []),
+                  ]}
+                />
+                {activeProject && (
+                  <ProjectPromptControl
+                    hideTrigger
+                    align="end"
+                    returnFocusTo={() => threadMenuRef.current?.querySelector<HTMLElement>(".app-action-trigger")}
+                    onStateLabel={setProjectPromptState}
+                    skills={skills}
+                    openRequest={projectPromptOpenRequest}
+                    onAnalyzeSkillDependencies={analyzeSkillDependencies}
+                    key={activeProject.id}
+                    projectName={activeProject.name}
+                    projectPrompt={activeProject.overrides?.systemPrompt}
+                    profiles={activeProject.overrides?.systemPromptProfiles ?? EMPTY_PROJECT_PROMPT_PROFILES}
+                    selectedProfileId={activeProject.overrides?.systemPromptProfileId}
+                    promptMode={activeProject.overrides?.systemPromptMode ?? "replace"}
+                    appPrompt={resolveProviderSystemPrompt(settings.systemPrompt, effectiveSettings.provider, settings.codexSystemPrompt, settings.claudeSystemPrompt)}
+                    provider={effectiveSettings.provider}
+                    threadStarted={Boolean(activeThread)}
+                    onSave={(prompt, mode, profileState) => {
+                      const changed = prompt !== activeProject.overrides?.systemPrompt || mode !== (activeProject.overrides?.systemPromptMode ?? "replace");
+                      persistActiveProjectPrompt(prompt, mode, profileState);
+                      if (changed && skillPromptRepair?.message === error && skillPromptRepair.targets.some((target) => target.layer === "project")) {
+                        setError(null);
+                        setSkillPromptRepair(null);
+                      }
+                    }}
+                    onAppPromptSettings={() => openSettings("prompts")}
+                  />
+                )}
+              </div>
+            )}
+            {/* Tools is a project tool; Chats and the empty state don't show it. */}
+            {activeProject && !activeWorkspace?.isChat && <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={`${studioOpen ? "Hide" : "Show"} Tools (${workspaceShortcutLabel()})`} aria-label={studioOpen ? "Hide Tools" : "Show Tools"} aria-keyshortcuts="Meta+B Control+B" aria-expanded={studioOpen}>
               <PanelRight size={17} />
-              <span>Thread tools</span>
+              <span>Tools</span>
               <kbd>{workspaceShortcutLabel()}</kbd>
-            </button>
+            </button>}
           </div>
         </header>
 
@@ -10369,7 +10783,7 @@ export default function App() {
                 <span>{error}</span>
                 <div className="error-banner-actions">
                   {promptRepairActions}
-                  {errorSuggestsSettings && !promptRepairActions.length && <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>Check settings</button>}
+                  {errorSuggestsSettings && !promptRepairActions.length && <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>{errorSettingsLabel}</button>}
                   <button onClick={() => setError(null)} aria-label="Dismiss error"><X size={14} /></button>
                 </div>
               </div>
@@ -10377,8 +10791,8 @@ export default function App() {
             <div className="welcome-orbit">
               <Code2 size={34} />
             </div>
-            <h1>Choose how you want to work.</h1>
-            <p>Open a project for coding inside a folder, or use a normal chat with no project attached.</p>
+            <h1>Choose how to work</h1>
+            <p>Open a project folder for coding, or chat without one.</p>
             <div className="welcome-actions">
               <button className="primary-button large" onClick={addProject}>
                 <FolderOpen size={17} /> Open project
@@ -10387,13 +10801,13 @@ export default function App() {
                 className="secondary-button"
                 onClick={() => setWorkspaceMode("chat")}
               >
-                <MessageSquare size={16} /> Normal chat
+                <MessageSquare size={16} /> Open Chats
               </button>
             </div>
           </section>
         ) : (
           <>
-            <section className="conversation">
+            <section className="conversation" inert={reviewWideShown || undefined}>
               {ActivityDemo ? <Suspense fallback={<div className="timeline-loading">Loading isolated activity preview…</div>}><ActivityDemo /></Suspense> : <>
               {activeThreadId && <ThreadOpenCommitMarker threadId={activeThreadId} commitToken={threadOpenCommitToken} />}
               {convSearchOpen && activeThreadId && <ConversationSearchBar
@@ -10405,7 +10819,27 @@ export default function App() {
               {visibleStartingPrompt && timelineEmpty ? (
                 <PendingFirstPrompt prompt={visibleStartingPrompt} />
               ) : timelineEmpty || !activeThreadId ? (
-                <div className="thread-empty-state">
+                <div className={`thread-empty-state${threadLoadFailure && !activeThread ? " after-unavailable" : ""}`}>
+                  {/* D10/M04: a thread that can't open keeps its title in the
+                      stage with its own recovery row; the landing below is
+                      labelled as a separate new thread. */}
+                  {threadLoadFailure && !activeThread && (
+                    <section className="thread-unavailable-panel" role="alert" aria-labelledby="thread-unavailable-title">
+                      <div className="thread-unavailable-head">
+                        <CircleAlert size={16} aria-hidden="true" />
+                        <div className="thread-unavailable-copy">
+                          <h2 id="thread-unavailable-title">“{threadLoadFailure.title}” couldn’t be opened</h2>
+                          <p>{providerLabel(threadLoadFailure.provider)} didn’t find it with the account signed in now. Nothing was deleted, and it stays in the sidebar as Unavailable until you remove it.</p>
+                        </div>
+                        <button type="button" className="icon-button thread-unavailable-close" onClick={() => setThreadLoadFailure(null)} aria-label="Close this message; the thread stays in the sidebar" title="Close this message; the thread stays in the sidebar"><X size={14} /></button>
+                      </div>
+                      <div className="thread-unavailable-actions">
+                        <button type="button" className="primary-button" onClick={retryUnavailableThread}><RotateCcw size={13} aria-hidden="true" /> Retry</button>
+                        <button type="button" className="secondary-button" onClick={() => openSettings("models", { account: threadLoadFailure.provider })}>Open Models &amp; accounts</button>
+                        <button type="button" className="thread-unavailable-remove" onClick={() => removeUnavailableThread(threadLoadFailure.id)}>Remove from sidebar</button>
+                      </div>
+                    </section>
+                  )}
                   {pendingHandoffForWorkspace && (
                     <div className="handoff-draft-banner">
                       <GitFork size={15} />
@@ -10413,24 +10847,15 @@ export default function App() {
                     </div>
                   )}
                   <AnimatedMythraLogo />
-                  <h1>{activeWorkspace.isChat ? "Start a normal chat." : "What should we build?"}</h1>
-                  <p>{activeWorkspace.isChat ? "This conversation is not attached to any project folder. Ask a question, brainstorm, or work without repository context." : `This thread works inside ${activeProject?.name}. Commands and file changes start in that project folder.`}</p>
-                  <div className="trust-strip">
-                    <span>
-                      <Check size={13} /> No app-added system prompt
-                    </span>
-                    <span>
-                      <Check size={13} /> {activeWorkspace.isChat ? "No project folder" : "Local project access"}
-                    </span>
-                    <span>
-                      <Check size={13} /> Approval controls
-                    </span>
-                  </div>
+                  <h1>{threadLoadFailure && !activeThread ? "Or start a separate thread" : activeWorkspace.isChat ? "What should we talk about?" : "What should we build?"}</h1>
+                  <p>{threadLoadFailure && !activeThread
+                    ? <>A new thread in <span className="thread-empty-project" title={activeWorkspace.isChat ? undefined : activeProject?.path}>{activeWorkspace.isChat ? "Chats" : activeProject?.name}</span>; the one above stays in the sidebar.</>
+                    : activeWorkspace.isChat ? "A chat with no project folder attached." : <>Start a new thread in <span className="thread-empty-project" title={activeProject?.path}>{activeProject?.name}</span>.</>}</p>
                   {!activeWorkspace.isChat && !activeThread && (
-                    <div className="isolation-choice" aria-label="Thread workspace mode">
-                      <button className={!draftThreadIsolated ? "active" : ""} aria-pressed={!draftThreadIsolated} onClick={() => setDraftThreadIsolated(false)}>
-                        <Folder size={15} />
-                        <span><strong>Shared project</strong><small>Work directly in {activeProject?.name}</small></span>
+                    <div className="isolation-choice" role="group" aria-label="Where this thread works">
+                      <button className={!draftThreadIsolated ? "active" : ""} aria-pressed={!draftThreadIsolated} onClick={() => setDraftThreadIsolated(false)} title={`Work directly in ${activeProject?.name}`}>
+                        <Folder size={14} />
+                        <span><strong>Shared project</strong></span>
                       </button>
                       {workspaceGitInfo && !workspaceGitInfo.error && (
                         (!workspaceGitInfo.isRepo || (workspaceGitInfo.isRoot && !workspaceGitInfo.hasCommit)) ? (
@@ -10441,10 +10866,9 @@ export default function App() {
                             aria-busy={gitInitializing}
                             title="Create a local Git repository and initial snapshot. Nothing is pushed."
                           >
-                            {gitInitializing ? <LoaderCircle className="spin" size={15} /> : <GitBranch size={15} />}
+                            {gitInitializing ? <LoaderCircle className="spin" size={14} /> : <GitBranch size={14} />}
                             <span>
-                              <strong>{workspaceGitInfo.isRepo ? "Create initial Git snapshot" : "Initialize Git repository"}</strong>
-                              <small>{gitInitializing ? "Preparing this project…" : "Local only; respects .gitignore"}</small>
+                              <strong>{gitInitializing ? "Preparing Git…" : workspaceGitInfo.isRepo ? "Create initial Git snapshot" : "Initialize Git"}</strong>
                             </span>
                           </button>
                         ) : (
@@ -10453,47 +10877,46 @@ export default function App() {
                             aria-pressed={draftThreadIsolated}
                             onClick={() => setDraftThreadIsolated(true)}
                             disabled={!workspaceGitInfo.isRoot || !workspaceGitInfo.hasCommit}
-                            title={!workspaceGitInfo.isRoot ? "Open the Git repository root to use an isolated worktree" : !workspaceGitInfo.hasCommit ? "Requires at least one Git commit" : "Create a private branch and worktree for this thread"}
+                            title={!workspaceGitInfo.isRoot ? "Open the Git repository root to use an isolated worktree" : !workspaceGitInfo.hasCommit ? "Requires at least one Git commit" : "A private branch and worktree; apply or merge when ready"}
                           >
-                            <GitBranch size={15} />
+                            <GitBranch size={14} />
                             <span>
                               <strong className="isolated-worktree-title">Isolated worktree</strong>
-                              <small>{workspaceGitInfo.isRoot ? <>Private branch; apply or<br />merge when ready</> : "Open the repository root folder"}</small>
                             </span>
                           </button>
                         )
                       )}
                       {!workspaceGitInfo && (
                         <button disabled title="Checking this project's Git status">
-                          <LoaderCircle className="spin" size={15} />
+                          <LoaderCircle className="spin" size={14} />
                           <span>
-                            <strong>Checking Git status</strong>
-                            <small>Preparing workspace options…</small>
+                            <strong>Checking Git…</strong>
                           </span>
                         </button>
                       )}
                       {workspaceGitInfo?.error && (
-                        <button disabled title={workspaceGitInfo.error}>
-                          <GitBranch size={15} />
+                        <button disabled title={`${workspaceGitInfo.error}. Check that the project folder still exists.`}>
+                          <GitBranch size={14} />
                           <span>
-                            <strong>Git status unavailable</strong>
-                            <small>Check that the project folder still exists</small>
+                            <strong>Git unavailable</strong>
                           </span>
                         </button>
                       )}
                     </div>
                   )}
+                  {!activeWorkspace.isChat && !activeThread && workspaceGitInfo?.isRepo && workspaceGitInfo.isRoot && workspaceGitInfo.hasCommit && (
+                    <small className="isolation-caption" aria-live="polite">{draftThreadIsolated ? "On a private branch; apply or merge when ready." : `Edits go straight into ${activeProject?.name}.`}</small>
+                  )}
                   {!activeWorkspace.isChat && (
-                    <div className="empty-state-actions" aria-label="Project workspace shortcuts">
-                      <button onClick={() => openStudio("files")}>
-                        <FileCode2 size={14} /> Browse files
-                      </button>
-                      <button onClick={() => openStudio("terminal")}>
-                        <TerminalSquare size={14} /> Terminal
-                      </button>
-                      <button onClick={() => openStudio("review")}>
-                        <Search size={14} /> Review changes
-                      </button>
+                    // Opus R6 D11: each link is named and drawn like the Tools
+                    // tab it opens, so it teaches where it goes.
+                    <div className="empty-state-actions" role="group" aria-label="Open in Tools">
+                      {(["files", "terminal", "changes"] as const).map((tab) => {
+                        const { label, icon: TabIcon } = STUDIO_TAB_META[tab];
+                        return <button key={tab} onClick={() => openStudio(tab)} title={`Open ${label} in Tools`}>
+                          <TabIcon size={14} /> {label}
+                        </button>;
+                      })}
                     </div>
                   )}
                 </div>
@@ -10509,7 +10932,7 @@ export default function App() {
                     }
                   >
                     <SubAgentControlsProvider workers={subAgentWorkers} historyWorkers={historicalSubAgentWorkers} onOpen={openSubAgentWorker} onStop={stopSubAgentWorker} onAccept={acceptSubAgentWorker}>
-                    <AgentQuestionDelivery value={agentQuestionDelivery}><ParentRunTurnLabel.Provider value={parentRunTurn}><ConversationTimeline Timeline={timelineView.View} threadId={activeThreadId} pendingMessage={visiblePendingThreadPrompt} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={loadEarlierActive} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></ParentRunTurnLabel.Provider></AgentQuestionDelivery>
+                    <AgentQuestionDelivery value={agentQuestionDelivery}><ParentRunTurnLabel.Provider value={parentRunTurn}><TimelineProjectRoot.Provider value={activeWorkspace.isChat ? "" : activeExecutionPath}><ConversationTimeline Timeline={timelineView.View} threadId={activeThreadId} pendingMessage={visiblePendingThreadPrompt} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in Chats" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={loadEarlierActive} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></TimelineProjectRoot.Provider></ParentRunTurnLabel.Provider></AgentQuestionDelivery>
                     </SubAgentControlsProvider>
                   </Suspense>
                 </ErrorBoundary>
@@ -10518,13 +10941,13 @@ export default function App() {
             </section>
 
             {/* Ambient glow tints to the active provider and breathes while a turn runs. */}
-            <section className={`composer-zone ambiance-${effectiveSettings.provider} ${running ? "ambiance-live" : ""}`}>
+            <section className={`composer-zone ambiance-${effectiveSettings.provider} ${running ? "ambiance-live" : ""}`} inert={reviewWideShown || undefined}>
               {error && (
                 <div className="error-banner" role="alert">
                   <span>{error}</span>
                   <div className="error-banner-actions">
                     {promptRepairActions}
-                    {errorSuggestsSettings && !promptRepairActions.length && <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>Check settings</button>}
+                    {errorSuggestsSettings && !promptRepairActions.length && <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>{errorSettingsLabel}</button>}
                     <button onClick={() => setError(null)} aria-label="Dismiss error"><X size={14} /></button>
                   </div>
                 </div>
@@ -10546,7 +10969,7 @@ export default function App() {
                 queueing={Boolean(running && activeThread)}
                 canSteer={Boolean(activeThread && taskStatus === "running" && !activeWorkflowOwner)}
                 dropActive={dropActive}
-                placeholder={feedback.notes.length ? "Add a message (optional), or send your feedback as it is…" : running && activeThread ? "Queue a follow-up for after this run…" : activeWorkspace.isChat ? "Ask anything — no project folder attached…" : `Ask Mythra Code to work in ${activeProject?.name ?? "this project"}…`}
+                placeholder={feedback.notes.length ? "Add a message (optional), or send your feedback as it is…" : running && activeThread ? "Queue a follow-up for after this run…" : activeWorkspace.isChat ? "Ask anything…" : `Ask Mythra Code to work in ${activeProject?.name ?? "this project"}…`}
                 attachments={attachments}
                 hasFeedback={feedback.notes.length > 0}
                 feedbackTray={<FeedbackTray key={feedbackScope} notes={feedback.notes} staleIds={staleFeedbackIds} onUpdate={feedback.updateNote} onRemove={feedback.removeNote} />}
@@ -10567,8 +10990,8 @@ export default function App() {
                 onFinishEditQueued={finishEditQueuedMessage}
                 onSchedule={scheduleAfterAttachments}
                 scheduleContextLabel={activeThread
-                  ? "Joins this thread's queue at that time. It waits for any running task and never interrupts it."
-                  : `Starts a new ${providerDisplayName(effectiveSettings.provider)} thread${effectiveSettings.model ? ` (${effectiveSettings.model})` : ""}${draftThreadIsolated ? " in an isolated worktree" : ""}, using these settings.`}
+                  ? "Joins this thread's queue; never interrupts a running task."
+                  : `Starts a new ${providerDisplayName(effectiveSettings.provider)} thread${draftThreadIsolated ? " in an isolated worktree" : ""} with these settings.`}
                 timedActions={timedActions}
                 newThreadPrompts={newThreadPrompts}
                 newThreadActions={newThreadActions}
@@ -10626,7 +11049,7 @@ export default function App() {
                 }
                 controls={
                   <>
-                    <PermissionPicker value={effectiveSettings.permission} open={permissionOpen} rootRef={permissionControlRef} onOpenChange={setPermissionOpen} onChange={persistComposerPermission} />
+                    <PermissionPicker value={effectiveSettings.permission} open={permissionOpen} rootRef={permissionControlRef} description={permissionDescriptions(effectiveSettings.provider)} onOpenChange={setPermissionOpen} onChange={persistComposerPermission} />
                     <SubAgentCommandCenter
                       policy={activeThreadSubagentPolicy}
                       engine={sanitizeSubagentEngine(effectiveSettings.subagentEngine)}
@@ -10666,8 +11089,8 @@ export default function App() {
                       onAcceptWorker={acceptSubAgentWorker}
                       onReplaceWorker={replaceSubAgentWorker}
                     />
-                    <button className={`toolbar-button ${attachments.length ? "has-attachments" : ""}`} onClick={() => void addAttachment()} title="Attach context">
-                      <Paperclip size={14} />
+                    <button type="button" className={`toolbar-button attach-button ${attachments.length ? "has-attachments" : ""}`} onClick={() => void addAttachment()} title="Attach files or images" aria-label={attachments.length ? `Attach, ${attachments.length} attached` : "Attach"}>
+                      <Paperclip size={14} aria-hidden="true" />
                       {attachments.length ? attachments.length : "Attach"}
                     </button>
                   </>
@@ -10677,7 +11100,7 @@ export default function App() {
               <div className="composer-caption">
                 Mythra Code can make mistakes. Review commands and changes before shipping.
                 {contextPercent !== null ? (
-                  <span className={`context-meter ${contextPercent > 80 ? "warn" : ""}`}>
+                  <span className={`context-meter ${contextPercent > 80 ? "warn" : ""}`} title="Context window used by this conversation, and its estimated API cost">
                     {" "}
                     · Context <Odometer value={String(Math.round(contextPercent))} label={`${Math.round(contextPercent)} percent`} />% used
                     {costEstimate ? <> · <Odometer value={costEstimate} /></> : null}
@@ -10689,36 +11112,55 @@ export default function App() {
         )}
         </div>
         {shownRemote && remoteUi && <ErrorBoundary label="remote device" key={shownMachine}>
-          <remoteUi.RemoteConversation device={shownMachine} notifications={settings.notificationsEnabled} leaving={activeMachine !== shownMachine} sidebarOpen={sidebarOpen} chatFont={activeChatFont} voiceInput={voiceInputConfig}
+          <remoteUi.RemoteConversation device={shownMachine} notifications={settings.notificationsEnabled} leaving={activeMachine !== shownMachine} sidebarOpen={sidebarShown} chatFont={activeChatFont} voiceInput={voiceInputConfig}
             actions={paletteTrigger} modelFavorites={modelFavorites} onToggleModelFavorite={toggleModelFavorite}
             headerUsageWindows={headerUsageWindows} onHeaderUsageWindow={(provider, label) => setHeaderUsageWindows((current) => ({ ...current, [provider]: label }))} usageDisplay={settings.usageDisplay} onOpenTool={(tab, view) => { setStudioTab(tab); setRemoteStudioOpen(true); if (view) { gitRouteNonceRef.current += 1; setGitRoute({ view, nonce: gitRouteNonceRef.current }); } }}
-            studioToggle={<button className={`workspace-tools-trigger studio-toggle ${remoteStudioOpen ? "active" : ""}`} onClick={() => setRemoteStudioOpen((open) => !open)} title={`Thread tools on ${remoteMachineName}`}>
+            studioToggle={<button className={`workspace-tools-trigger studio-toggle ${remoteStudioOpen ? "active" : ""}`} onClick={() => setRemoteStudioOpen((open) => !open)} title={`Tools on ${remoteMachineName}`} aria-label={`${remoteStudioOpen ? "Hide" : "Show"} Tools on ${remoteMachineName}`}>
               <PanelRight size={17} />
-              <span>Thread tools</span>
+              <span>Tools</span>
               <kbd>{workspaceShortcutLabel()}</kbd>
             </button>}
-            onShowSidebar={() => setSidebarOpen(true)} onManageDevices={() => openSettings("devices")} />
+            onShowSidebar={showSidebar} onManageDevices={() => openSettings("devices")} />
         </ErrorBoundary>}
       </main>
 
-      {shownRemote && remoteUi && <ErrorBoundary label="remote thread tools" key={`remote-tools:${shownMachine}`}>
-        <remoteUi.RemoteStudio device={shownMachine} open={remoteStudioOpen} rootRef={paneRefs.dock} onResizeStart={startPaneResize("dock")} onResizeKeyDown={resizePaneWithKeyboard("dock")}
-          resizeValue={paneSizes.dock} tab={studioTab} gitRoute={gitRoute} onTab={setStudioTab} onClose={() => setRemoteStudioOpen(false)} onFork={() => machineActions()?.forkThread()} />
+      {shownRemote && remoteUi && <ErrorBoundary label="remote Tools" key={`remote-tools:${shownMachine}`}>
+        <remoteUi.RemoteStudio device={shownMachine} open={remoteStudioOpen} covered={Boolean(settingsOpen || onboardingOpen || voiceSession)} rootRef={paneRefs.dock} onResizeStart={startPaneResize("dock")} onResizeKeyDown={resizePaneWithKeyboard("dock")}
+          resizeValue={dockWidth} tab={studioTab} gitRoute={gitRoute} onTab={setStudioTab} onClose={() => setRemoteStudioOpen(false)} onFork={() => machineActions()?.forkThread()} />
       </ErrorBoundary>}
-      <ErrorBoundary label="thread tools" key={`workspace-tools:${studioView.attempt}`} resetKey={JSON.stringify([activeProject?.id, activeThreadId, studioTab])} showError={studioOpen} onDismiss={() => setStudioOpen(false)} onRetry={() => setStudioView((current) => ({ View: lazy(loadStudioDock), attempt: current.attempt + 1 }))}>
+      <ErrorBoundary label="Tools" key={`workspace-tools:${studioView.attempt}`} resetKey={JSON.stringify([activeProject?.id, activeThreadId, studioTab])} showError={studioOpen} onDismiss={() => setStudioOpen(false)} onRetry={() => setStudioView((current) => ({ View: lazy(loadStudioDock), attempt: current.attempt + 1 }))}>
         <Suspense fallback={null}>
           <StudioDockView
             open={!shownRemote && studioOpen && Boolean(activeProject)}
+            covered={Boolean(settingsOpen || onboardingOpen || voiceSession || sidebarPeeking)}
             rootRef={shownRemote ? undefined : paneRefs.dock}
             onResizeStart={startPaneResize("dock")}
             onResizeKeyDown={resizePaneWithKeyboard("dock")}
-            resizeValue={paneSizes.dock}
+            resizeValue={dockWidth}
+            resizeMax={dockMax}
             tab={studioTab}
             projectName={activeProject?.name}
             projectPath={activeExecutionPath || activeProject?.path}
             activeThread={Boolean(activeThread)}
             activeThreadId={activeThread?.id ?? null}
             reviewDiff={reviewDiff}
+            changesScope={changesScope}
+            pushedScopeAvailable={Boolean(pushedReviewDiff)}
+            onChangesScope={setChangesScope}
+            feedbackNoteCount={feedback.notes.length}
+            onOpenFeedbackDraft={focusComposer}
+            reviewWide={reviewWide}
+            onReviewWideChange={setReviewWide}
+            onRefreshWorkingDiff={refreshWorkingDiff}
+            threadCompaction={activeThread && !activeWorkspace?.isChat ? {
+              value: effectiveSettings.autoCompactTokens,
+              provider: effectiveSettings.provider,
+              model: effectiveSettings.model,
+              // The same lock the Sub-agents popover used: a run (or its workers) is active.
+              locked: running || hasQueuedWork || subAgentWorkers.some((worker) => worker.status === "unknown" || isSubAgentWorkerActive(worker.status)),
+              onChange: persistComposerAutoCompactTokens,
+            } : undefined}
+            onNewIsolatedThread={workspaceGitInfo?.isRepo && workspaceGitInfo.isRoot && workspaceGitInfo.hasCommit ? () => { newThread(); setDraftThreadIsolated(true); } : undefined}
             reviewDisabledReason={reviewDisabledReason}
             checksControl={activeProject ? <Suspense fallback={<button disabled>Loading checks…</button>}><ChecksControl
               key={feedbackScope}
@@ -10830,7 +11272,7 @@ export default function App() {
             onCheckpointDelete={(checkpoint) => void removeCheckpoint(checkpoint)}
             onRollback={() => void rollbackTurn()}
             onWorktreeReview={() => {
-              setStudioTab("review");
+              setStudioTab("changes");
               void refreshDiff();
             }}
             onWorktreeApply={() => void applyActiveWorktree()}
@@ -10871,6 +11313,11 @@ export default function App() {
             onOpenWorkflowRun={openWorkflowRunThread}
             onToggleSkill={(skill) => void toggleSkill(skill)}
             onConnectMcp={(server) => void connectMcp(server)}
+            onOpenSettings={(section, row) => openSettings(section, row ? { row } : undefined)}
+            projectRun={projectRun}
+            projectRunRunning={projectRunRunning}
+            onProjectRun={runProjectCommand}
+            onProjectRunStop={() => void terminal.stop()}
           />
         </Suspense>
       </ErrorBoundary>
@@ -10960,8 +11407,8 @@ export default function App() {
           const repairedLayerChanged = skillPromptRepair?.targets.some((target) => target.layer === "global" ? next.systemPrompt !== settings.systemPrompt
             : target.layer === "codex" ? next.codexSystemPrompt !== settings.codexSystemPrompt
               : target.layer === "claude" ? next.claudeSystemPrompt !== settings.claudeSystemPrompt : false);
+          // Settings autosaves while it stays open; closing is its own action.
           persistSettings({ ...next, managedSubagentV2: next.managedSubagentV2 === true });
-          closeSettings();
           if (repairedLayerChanged && skillPromptRepair?.message === error) {
             setError(null);
             setSkillPromptRepair(null);
@@ -10988,7 +11435,7 @@ export default function App() {
         onWorkspaceTools={() => {
           if (noticeLocalOnly()) return;
           closeSettings();
-          openStudio("tools");
+          openStudio("skills");
         }}
         onOpenRouterChange={(ready) => {
           if (ready && openRouterReady) void refreshOpenRouterCredits();
@@ -11072,6 +11519,14 @@ export default function App() {
           closeSettings();
           openOnboarding();
         }}
+        onOpenShortcuts={() => {
+          closeSettings();
+          setShortcutsOpen(true);
+        }}
+        projectInstructionsTarget={activeProject ? { name: activeProject.name, open: () => {
+          closeSettings();
+          setProjectPromptOpenRequest((current) => ({ name: activeProject.name, nonce: (current?.nonce ?? 0) + 1 }));
+        } } : undefined}
           />
         </Suspense>
         </ErrorBoundary>
@@ -11130,10 +11585,14 @@ export default function App() {
         onThread={(thread) => { if (isRemoteMachineActive()) machineActions()?.openThread(thread.id); else void selectThread(thread); }}
         onWorkflow={(workflow) => { if (isRemoteMachineActive()) machineActions()?.runWorkflow(workflow.id); else void runWorkflowFromShortcut(workflow); }}
         onNewThread={() => { if (isRemoteMachineActive()) machineActions()?.newThread(); else newThread(); }}
-        onSettings={() => openSettings()}
+        onSettings={(section) => openSettings(section)}
+        commands={paletteCommands}
         onTool={(tab) => { if (isRemoteMachineActive()) { setStudioTab(tab); setRemoteStudioOpen(true); } else openStudio(tab); }}
         onGitRoute={openGitRoute}
       />
+      </Suspense></ErrorBoundary>}
+      {shortcutsOpen && <ErrorBoundary label="keyboard shortcuts" retryable={false} overlay onDismiss={() => setShortcutsOpen(false)}><Suspense fallback={null}>
+        <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       </Suspense></ErrorBoundary>}
       {!voiceSession && <ConfirmDialogModal />}
       {remoteActive && !voiceSession && (runtimeSetupOpen || authRequiredOpen || confirmationOpen) && <p className="machine-dialog-label" role="status">This is on {localMachine}, not {remoteMachineName}.</p>}

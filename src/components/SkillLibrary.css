@@ -1,0 +1,101 @@
+/* Moved from SettingsModal.legacy.css (retired in round 3). These rules keep
+   their original selectors (and so their specificity) and their original
+   order, and sit at the top of this sheet so they still load before the
+   rules that already lived here. */
+.skill-library-section { display: flex; flex-direction: column; gap: var(--s-4); }
+.skill-library-section code { padding: 1px 4px; border-radius: var(--r-xs); background: var(--line-quiet); font: var(--fs-meta) var(--font-mono); }
+.skill-folder-card { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); padding: var(--s-3); }
+.skill-folder-icon { flex: 0 0 auto; width: 32px; height: 32px; display: grid; place-items: center; }
+.skill-folder-copy { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.skill-folder-copy strong { color: var(--text); font-size: var(--fs-ui); font-weight: 600; }
+.skill-folder-copy small { overflow: hidden; color: var(--muted-2); font: var(--fs-meta) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.skill-folder-actions { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: var(--s-2); margin-left: auto; }
+.skill-library-alert { display: block; margin: 0; padding: var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--red) 24%, transparent); border-radius: var(--r-sm); color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); font-size: var(--fs-meta); line-height: 1.5; }
+.skill-library-toolbar { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.skill-search { flex: 1 1 190px; min-width: 0; display: flex; align-items: center; gap: var(--s-2); padding: 0 var(--s-3); color: var(--muted-2); transition: border-color var(--t-fast) ease; }
+.skill-search input { width: 100%; min-width: 0; border: 0; color: var(--text); background: transparent; font-size: var(--fs-ui); }
+.skill-search input:focus-visible { outline: none; }
+.skill-search > button { flex: 0 0 auto; width: 20px; height: 20px; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); color: var(--muted-2); background: transparent; cursor: pointer; }
+.skill-search > button:hover { color: var(--text); background: var(--line); }
+.skill-library-toolbar .secondary-button { flex: 0 0 auto; }
+.skill-library-group { display: flex; flex-direction: column; gap: var(--s-2); }
+.skill-library-meta { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); }
+.skill-library-meta h4 { margin: 0; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; }
+.skill-library-meta > span { color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
+.skill-library-meta b { color: var(--accent); font-weight: 600; }
+.skill-card-list { display: flex; flex-direction: column; gap: var(--s-2); max-height: 320px; margin: 0; padding: 0; overflow-y: auto; overscroll-behavior: contain; list-style: none; }
+.skill-card { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: start; gap: var(--s-3); padding: var(--s-3); transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.skill-card.disabled .skill-name-row strong { color: var(--muted); }
+.skill-card-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.skill-name-row { display: flex; align-items: center; gap: var(--s-2); }
+.skill-name-row strong { overflow: hidden; color: var(--text); font: 600 var(--fs-ui)/1.35 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.skill-off-tag { flex: 0 0 auto; padding: 0 5px; border: 1px solid var(--line-strong); color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; letter-spacing: 0; }
+.skill-card-copy p { overflow: hidden; margin: 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.skill-card-copy p.empty { font-style: italic; }
+.skill-card-path { overflow: hidden; color: var(--muted-2); font: var(--fs-meta) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.skill-card-actions { display: flex; align-items: center; gap: 2px; }
+.skill-card-actions button, .skill-name-editor button { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); color: var(--muted-2); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.skill-card-actions button:hover, .skill-name-editor button:hover { color: var(--text); background: var(--line); }
+.skill-name-editor { display: grid; grid-template-columns: auto minmax(0,1fr) auto auto; align-items: center; gap: var(--s-1); color: var(--accent); }
+.skill-name-editor > span { font: 600 var(--fs-meta) var(--font-mono); }
+.skill-name-editor input { min-width: 0; height: 26px; padding: 0 var(--s-2); border: 1px solid var(--accent-line); border-radius: var(--r-xs); outline: none; color: var(--text); background: var(--field); font: 500 var(--fs-meta) var(--font-mono); }
+.skill-removed-group { display: flex; flex-direction: column; gap: var(--s-2); padding-top: var(--s-2); border-top: 1px solid var(--line); }
+.skill-removed-list { display: flex; flex-direction: column; gap: var(--s-2); margin: 0; padding: 0; list-style: none; }
+.skill-removed-list li { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-2) var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--line-quiet); }
+.skill-removed-list li > span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.skill-removed-list strong { color: var(--ink-2); font: 600 var(--fs-meta) var(--font-mono); }
+.skill-removed-list small { overflow: hidden; color: var(--muted-2); font: var(--fs-meta) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.skill-composer { display: flex; flex-direction: column; gap: var(--s-2); }
+.skill-add-button { display: flex; align-items: center; justify-content: center; gap: var(--s-2); padding: 0 var(--s-4); border: 1px dashed var(--line-strong); color: var(--ink-2); background: transparent; font-size: var(--fs-ui); letter-spacing: var(--track-tight); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.skill-add-button:hover { color: var(--text); border-color: color-mix(in srgb, var(--text) 26%, transparent); background: var(--surface-quiet); }
+.skill-created-note { display: flex; align-items: center; gap: var(--s-2); margin: 0; color: var(--accent); font-size: var(--fs-meta); }
+.skill-editor-backdrop { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: var(--s-5); background: var(--scrim-deep); backdrop-filter: blur(5px); }
+.skill-editor-dialog { width: min(720px, 100%); max-height: min(690px, calc(100vh - 70px)); display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-4); border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--panel); box-shadow: var(--shadow); }
+.skill-editor-head { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: start; gap: var(--s-3); }
+.skill-editor-head > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.skill-editor-head strong { color: var(--text); font-size: var(--fs-heading); font-weight: 620; }
+.skill-editor-head small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
+.skill-editor-head code { color: var(--ink-2); font-family: var(--font-mono); }
+.skill-editor-head > button { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-xs); color: var(--muted-2); background: transparent; cursor: pointer; }
+.skill-editor-head > button:hover:not(:disabled) { color: var(--text); background: var(--line); }
+.skill-editor-loading { min-height: 320px; display: flex; align-items: center; justify-content: center; gap: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: var(--field); font-size: var(--fs-ui); }
+.skill-editor-field { min-height: 0; display: flex; flex: 1; flex-direction: column; gap: var(--s-2); color: var(--ink-2); font-size: var(--fs-meta); font-weight: 600; }
+.skill-editor-field textarea { width: 100%; min-height: 320px; max-height: min(520px, calc(100vh - 260px)); flex: 1; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); outline: none; color: var(--text); background: var(--field); font: 12px/1.6 var(--font-mono); resize: vertical; tab-size: 2; }
+.skill-editor-field textarea:focus { border-color: var(--accent-line); box-shadow: var(--ring); }
+.skill-editor-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s-2); }
+.skill-editor-actions > span { min-width: 0; flex: 1; color: var(--muted-2); font-size: var(--fs-micro); }
+.skill-create-card { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-4); }
+.skill-create-head { display: flex; align-items: flex-start; gap: var(--s-3); }
+.skill-create-head > span:last-child { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.skill-create-head strong { color: var(--text); font-size: var(--fs-ui); font-weight: 600; }
+.skill-create-head small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
+.skill-create-icon { flex: 0 0 auto; width: 27px; height: 27px; display: grid; place-items: center; }
+.skill-field { display: flex; flex-direction: column; gap: 5px; }
+.skill-field label { color: var(--ink-2); font-size: var(--fs-meta); font-weight: 600; }
+.skill-field input, .skill-field textarea { padding: var(--s-2) var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: var(--field); font: inherit; font-size: var(--fs-ui); line-height: 1.55; resize: vertical; }
+.skill-field textarea { min-height: 96px; }
+.skill-field input:focus-visible, .skill-field textarea:focus-visible { outline: none; border-color: var(--accent-line); box-shadow: var(--ring); }
+.skill-field > small { color: var(--muted-2); font-size: var(--fs-meta); }
+.skill-create-error { margin: 0; padding: var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--red) 24%, transparent); border-radius: var(--r-sm); color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); font-size: var(--fs-meta); line-height: 1.5; }
+.skill-create-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s-2); }
+.skill-remove-backdrop { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; padding: var(--s-5); background: var(--scrim-deep); backdrop-filter: blur(5px); }
+.skill-remove-dialog { width: min(480px, 100%); display: grid; grid-template-columns: auto minmax(0,1fr); gap: var(--s-3); padding: var(--s-5); border: 1px solid color-mix(in srgb, var(--red) 28%, var(--line)); border-radius: var(--r-lg); background: var(--panel); box-shadow: var(--shadow); }
+.skill-remove-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--red); background: color-mix(in srgb, var(--red) 9%, transparent); }
+.skill-remove-copy { min-width: 0; }
+.skill-remove-copy h4 { margin: 0 0 var(--s-2); color: var(--text); font-size: var(--fs-heading); }
+.skill-remove-copy p { margin: 0; color: var(--muted); font-size: var(--fs-ui); line-height: 1.55; }
+.skill-remove-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-2); }
+.skill-remove-actions .danger-button { min-height: var(--ctl-md); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2); padding: 0 var(--s-3); border: 1px solid color-mix(in srgb, var(--red) 44%, var(--line-strong)); border-radius: var(--r-sm); color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); font-size: var(--fs-meta); font-weight: 600; cursor: pointer; transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.skill-remove-actions .danger-button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--red) 64%, var(--line-strong)); background: color-mix(in srgb, var(--red) 13%, transparent); }
+.skill-remove-actions button:disabled { opacity: .55; cursor: default; }
+@media (max-width: 760px) {
+  /* Stack the folder actions and composer buttons on narrow panes. */
+  .skill-folder-actions { width: 100%; margin-left: 0; }
+  .skill-folder-actions > button { flex: 1 1 130px; }
+  .skill-library-toolbar .secondary-button { flex: 1 1 100%; }
+  .skill-create-actions { flex-direction: column-reverse; align-items: stretch; }
+  .skill-card-list { max-height: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skill-card { transition: none; animation: none; }
+}

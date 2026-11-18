@@ -17,7 +17,7 @@
 /* ---- Frame ---- */
 .app-shell[data-theme][data-color-scheme] .studio-dock {
   margin-left: 0;
-  grid-template-columns: minmax(0, 1fr) 72px;
+  grid-template-columns: minmax(0, 1fr) 80px;
   border-left: 1px solid var(--line);
   background: var(--sidebar);
   background-image: none;
@@ -27,9 +27,12 @@
 /* ---- Tool rail: an inspector selector ---- */
 .app-shell[data-theme][data-color-scheme] .studio-tabs {
   --studio-tab-step: 48px;
+  /* Separator height (1px) + its margins + the rail's 2px gap. */
+  --studio-tab-separator-margin: 5px;
+  --studio-tab-group-step: calc(1px + 2 * var(--studio-tab-separator-margin) + 2px);
   position: relative;
   order: 2;
-  min-width: 72px;
+  min-width: 80px;
   gap: 2px;
   padding: 8px 4px;
   overflow-y: auto;
@@ -43,7 +46,7 @@
   position: relative;
   z-index: 1;
   flex: 0 0 auto;
-  width: 64px;
+  width: 72px;
   height: 46px;
   gap: 4px;
   border-radius: var(--r-control);
@@ -51,29 +54,38 @@
   background: transparent;
   box-shadow: none;
   font-family: var(--font-sans);
-  font-size: 10px;
+  font-size: var(--fs-meta);
   font-weight: 500;
   letter-spacing: 0;
 }
-.app-shell[data-theme][data-color-scheme] .studio-tabs button span { max-width: 62px; font-size: 10px; letter-spacing: 0; }
+.app-shell[data-theme][data-color-scheme] .studio-tabs button span { max-width: 70px; font-size: var(--fs-meta); letter-spacing: -.01em; }
 .app-shell[data-theme][data-color-scheme] .studio-tabs button:hover { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .studio-tabs button.active { color: var(--text); background: transparent; box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .studio-tabs button.active::before { display: none; }
-.app-shell[data-theme][data-color-scheme] .studio-tabs button.active > svg { color: var(--green); }
-/* The selected fill is one element that travels to the selected tab. Without
-   the custom property it rests on the first tab. */
+.app-shell[data-theme][data-color-scheme] .studio-tabs button.active > svg { color: var(--accent); }
+/* Hairlines between the rail's groups (Changes · Project · Run). */
+.app-shell[data-theme][data-color-scheme] .studio-tab-separator {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 1px;
+  margin: var(--studio-tab-separator-margin) 0;
+  background: var(--line);
+}
+/* The selected fill is one element that travels to the selected tab: one
+   tab step per tab above it, plus one separator step per group above it.
+   Without the custom properties it rests on the first tab. */
 .app-shell[data-theme][data-color-scheme] .studio-tab-indicator {
   position: absolute;
   z-index: 0;
   top: 8px;
   left: 4px;
-  width: 64px;
+  width: 72px;
   height: 46px;
   border: 0;
   border-radius: var(--r-control);
   background: var(--lm-press);
   box-shadow: none;
-  transform: translateY(calc(var(--studio-tab-index, 0) * var(--studio-tab-step)));
+  transform: translateY(calc(var(--studio-tab-index, 0) * var(--studio-tab-step) + var(--studio-tab-group, 0) * var(--studio-tab-group-step)));
   pointer-events: none;
 }
 
@@ -91,14 +103,6 @@
   backdrop-filter: none;
 }
 .app-shell[data-theme][data-color-scheme] .studio-header::after { content: none; }
-.app-shell[data-theme][data-color-scheme] .studio-header-icon {
-  width: 18px;
-  height: 18px;
-  border-radius: 0;
-  color: var(--muted);
-  background: transparent;
-  box-shadow: none;
-}
 .app-shell[data-theme][data-color-scheme] .studio-header h2 {
   margin: 0 0 1px;
   overflow: hidden;
@@ -110,7 +114,7 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.app-shell[data-theme][data-color-scheme] .studio-header p { color: var(--muted-2); font-size: 11.5px; letter-spacing: 0; }
+.app-shell[data-theme][data-color-scheme] .studio-header p { color: var(--muted-2); font-size: 12px; letter-spacing: 0; }
 .app-shell[data-theme][data-color-scheme] .studio-header .icon-button { width: 28px; height: 28px; border: 0; border-radius: var(--r-control); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .studio-header .icon-button:hover { color: var(--text); background: var(--lm-hover); }
 
@@ -139,7 +143,7 @@
   background: var(--lm-hover);
   box-shadow: none;
   font-family: var(--font-sans);
-  font-size: 12.5px;
+  font-size: var(--fs-ui);
   font-weight: 500;
   letter-spacing: 0;
 }
@@ -148,10 +152,10 @@
 .app-shell[data-theme][data-color-scheme] .studio-actions button:hover:not(:disabled) > svg { color: var(--ink-2); }
 .app-shell[data-theme][data-color-scheme] .studio-actions button:disabled { opacity: .45; cursor: default; }
 .app-shell[data-theme][data-color-scheme] .studio-actions button.approved { color: var(--text); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .studio-actions button.approved > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .studio-actions button.approved > svg { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .studio-actions button.danger-action,
 .app-shell[data-theme][data-color-scheme] .studio-actions button.danger-action > svg { color: var(--red); }
-.app-shell[data-theme][data-color-scheme] .studio-actions button.danger-action:hover:not(:disabled) { color: var(--red); background: rgba(240, 136, 132, .12); }
+.app-shell[data-theme][data-color-scheme] .studio-actions button.danger-action:hover:not(:disabled) { color: var(--red); background: var(--dock-red-soft); }
 
 /* Run checks: a split button (run | caret) inside the Review row. */
 .app-shell[data-theme][data-color-scheme] .studio-actions .checks-split > button { border-radius: var(--r-control); }
@@ -165,8 +169,8 @@
 }
 .app-shell[data-theme][data-color-scheme] .studio-actions .checks-split.ready > .checks-run > svg,
 .app-shell[data-theme][data-color-scheme] .studio-actions .checks-split.discover > .checks-run > svg,
-.app-shell[data-theme][data-color-scheme] .studio-actions .checks-split.finding > .checks-run > svg { color: var(--green); }
-.app-shell[data-theme][data-color-scheme] .studio-actions .checks-split.running > button { color: var(--text); background: rgba(232, 171, 104, .14); }
+.app-shell[data-theme][data-color-scheme] .studio-actions .checks-split.finding > .checks-run > svg { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .studio-actions .checks-split.running > button { color: var(--text); background: var(--dock-orange-soft); }
 .app-shell[data-theme][data-color-scheme] .studio-actions .checks-split.running > .checks-run > svg { color: var(--amber); }
 .app-shell[data-theme][data-color-scheme] .studio-actions .checks-card-head .checks-dismiss {
   width: 22px;
@@ -179,7 +183,7 @@
 }
 .app-shell[data-theme][data-color-scheme] .studio-actions .checks-card-head .checks-dismiss:hover:not(:disabled) { background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .studio-actions .checks-card-actions button { min-height: 26px; padding: 0 9px; font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .studio-actions .checks-card-actions .checks-fix > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .studio-actions .checks-card-actions .checks-fix > svg { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .studio-actions .checks-card-actions .checks-fix.staged:disabled { opacity: 1; color: var(--text); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .checks-card {
   gap: 6px;
@@ -194,7 +198,7 @@
 .app-shell[data-theme][data-color-scheme] .checks-card-head { font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .checks-card-head strong { color: var(--text); font-weight: 600; }
 .app-shell[data-theme][data-color-scheme] .checks-note,
-.app-shell[data-theme][data-color-scheme] .checks-hint { font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .checks-hint { font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .checks-output {
   border: 1px solid var(--line-quiet);
   border-radius: var(--r-md);
@@ -206,16 +210,10 @@
 /* ---- Cards ----
    One level of --panel card. Notes are quieter: a faint fill, no edge. */
 .app-shell[data-theme][data-color-scheme] .worktree-card,
-.app-shell[data-theme][data-color-scheme] .rate-card,
-.app-shell[data-theme][data-color-scheme] .provider-quota-card,
-.app-shell[data-theme][data-color-scheme] .usage-hero,
 .app-shell[data-theme][data-color-scheme] .audit-table,
 .app-shell[data-theme][data-color-scheme] .git-checkout,
-.app-shell[data-theme][data-color-scheme] .git-local-card,
 .app-shell[data-theme][data-color-scheme] .git-auto-publish,
 .app-shell[data-theme][data-color-scheme] .git-commit-card,
-.app-shell[data-theme][data-color-scheme] .git-initialize-card,
-.app-shell[data-theme][data-color-scheme] .github-repo-card,
 .app-shell[data-theme][data-color-scheme] .github-connect-project,
 .app-shell[data-theme][data-color-scheme] .git-history-list,
 .app-shell[data-theme][data-color-scheme] .thread-pr-card,
@@ -228,13 +226,10 @@
   box-shadow: none;
 }
 .app-shell[data-theme][data-color-scheme] .history-warning,
-.app-shell[data-theme][data-color-scheme] .checkpoint-note,
-.app-shell[data-theme][data-color-scheme] .tool-policy-card,
 .app-shell[data-theme][data-color-scheme] .git-local-note,
 .app-shell[data-theme][data-color-scheme] .git-blocked-reason,
 .app-shell[data-theme][data-color-scheme] .thread-pr-note,
 .app-shell[data-theme][data-color-scheme] .git-history-tools,
-.app-shell[data-theme][data-color-scheme] .worktree-complete,
 .app-shell[data-theme][data-color-scheme] .worktree-note {
   padding: 9px 11px;
   border: 0;
@@ -246,27 +241,18 @@
   line-height: 1.5;
 }
 .app-shell[data-theme][data-color-scheme] .history-warning > svg,
-.app-shell[data-theme][data-color-scheme] .checkpoint-note > svg,
-.app-shell[data-theme][data-color-scheme] .tool-policy-card > svg,
 .app-shell[data-theme][data-color-scheme] .git-local-note > svg,
 .app-shell[data-theme][data-color-scheme] .thread-pr-note svg,
 .app-shell[data-theme][data-color-scheme] .git-history-tools > svg { color: var(--muted-2); }
-.app-shell[data-theme][data-color-scheme] .checkpoint-note,
-.app-shell[data-theme][data-color-scheme] .tool-policy-card { grid-template-columns: 16px minmax(0, 1fr); gap: 8px; }
-.app-shell[data-theme][data-color-scheme] .checkpoint-note strong,
-.app-shell[data-theme][data-color-scheme] .tool-policy-card strong { color: var(--ink-2); font-size: 12px; font-weight: 600; }
-.app-shell[data-theme][data-color-scheme] .checkpoint-note span,
-.app-shell[data-theme][data-color-scheme] .tool-policy-card small { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .app-shell[data-theme][data-color-scheme] .git-blocked-reason { margin: 0 0 10px; }
 /* Status tints for notes: ink and a faint wash, never a coloured edge. */
 .app-shell[data-theme][data-color-scheme] .git-local-note.bad,
-.app-shell[data-theme][data-color-scheme] .thread-pr-note.bad { color: var(--text); background: rgba(240, 136, 132, .1); }
+.app-shell[data-theme][data-color-scheme] .thread-pr-note.bad { color: var(--text); background: var(--dock-red-soft); }
 .app-shell[data-theme][data-color-scheme] .git-local-note.bad > svg,
 .app-shell[data-theme][data-color-scheme] .thread-pr-note.bad svg { color: var(--red); }
 .app-shell[data-theme][data-color-scheme] .thread-pr-note.good { color: var(--ink-2); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .thread-pr-note.good svg,
-.app-shell[data-theme][data-color-scheme] .worktree-complete > svg { color: var(--green); }
-.app-shell[data-theme][data-color-scheme] .worktree-note { color: var(--ink-2); background: rgba(232, 171, 104, .1); }
+.app-shell[data-theme][data-color-scheme] .thread-pr-note.good svg { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .worktree-note { color: var(--ink-2); background: var(--dock-orange-soft); }
 .app-shell[data-theme][data-color-scheme] .worktree-note > svg { color: var(--orange); }
 
 /* ---- Grouped rows: consecutive rows join into one card ----
@@ -296,13 +282,21 @@
 }
 .app-shell[data-theme][data-color-scheme] .studio-list-row:hover { border-color: var(--line); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .studio-list-row > svg { color: var(--muted); }
-.app-shell[data-theme][data-color-scheme] .studio-list-row strong { color: var(--text); font-size: 12.5px; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .studio-list-row strong { color: var(--text); font-size: var(--fs-ui); font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .studio-list-row small { color: var(--muted-2); font-size: 11px; }
 .app-shell[data-theme][data-color-scheme] .studio-list-row > button { width: 26px; height: 26px; border: 0; border-radius: var(--r-control); color: var(--muted); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .studio-list-row > button:hover { color: var(--text); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .studio-list-row > button.danger-action:hover { color: var(--red); background: rgba(240, 136, 132, .12); }
-.app-shell[data-theme][data-color-scheme] .studio-list-row details > summary { color: var(--muted); font-size: 11.5px; cursor: pointer; }
+/* Opus R6 D13: a skill's state is a labelled switch (not a bare ✓) and an
+   unconnected MCP server says "Connect" in words (not a lone chevron). */
+.app-shell[data-theme][data-color-scheme] .studio-list-row > .studio-list-switch { display: inline-flex; flex: 0 0 auto; align-items: center; padding-right: 4px; }
+.app-shell[data-theme][data-color-scheme] .studio-list-row > button.studio-list-text-action { width: auto; padding: 0 8px; border: 1px solid var(--line); color: var(--ink-2); font-size: var(--fs-meta); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .studio-list-row > button.danger-action:hover { color: var(--red); background: var(--dock-red-soft); }
+.app-shell[data-theme][data-color-scheme] .studio-list-row details > summary { color: var(--muted); font-size: 12px; cursor: pointer; }
 .app-shell[data-theme][data-color-scheme] .studio-list-row .status-orb { width: 7px; height: 7px; box-shadow: none; }
+/* A connected server is a success state, as in Settings and onboarding (not the interaction accent). */
+.app-shell[data-theme][data-color-scheme] .studio-list-row .status-orb.ready,
+.app-shell[data-theme][data-color-scheme] .studio-list-row .status-orb.oAuth,
+.app-shell[data-theme][data-color-scheme] .studio-list-row .status-orb.bearerToken { background: var(--success); }
 .app-shell[data-theme][data-color-scheme] .studio-list.compact { margin-bottom: 0; }
 .app-shell[data-theme][data-color-scheme] .studio-panel .tool-empty-line {
   padding: 2px 2px 4px;
@@ -313,8 +307,6 @@
 
 /* ---- Checkpoints ---- */
 .app-shell[data-theme][data-color-scheme] .checkpoint-list { gap: 0; margin-top: 12px; }
-.app-shell[data-theme][data-color-scheme] .checkpoint-note + .checkpoint-list { margin-top: 0; }
-.app-shell[data-theme][data-color-scheme] .checkpoint-note { margin-bottom: 12px; }
 .app-shell[data-theme][data-color-scheme] .checkpoint-card { gap: 7px; padding: 11px 12px; }
 .app-shell[data-theme][data-color-scheme] .checkpoint-card.current,
 .app-shell[data-theme][data-color-scheme] .checkpoint-card.accepted { border-color: var(--line); background: var(--panel); background-image: none; }
@@ -322,24 +314,23 @@
 /* Hairline separators inside a group (after every rule that sets an edge). */
 .app-shell[data-theme][data-color-scheme] .studio-list-row + .studio-list-row,
 .app-shell[data-theme][data-color-scheme] .checkpoint-card + .checkpoint-card { border-top-color: var(--line-quiet); }
-.app-shell[data-theme][data-color-scheme] .checkpoint-card-head { grid-template-columns: 22px minmax(0, 1fr); gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-card-head { gap: 8px; }
 .app-shell[data-theme][data-color-scheme] .checkpoint-card-head strong { color: var(--text); font-size: 13px; font-weight: 600; }
 .app-shell[data-theme][data-color-scheme] .checkpoint-card-head small { color: var(--muted-2); font-size: 11px; }
 .app-shell[data-theme][data-color-scheme] .checkpoint-card.current .checkpoint-card-head small { color: var(--info); }
 .app-shell[data-theme][data-color-scheme] .checkpoint-state-icon { width: 22px; height: 22px; border-radius: var(--r-control); color: var(--muted); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.ready,
-.app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.accepted { color: var(--green); background: var(--green-soft); }
-.app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.running { color: var(--info); background: rgba(134, 198, 247, .12); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.accepted { color: var(--accent); background: var(--accent-soft); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.running { color: var(--info); background: var(--dock-info-soft); }
 .app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.interrupted,
 .app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.recovered,
-.app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.safety { color: var(--orange); background: rgba(232, 171, 104, .12); }
-.app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.failed { color: var(--red); background: rgba(240, 136, 132, .12); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.safety { color: var(--orange); background: var(--dock-orange-soft); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-state-icon.failed { color: var(--red); background: var(--dock-red-soft); }
 .app-shell[data-theme][data-color-scheme] .checkpoint-meta { gap: 2px 6px; padding-left: 30px; color: var(--muted-2); font-size: 11px; }
 .app-shell[data-theme][data-color-scheme] .checkpoint-meta span:not(:last-child)::after { color: var(--muted-2); }
-.app-shell[data-theme][data-color-scheme] .checkpoint-stats { padding-left: 30px; color: var(--muted); font-family: var(--font-sans); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .app-shell[data-theme][data-color-scheme] .checkpoint-lineage { padding-left: 30px; color: var(--info); font-size: 11px; }
-.app-shell[data-theme][data-color-scheme] .checkpoint-error { padding: 7px 9px; border-radius: var(--r-md); color: var(--text); background: rgba(240, 136, 132, .1); font-size: 11.5px; }
-.app-shell[data-theme][data-color-scheme] .checkpoint-actions { gap: 2px 4px; margin-top: 2px; padding-left: 22px; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-error { padding: 7px 9px; border-radius: var(--r-md); color: var(--text); background: var(--dock-red-soft); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-actions { gap: 2px 4px; margin-top: 2px; }
 .app-shell[data-theme][data-color-scheme] .checkpoint-actions button {
   min-height: 26px;
   gap: 5px;
@@ -355,10 +346,10 @@
 .app-shell[data-theme][data-color-scheme] .checkpoint-actions button:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .checkpoint-actions button:disabled { opacity: .45; }
 .app-shell[data-theme][data-color-scheme] .checkpoint-actions button.approved { color: var(--text); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .checkpoint-actions button.approved > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-actions button.approved > svg { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .checkpoint-actions button.danger-action,
 .app-shell[data-theme][data-color-scheme] .checkpoint-actions button.danger-action > svg { color: var(--red); }
-.app-shell[data-theme][data-color-scheme] .checkpoint-actions button.danger-action:hover:not(:disabled) { background: rgba(240, 136, 132, .12); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-actions button.danger-action:hover:not(:disabled) { background: var(--dock-red-soft); }
 .app-shell[data-theme][data-color-scheme] .checkpoint-actions button.icon-only { width: 26px; padding: 0; justify-content: center; }
 .app-shell[data-theme][data-color-scheme] .checkpoint-preview { margin: 2px -12px -11px; padding: 8px 12px 12px; border-top: 1px solid var(--line-quiet); }
 
@@ -366,79 +357,17 @@
 .app-shell[data-theme][data-color-scheme] .worktree-card { gap: 12px; margin: 12px 0; padding: 12px; }
 .app-shell[data-theme][data-color-scheme] .worktree-card-head { grid-template-columns: 18px minmax(0, 1fr) auto; }
 .app-shell[data-theme][data-color-scheme] .worktree-card-head > span { width: 18px; height: 18px; border-radius: 0; color: var(--muted); background: transparent; }
-.app-shell[data-theme][data-color-scheme] .worktree-card-head strong { color: var(--text); font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; }
-.app-shell[data-theme][data-color-scheme] .worktree-card-head em { padding: 1px 6px; border-radius: var(--r-chip); color: var(--info); background: rgba(134, 198, 247, .12); font-size: 11px; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .worktree-card-head strong { color: var(--text); font-family: var(--font-mono); font-size: var(--fs-ui); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .worktree-card-head em { padding: 1px 6px; border-radius: var(--r-chip); color: var(--info); background: var(--dock-info-soft); font-size: 11px; font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .worktree-metrics { border-color: var(--line); border-radius: var(--r-md); background: var(--line); }
 .app-shell[data-theme][data-color-scheme] .worktree-metrics span { padding: 8px 9px; color: var(--muted-2); background: var(--panel); font-size: 11px; }
 .app-shell[data-theme][data-color-scheme] .worktree-metrics strong { color: var(--text); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .app-shell[data-theme][data-color-scheme] .worktree-card .studio-actions { margin-bottom: 0; }
-
-/* ---- Metrics: one card split by hairlines ---- */
-.app-shell[data-theme][data-color-scheme] .metric-grid {
-  gap: 1px;
-  margin-bottom: 12px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--line);
-}
-.app-shell[data-theme][data-color-scheme] .metric-grid > div {
-  gap: 2px;
-  padding: 10px 12px;
-  border: 0;
-  border-radius: 0;
-  background: var(--panel);
-  background-image: none;
-}
-.app-shell[data-theme][data-color-scheme] .metric-grid strong { color: var(--text); font-family: var(--font-sans); font-size: 18px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
-.app-shell[data-theme][data-color-scheme] .metric-grid span { color: var(--muted-2); }
-
-/* ---- Usage ---- */
-.app-shell[data-theme][data-color-scheme] .usage-hero { gap: 2px; margin-bottom: 8px; padding: 12px 12px 14px; }
-.app-shell[data-theme][data-color-scheme] .usage-hero > span,
-.app-shell[data-theme][data-color-scheme] .provider-quota-header > span {
-  color: var(--muted-2);
-  font-family: var(--font-sans);
-  font-size: var(--fs-meta);
-  font-weight: 600;
-  letter-spacing: 0;
-  text-transform: none;
-}
-.app-shell[data-theme][data-color-scheme] .usage-hero strong { color: var(--text); font-family: var(--font-sans); font-size: 24px; font-weight: 650; letter-spacing: -.015em; }
-.app-shell[data-theme][data-color-scheme] .usage-hero small { color: var(--muted-2); font-size: 11.5px; line-height: 1.45; }
-.app-shell[data-theme][data-color-scheme] .usage-hero i { height: 2px; background: var(--lm-fill); }
-.app-shell[data-theme][data-color-scheme] .usage-cache-note { margin: 0 2px 12px; color: var(--muted); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .rate-card { gap: 3px; padding: 11px 12px; }
-.app-shell[data-theme][data-color-scheme] .rate-card strong { color: var(--text); font-size: 13px; font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .provider-quota-header { min-height: 36px; padding: 8px 12px; border-bottom-color: var(--line-quiet); }
-.app-shell[data-theme][data-color-scheme] .provider-quota-header > small { padding: 1px 6px; border: 0; border-radius: var(--r-chip); color: var(--ink-2); background: var(--lm-press); font-size: 11px; font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .provider-quota-window { padding: 10px 12px 11px; }
-.app-shell[data-theme][data-color-scheme] .provider-quota-window-heading > strong { color: var(--ink-2); font-size: 12px; font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .provider-quota-window-heading > b { font-size: 12.5px; font-weight: 600; }
-.app-shell[data-theme][data-color-scheme] .provider-quota-track { height: 4px; border-radius: var(--r-pill); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .provider-quota-track > i { background: var(--lm-fill); }
-.app-shell[data-theme][data-color-scheme] .provider-quota-window > small { color: var(--muted-2); font-size: 11px; }
 .app-shell[data-theme][data-color-scheme] .audit-table { overflow: hidden; }
 .app-shell[data-theme][data-color-scheme] .audit-table > div { gap: 12px; padding: 7px 12px; border-bottom-color: var(--line-quiet); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .audit-table span { color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .audit-table code { color: var(--ink-2); font-family: var(--font-sans); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .last-turn-text textarea { border-radius: var(--r-control); }
-
-/* ---- Context: the drop target and empty states ---- */
-.app-shell[data-theme][data-color-scheme] .attachment-drop {
-  min-height: 112px;
-  gap: 6px;
-  margin-bottom: 12px;
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--r-lg);
-  color: var(--muted);
-  background: transparent;
-}
-.app-shell[data-theme][data-color-scheme] .attachment-drop:hover { color: var(--text); border-color: var(--green-line); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .attachment-drop > svg { width: 22px; height: 22px; padding: 0; border-radius: 0; color: var(--muted); background: transparent; }
-.app-shell[data-theme][data-color-scheme] .attachment-drop:hover > svg { color: var(--green); }
-.app-shell[data-theme][data-color-scheme] .attachment-drop strong { color: var(--text); font-size: 13px; font-weight: 600; }
-.app-shell[data-theme][data-color-scheme] .attachment-drop small { color: var(--muted-2); font-size: 12px; }
 
 .app-shell[data-theme][data-color-scheme] .studio-empty {
   min-height: 132px;
@@ -468,12 +397,12 @@
 .app-shell[data-theme][data-color-scheme] .github-repo-name-input,
 .app-shell[data-theme][data-color-scheme] .thread-pr-field input { height: 30px; padding: 0 9px; font: 12px var(--font-mono); }
 .app-shell[data-theme][data-color-scheme] .git-commit-message,
-.app-shell[data-theme][data-color-scheme] .thread-pr-field textarea { padding: 7px 9px; font: 12.5px/1.5 var(--font-sans); }
+.app-shell[data-theme][data-color-scheme] .thread-pr-field textarea { padding: 7px 9px; font: 13px/1.5 var(--font-sans); }
 .app-shell[data-theme][data-color-scheme] .dock-field input:focus,
 .app-shell[data-theme][data-color-scheme] .github-repo-name-input:focus,
 .app-shell[data-theme][data-color-scheme] .thread-pr-field input:focus,
 .app-shell[data-theme][data-color-scheme] .thread-pr-field textarea:focus,
-.app-shell[data-theme][data-color-scheme] .git-commit-message:focus { border-color: var(--green-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .git-commit-message:focus { border-color: var(--accent-line); box-shadow: var(--ring); }
 /* Keep invalid reference/base fields distinct from ordinary and focused
    fields; the shell-scoped border above outranks the lazy panel's state. */
 .app-shell[data-theme][data-color-scheme] .thread-pr-field input[aria-invalid="true"] { border-color: var(--red); }
@@ -484,7 +413,7 @@
   border-radius: var(--r-chip);
   color: var(--muted);
   background: var(--lm-press);
-  font-size: 10.5px;
+  font-size: var(--fs-meta);
   font-style: normal;
   font-weight: 500;
   letter-spacing: 0;
@@ -504,14 +433,14 @@
 .app-shell[data-theme][data-color-scheme] .git-screen { font: 11px/1.55 var(--font-mono); }
 .app-shell[data-theme][data-color-scheme] .file-preview pre { color: var(--lm-code-ink); font: 11px/1.55 var(--font-mono); }
 /* Diff lines: semantic green and red (not the theme accent), as faint tints. */
-.app-shell[data-theme][data-color-scheme] .diff-line-add { color: #9fd892; background: rgba(87, 196, 104, .1); }
-.app-shell[data-theme][data-color-scheme] .diff-line-del { color: #f0a29e; background: rgba(240, 110, 104, .1); }
+.app-shell[data-theme][data-color-scheme] .diff-line-add { color: var(--diff-add-ink); background: var(--diff-add-bg); }
+.app-shell[data-theme][data-color-scheme] .diff-line-del { color: var(--diff-del-ink); background: var(--diff-del-bg); }
 .app-shell[data-theme][data-color-scheme] .diff-line-hunk { color: var(--info); }
-.app-shell[data-theme][data-color-scheme="light"] .diff-line-add { color: #23652a; background: rgba(46, 160, 67, .1); }
-.app-shell[data-theme][data-color-scheme="light"] .diff-line-del { color: #a8302b; background: rgba(207, 34, 46, .08); }
-.app-shell[data-theme][data-color-scheme] .diff-file-stats em.added { color: #57c468; }
+.app-shell[data-theme][data-color-scheme="light"] .diff-line-add { color: var(--diff-add-ink); background: var(--diff-add-bg); }
+.app-shell[data-theme][data-color-scheme="light"] .diff-line-del { color: var(--diff-del-ink); background: var(--diff-del-bg); }
+.app-shell[data-theme][data-color-scheme] .diff-file-stats em.added { color: var(--diff-add-mark); }
 .app-shell[data-theme][data-color-scheme] .diff-file-stats em.removed { color: var(--red); }
-.app-shell[data-theme][data-color-scheme="light"] .diff-file-stats em.added { color: #1f7a33; }
+.app-shell[data-theme][data-color-scheme="light"] .diff-file-stats em.added { color: var(--diff-add-mark); }
 
 /* Review: the summary line, then one card per file. */
 .app-shell[data-theme][data-color-scheme] .diff-summary { gap: 10px; margin: 2px 2px 8px; color: var(--muted); font-size: 12px; }
@@ -521,8 +450,7 @@
 .app-shell[data-theme][data-color-scheme] .diff-file-sections { gap: 6px; }
 .app-shell[data-theme][data-color-scheme] .diff-file summary { min-height: 34px; padding: 4px 6px 4px 10px; color: var(--ink-2); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .diff-file summary:hover { background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .diff-file summary code { color: var(--text); font: 11.5px var(--font-mono); }
-.app-shell[data-theme][data-color-scheme] .diff-file-stats { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .diff-file summary code { color: var(--text); font: 12px var(--font-mono); }
 .app-shell[data-theme][data-color-scheme] .diff-file .diff-view { border: 0; border-top: 1px solid var(--line-quiet); border-radius: 0; }
 .app-shell[data-theme][data-color-scheme] .diff-file-actions button,
 .app-shell[data-theme][data-color-scheme] .diff-more button {
@@ -533,21 +461,21 @@
   border-radius: var(--r-control);
   color: var(--ink-2);
   background: var(--lm-hover);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 .app-shell[data-theme][data-color-scheme] .diff-file-actions button:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .diff-more button:hover { color: var(--text); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .diff-file-actions button.staged { color: var(--info); background: rgba(134, 198, 247, .12); }
+.app-shell[data-theme][data-color-scheme] .diff-file-actions button.staged { color: var(--info); background: var(--dock-info-soft); }
 .app-shell[data-theme][data-color-scheme] .diff-file-actions button.danger-action { width: 24px; padding: 0; justify-content: center; color: var(--red); background: transparent; }
-.app-shell[data-theme][data-color-scheme] .diff-file-actions button.danger-action:hover:not(:disabled) { background: rgba(240, 136, 132, .12); }
-.app-shell[data-theme][data-color-scheme] .diff-more { border-top-color: var(--line-quiet); background: transparent; font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .diff-file-actions button.danger-action:hover:not(:disabled) { background: var(--dock-red-soft); }
+.app-shell[data-theme][data-color-scheme] .diff-more { border-top-color: var(--line-quiet); background: transparent; font-size: 12px; }
 
 /* ---- Files ---- */
 .app-shell[data-theme][data-color-scheme] .file-browser-toolbar { grid-template-columns: 28px minmax(0, 1fr) 28px; gap: 4px; min-height: 28px; margin-bottom: 8px; }
 .app-shell[data-theme][data-color-scheme] .file-nav-button { width: 28px; height: 28px; border: 0; border-radius: var(--r-control); color: var(--muted); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .file-nav-button:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .file-nav-button.active { color: var(--green); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .file-nav-button.active { color: var(--accent); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .file-breadcrumbs button { height: 28px; border-radius: var(--r-control); color: var(--muted); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .file-breadcrumbs button:hover { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .file-breadcrumbs > span:last-child button { color: var(--text); font-weight: 500; }
@@ -559,9 +487,9 @@
   color: var(--muted-2);
   background: var(--field);
 }
-.app-shell[data-theme][data-color-scheme] .file-search input { font-size: 12.5px; }
+.app-shell[data-theme][data-color-scheme] .file-search input { font-size: var(--fs-ui); }
 .app-shell[data-theme][data-color-scheme] .file-search button { border-radius: var(--r-chip); }
-.app-shell[data-theme][data-color-scheme] .file-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .file-search:focus-within { border-color: var(--accent-line); box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .file-browser-body { gap: 8px; margin-top: 8px; }
 .app-shell[data-theme][data-color-scheme] .file-results {
   padding: 4px;
@@ -570,13 +498,13 @@
   background: var(--panel);
 }
 .app-shell[data-theme][data-color-scheme] .file-results button { min-height: 28px; gap: 6px; padding: 0 6px 0 8px; border-radius: var(--r-sm); color: var(--ink-2); }
-.app-shell[data-theme][data-color-scheme] .file-results button span { font-size: 12.5px; }
+.app-shell[data-theme][data-color-scheme] .file-results button span { font-size: var(--fs-ui); }
 .app-shell[data-theme][data-color-scheme] .file-results button svg { color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .file-results button:hover { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .file-results button.selected { color: var(--text); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .file-results button.selected svg:first-child { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .file-results button.selected svg:first-child { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .file-empty { color: var(--muted-2); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .file-preview-bar { height: 34px; padding: 0 5px 0 11px; border-bottom-color: var(--line-quiet); color: var(--muted); font: 11.5px var(--font-mono); }
+.app-shell[data-theme][data-color-scheme] .file-preview-bar { height: 34px; padding: 0 5px 0 11px; border-bottom-color: var(--line-quiet); color: var(--muted); font: 12px var(--font-mono); }
 .app-shell[data-theme][data-color-scheme] .file-preview-bar button {
   height: 24px;
   gap: 4px;
@@ -585,11 +513,10 @@
   border-radius: var(--r-control);
   color: var(--ink-2);
   background: var(--lm-hover);
-  font: 500 11.5px var(--font-sans);
+  font: 500 12px var(--font-sans);
 }
-.app-shell[data-theme][data-color-scheme] .file-preview-bar button > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .file-preview-bar button > svg { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .file-preview-bar button:hover { color: var(--text); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .file-preview-empty { color: var(--muted-2); font-size: 12px; }
 
 /* ---- Terminal: theme chrome around a screen that stays dark ---- */
 .app-shell[data-theme][data-color-scheme] .studio-panel.fill { padding-bottom: 14px; }
@@ -604,13 +531,13 @@
 .app-shell[data-theme][data-color-scheme] .terminal-elsewhere { border-bottom-color: var(--line-quiet); }
 .app-shell[data-theme][data-color-scheme] .terminal-status { font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .terminal-input { border-top-color: var(--line-quiet); }
-.app-shell[data-theme][data-color-scheme] .terminal-input:focus-within { color: var(--green); background: var(--panel); box-shadow: none; }
-.app-shell[data-theme][data-color-scheme] .terminal-shell { border-radius: var(--r-chip); background: var(--lm-press); font: 10.5px var(--font-mono); }
+.app-shell[data-theme][data-color-scheme] .terminal-input:focus-within { color: var(--accent); background: var(--panel); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .terminal-shell { border-radius: var(--r-chip); background: var(--lm-press); font: 11px var(--font-mono); }
 .app-shell[data-theme][data-color-scheme] .terminal-tool,
 .app-shell[data-theme][data-color-scheme] .terminal-run { border-radius: var(--r-control); }
 .app-shell[data-theme][data-color-scheme] .terminal-tool:hover { background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .terminal-run:hover:not(:disabled) { background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .terminal-run.stop:hover { background: rgba(240, 136, 132, .12); }
+.app-shell[data-theme][data-color-scheme] .terminal-run.stop:hover { background: var(--dock-red-soft); }
 /* Lumen's global focus ring is accent coloured; this control keeps the
    neutral one. In a rule of its own (see tokens.css on :focus-visible). */
 .app-shell[data-theme][data-color-scheme] .terminal-run:focus-visible { outline: 1.5px solid var(--muted); outline-offset: 1px; }
@@ -630,7 +557,7 @@
   transform: none;
 }
 .app-shell[data-theme][data-color-scheme] .git-commit-button { min-height: 32px; gap: 6px; font-size: 13px; }
-.app-shell[data-theme][data-color-scheme] .github-create-button { min-height: 30px; font-size: 12.5px; }
+.app-shell[data-theme][data-color-scheme] .github-create-button { min-height: 30px; font-size: var(--fs-ui); }
 .app-shell[data-theme][data-color-scheme] .git-commit-button:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .github-create-button:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .thread-pr-wide-button.primary:hover:not(:disabled),
@@ -657,7 +584,7 @@
   color: var(--text);
   background: var(--lm-press);
   box-shadow: none;
-  font-size: 12.5px;
+  font-size: var(--fs-ui);
   font-weight: 500;
   letter-spacing: 0;
   transform: none;
@@ -679,21 +606,10 @@
 .app-shell[data-theme][data-color-scheme] .thread-pr-actions button:disabled { opacity: .45; }
 .app-shell[data-theme][data-color-scheme="light"] .github-secondary-button,
 .app-shell[data-theme][data-color-scheme="light"] .thread-pr-wide-button:not(.primary),
-.app-shell[data-theme][data-color-scheme="light"] .thread-pr-actions button:not(.primary) { border-color: var(--line-strong); background: var(--panel); box-shadow: 0 1px 1px rgba(0, 0, 0, .04); }
+.app-shell[data-theme][data-color-scheme="light"] .thread-pr-actions button:not(.primary) { border-color: var(--line-strong); background: var(--panel); box-shadow: var(--lm-control-lift); }
 .app-shell[data-theme][data-color-scheme="light"] .github-secondary-button:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme="light"] .thread-pr-wide-button:not(.primary):hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme="light"] .thread-pr-actions button:not(.primary):hover:not(:disabled) { background: var(--panel-2); filter: none; }
-/* "Nothing to commit" is a settled state, not a blocked action: both settled
-   buttons share one neutral, fully legible look (legacy contract). */
-.app-shell[data-theme][data-color-scheme] .git-commit-button.git-commit-empty:disabled,
-.app-shell[data-theme][data-color-scheme] .github-secondary-button.git-commit-empty:disabled {
-  border: 1px solid var(--line);
-  color: var(--muted);
-  background: transparent;
-  box-shadow: none;
-  filter: none;
-  opacity: 1;
-}
 
 /* Small inline and row buttons: borderless. */
 .app-shell[data-theme][data-color-scheme] .thread-pr-inline-button,
@@ -705,7 +621,7 @@
   border-radius: var(--r-control);
   color: var(--ink-2);
   background: var(--lm-hover);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 .app-shell[data-theme][data-color-scheme] .thread-pr-inline-button:hover:not(:disabled),
@@ -714,7 +630,7 @@
 .app-shell[data-theme][data-color-scheme] .git-change-line .git-row-action:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .git-row-action.danger,
 .app-shell[data-theme][data-color-scheme] .git-change-line .git-row-action.danger { width: 24px; padding: 0; color: var(--red); background: transparent; }
-.app-shell[data-theme][data-color-scheme] .git-row-action.danger:hover:not(:disabled) { color: var(--red); background: rgba(240, 136, 132, .12); }
+.app-shell[data-theme][data-color-scheme] .git-row-action.danger:hover:not(:disabled) { color: var(--red); background: var(--dock-red-soft); }
 
 /* App-native action menu (git-workflow.css): borderless trigger, menu
    surface popover. */
@@ -739,18 +655,16 @@
   box-shadow: var(--lm-pop-shadow);
 }
 .app-shell[data-theme][data-color-scheme] .app-action-list > button { min-height: 30px; border-radius: var(--r-sm); color: var(--ink-2); }
-.app-shell[data-theme][data-color-scheme] .app-action-list > button strong { font-size: 12.5px; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .app-action-list > button strong { font-size: var(--fs-ui); font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .app-action-list > button small { font-size: 11px; }
 .app-shell[data-theme][data-color-scheme] .app-action-list > button:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .app-action-list > button.danger-action { color: var(--red); }
-.app-shell[data-theme][data-color-scheme] .app-action-list > button.danger-action:hover:not(:disabled) { color: var(--red); background: rgba(240, 136, 132, .12); }
+.app-shell[data-theme][data-color-scheme] .app-action-list > button.danger-action:hover:not(:disabled) { color: var(--red); background: var(--dock-red-soft); }
 
 /* ---- Git: checkout card ---- */
 .app-shell[data-theme][data-color-scheme] .git-checkout { gap: 9px; margin-bottom: 12px; padding: 10px 12px 12px; }
 .app-shell[data-theme][data-color-scheme] .git-checkout-repo { gap: 6px; color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .git-checkout-repo strong { color: var(--ink-2); font-size: 12px; font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .git-folder-chip { padding: 1px 6px; border: 0; border-radius: var(--r-chip); color: var(--muted); background: var(--lm-press); font-size: 11px; font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .git-folder-chip.isolated { color: var(--info); background: rgba(134, 198, 247, .12); }
 /* The branch picker is a pop-up button. */
 .app-shell[data-theme][data-color-scheme] .git-branch-menu .app-action-trigger {
   min-height: 30px;
@@ -758,18 +672,15 @@
   border: 1px solid var(--line);
   color: var(--text);
   background: var(--lm-press);
-  font: 600 12.5px var(--font-mono);
+  font: 600 13px var(--font-mono);
 }
 .app-shell[data-theme][data-color-scheme] .git-branch-menu .app-action-trigger:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .git-branch-menu.open .app-action-trigger { border-color: var(--line-strong); background: var(--lm-press); filter: brightness(1.12); }
-.app-shell[data-theme][data-color-scheme="light"] .git-branch-menu .app-action-trigger { border-color: var(--line-strong); background: var(--panel); box-shadow: 0 1px 1px rgba(0, 0, 0, .04); }
+.app-shell[data-theme][data-color-scheme="light"] .git-branch-menu .app-action-trigger { border-color: var(--line-strong); background: var(--panel); box-shadow: var(--lm-control-lift); }
 .app-shell[data-theme][data-color-scheme="light"] .git-branch-menu .app-action-trigger:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme="light"] .git-branch-menu.open .app-action-trigger { background: var(--panel-2); filter: none; }
-.app-shell[data-theme][data-color-scheme] .git-branch-static { font: 600 12.5px var(--font-mono); }
-.app-shell[data-theme][data-color-scheme] .git-sync-counts { gap: 2px; padding: 0; border: 0; border-radius: 0; }
-.app-shell[data-theme][data-color-scheme] .git-sync-counts > span { padding: 2px 6px; border-radius: var(--r-chip); color: var(--muted-2); font-size: 11px; font-weight: 600; }
-.app-shell[data-theme][data-color-scheme] .git-sync-counts > span.active { color: var(--green); background: var(--green-soft); }
-.app-shell[data-theme][data-color-scheme] .git-sync-line { color: var(--muted-2); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .git-branch-static { font: 600 13px var(--font-mono); }
+.app-shell[data-theme][data-color-scheme] .git-sync-line { color: var(--muted-2); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .git-remote-actions { gap: 4px; }
 .app-shell[data-theme][data-color-scheme] .git-remote-actions > button {
   min-height: 28px;
@@ -779,12 +690,12 @@
   border-radius: var(--r-control);
   color: var(--ink-2);
   background: var(--lm-hover);
-  font-size: 12.5px;
+  font-size: var(--fs-ui);
   font-weight: 500;
 }
 .app-shell[data-theme][data-color-scheme] .git-remote-actions > button > svg { color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .git-remote-actions > button:hover:not(:disabled) { color: var(--text); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .git-remote-actions > button b { min-width: 16px; padding: 0 4px; border-radius: var(--r-chip); color: var(--green); background: var(--green-soft); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .git-remote-actions > button b { min-width: 16px; padding: 0 4px; border-radius: var(--r-chip); color: var(--accent); background: var(--accent-soft); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
 /* Automatic publishing is a row of the checkout card, not a card of its own. */
 .app-shell[data-theme][data-color-scheme] .git-checkout .git-auto-publish {
   margin: 2px -12px 0;
@@ -797,14 +708,14 @@
 .app-shell[data-theme][data-color-scheme] .git-checkout .git-auto-publish.paused { border-top-color: var(--line-quiet); }
 .app-shell[data-theme][data-color-scheme] .git-auto-publish { padding: 12px; }
 .app-shell[data-theme][data-color-scheme] .git-auto-publish.paused { border-color: var(--line); }
-.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle { grid-template-columns: 30px minmax(0, 1fr); gap: 10px; }
-.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle strong { color: var(--text); font-size: 12.5px; font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle small { color: var(--muted-2); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle { gap: 10px; }
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle strong { color: var(--text); font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle small { color: var(--muted-2); font-size: 12px; }
 /* A macOS switch: accent track when on, white knob. */
 .app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle input { width: 30px; height: 18px; border: 0; border-radius: var(--r-pill); background: var(--line-strong); }
-.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle input::after { top: 2px; left: 2px; width: 14px; height: 14px; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .3); }
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle input::after { top: 2px; left: 2px; width: 14px; height: 14px; background: var(--lm-knob-on); box-shadow: var(--lm-knob-on-shadow); }
 .app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle input:checked { border: 0; background: var(--lm-fill); }
-.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle input:checked::after { background: #fff; transform: translateX(12px); }
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle input:checked::after { background: var(--lm-knob-on); transform: translateX(12px); }
 .app-shell[data-theme][data-color-scheme] .git-auto-publish-status { border: 0; border-radius: var(--r-md); color: var(--ink-2); background: var(--lm-hover); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .git-auto-publish-detail { color: var(--muted); font-size: 12px; }
 
@@ -831,9 +742,9 @@
 .app-shell[data-theme][data-color-scheme] .git-view-tabs > button.active {
   color: var(--text);
   background: var(--panel-3);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 0 0 .5px rgba(0, 0, 0, .2);
+  box-shadow: var(--lm-seg-shadow);
 }
-.app-shell[data-theme][data-color-scheme="light"] .git-view-tabs > button.active { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 0 0 .5px rgba(0, 0, 0, .08); }
+.app-shell[data-theme][data-color-scheme="light"] .git-view-tabs > button.active { background: var(--lm-seg-surface); box-shadow: var(--lm-seg-shadow); }
 .app-shell[data-theme][data-color-scheme] .git-view-tabs > button b { min-width: 0; padding: 0; border-radius: 0; color: var(--muted-2); background: transparent; font-size: 11px; font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .git-view-tabs > button.active b { color: var(--muted); }
 
@@ -842,22 +753,18 @@
 .app-shell[data-theme][data-color-scheme] .git-view-summary strong { font-weight: 600; }
 .app-shell[data-theme][data-color-scheme] .git-view-summary small { color: var(--muted-2); font-size: 11px; }
 .app-shell[data-theme][data-color-scheme] .git-changes-empty { padding: 12px; border: 1px solid var(--line-quiet); border-radius: var(--r-lg); color: var(--muted-2); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .git-fineprint { color: var(--muted-2); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .git-fineprint { color: var(--muted-2); font-size: 12px; }
 
 /* ---- Git: commit card ---- */
 .app-shell[data-theme][data-color-scheme] .git-commit-card { gap: 10px; margin-bottom: 14px; padding: 12px; }
-.app-shell[data-theme][data-color-scheme] .git-commit-heading { grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 8px; }
-.app-shell[data-theme][data-color-scheme] .git-commit-heading > span { width: 18px; height: 18px; margin-top: 1px; border-radius: 0; color: var(--muted); background: transparent; }
-.app-shell[data-theme][data-color-scheme] .git-commit-heading strong,
 .app-shell[data-theme][data-color-scheme] .git-commit-success strong { color: var(--text); font-size: 13px; font-weight: 600; }
-.app-shell[data-theme][data-color-scheme] .git-commit-heading small,
-.app-shell[data-theme][data-color-scheme] .git-commit-success small { color: var(--muted-2); font-size: 11.5px; }
-.app-shell[data-theme][data-color-scheme] .git-commit-success { border: 0; border-radius: var(--r-md); color: var(--green); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .git-commit-success small { color: var(--muted-2); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .git-commit-success { border: 0; border-radius: var(--r-md); color: var(--accent); background: var(--accent-soft); }
 .app-shell[data-theme][data-color-scheme] .git-commit-scope { gap: 0; padding: 2px; border: 0; border-radius: 7px; background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .git-commit-scope > button { min-height: 24px; padding: 0 6px; border-radius: 5px; color: var(--muted); font-size: 12px; font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .git-commit-scope > button:hover:not(:disabled) { color: var(--text); }
-.app-shell[data-theme][data-color-scheme] .git-commit-scope > button[aria-pressed="true"] { color: var(--text); background: var(--panel-3); box-shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 0 0 .5px rgba(0, 0, 0, .2); }
-.app-shell[data-theme][data-color-scheme="light"] .git-commit-scope > button[aria-pressed="true"] { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 0 0 .5px rgba(0, 0, 0, .08); }
+.app-shell[data-theme][data-color-scheme] .git-commit-scope > button[aria-pressed="true"] { color: var(--text); background: var(--panel-3); box-shadow: var(--lm-seg-shadow); }
+.app-shell[data-theme][data-color-scheme="light"] .git-commit-scope > button[aria-pressed="true"] { background: var(--lm-seg-surface); box-shadow: var(--lm-seg-shadow); }
 .app-shell[data-theme][data-color-scheme] .git-commit-card .dock-field { gap: 6px; }
 .app-shell[data-theme][data-color-scheme] .git-commit-card .dock-field > span { color: var(--muted); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .git-commit-message::placeholder { color: var(--muted-2); }
@@ -888,16 +795,16 @@
 .app-shell[data-theme][data-color-scheme] .git-change-select { min-height: 30px; gap: 1px 8px; padding: 4px 6px; border-radius: var(--r-sm); color: var(--ink-2); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .git-change-name { color: var(--text); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .git-change-dir,
-.app-shell[data-theme][data-color-scheme] .git-change-from { font-size: 10.5px; }
+.app-shell[data-theme][data-color-scheme] .git-change-from { font-size: var(--fs-meta); }
 .app-shell[data-theme][data-color-scheme] .git-change-status { width: 16px; height: 16px; border-radius: var(--r-chip); font: 600 9.5px/1 var(--font-sans); }
-.app-shell[data-theme][data-color-scheme] .git-change-chip { padding: 0 5px; border: 0; border-radius: var(--r-chip); color: var(--muted); background: var(--lm-press); font-size: 10.5px; }
+.app-shell[data-theme][data-color-scheme] .git-change-chip { padding: 0 5px; border: 0; border-radius: var(--r-chip); color: var(--muted); background: var(--lm-press); font-size: var(--fs-meta); }
 .app-shell[data-theme][data-color-scheme] .git-change-preview { padding: 2px 8px 10px; }
 .app-shell[data-theme][data-color-scheme] .git-change-meta { font-size: 11px; }
 
 /* ---- Git: history ---- */
 .app-shell[data-theme][data-color-scheme] .git-history-list { overflow: hidden; margin-bottom: 10px; }
 .app-shell[data-theme][data-color-scheme] .git-history-list > li { gap: 10px; padding: 8px 12px; border-top-color: var(--line-quiet); }
-.app-shell[data-theme][data-color-scheme] .git-history-list strong { color: var(--text); font-size: 12.5px; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .git-history-list strong { color: var(--text); font-size: var(--fs-ui); font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .git-history-list small { color: var(--muted-2); font-size: 11px; }
 .app-shell[data-theme][data-color-scheme] .git-history-oid { color: var(--muted); font-size: 11px; }
 .app-shell[data-theme][data-color-scheme] .git-history-tools b { color: var(--ink-2); font-weight: 600; }
@@ -916,12 +823,7 @@
 .app-shell[data-theme][data-color-scheme] .git-console .git-screen { border: 0; border-top: 1px solid var(--line-quiet); border-radius: 0; }
 
 /* ---- GitHub connection ---- */
-.app-shell[data-theme][data-color-scheme] .github-repo-card,
-.app-shell[data-theme][data-color-scheme] .github-connect-project,
-.app-shell[data-theme][data-color-scheme] .git-initialize-card { padding: 12px; }
-.app-shell[data-theme][data-color-scheme] .github-repo-icon { border-radius: var(--r-md); color: var(--muted); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .github-repo-card small,
-.app-shell[data-theme][data-color-scheme] .git-initialize-card small { color: var(--muted-2); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .github-connect-project { padding: 12px; }
 .app-shell[data-theme][data-color-scheme] .github-create-divider {
   color: var(--muted-2);
   font-size: var(--fs-meta);
@@ -954,7 +856,7 @@
 .app-shell[data-theme][data-color-scheme] .thread-pr-head { grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-head-icon { width: 18px; height: 18px; border: 0; border-radius: 0; color: var(--muted); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-head strong { color: var(--text); font-size: 13px; font-weight: 600; }
-.app-shell[data-theme][data-color-scheme] .thread-pr-head small { color: var(--muted-2); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-head small { color: var(--muted-2); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-context { gap: 4px; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-fact {
   padding: 2px 6px;
@@ -967,8 +869,8 @@
 }
 .app-shell[data-theme][data-color-scheme] .thread-pr-fact svg { color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .thread-pr-fact.quiet { color: var(--muted); }
-.app-shell[data-theme][data-color-scheme] .thread-pr-fact.isolated { color: var(--info); background: rgba(134, 198, 247, .12); }
-.app-shell[data-theme][data-color-scheme] .thread-pr-fact.warn { color: var(--orange); background: rgba(232, 171, 104, .13); }
+.app-shell[data-theme][data-color-scheme] .thread-pr-fact.isolated { color: var(--info); background: var(--dock-info-soft); }
+.app-shell[data-theme][data-color-scheme] .thread-pr-fact.warn { color: var(--orange); background: var(--dock-orange-soft); }
 .app-shell[data-theme][data-color-scheme] .thread-pr-fact.isolated svg,
 .app-shell[data-theme][data-color-scheme] .thread-pr-fact.warn svg { color: inherit; }
 
@@ -976,10 +878,10 @@
 .app-shell[data-theme][data-color-scheme] .thread-pr-card.open,
 .app-shell[data-theme][data-color-scheme] .thread-pr-card.merged { border-color: var(--line); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .thread-pr-card.candidate { border-style: dashed; border-color: var(--line-strong); }
-.app-shell[data-theme][data-color-scheme] .thread-pr-number { color: var(--muted-2); font: 500 11.5px var(--font-sans); font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-number { color: var(--muted-2); font: 500 12px var(--font-sans); font-variant-numeric: tabular-nums; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-title { color: var(--text); font-size: 13.5px; font-weight: 600; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-refs { font-size: 11px; }
-.app-shell[data-theme][data-color-scheme] .thread-pr-refs.strong { color: var(--ink-2); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-refs.strong { color: var(--ink-2); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-signal { font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-checks li { font-size: 12px; }
 /* State tags: tinted ink on a faint wash, no outline. */
@@ -992,22 +894,22 @@
   font-size: 11px;
   font-weight: 600;
 }
-.app-shell[data-theme][data-color-scheme] .thread-pr-state.open { color: var(--green); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .thread-pr-state.open { color: var(--accent); background: var(--accent-soft); }
 .app-shell[data-theme][data-color-scheme] .thread-pr-state.draft { color: var(--muted); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .thread-pr-state.merged,
-.app-shell[data-theme][data-color-scheme] .thread-pr-state.found { color: var(--info); background: rgba(134, 198, 247, .12); border: 0; }
-.app-shell[data-theme][data-color-scheme] .thread-pr-state.closed { color: var(--red); background: rgba(240, 136, 132, .12); }
+.app-shell[data-theme][data-color-scheme] .thread-pr-state.found { color: var(--info); background: var(--dock-info-soft); border: 0; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-state.closed { color: var(--red); background: var(--dock-red-soft); }
 .app-shell[data-theme][data-color-scheme] .git-pr-row .thread-pr-state { padding: 3px; }
 
 .app-shell[data-theme][data-color-scheme] .thread-pr-slot-head > svg { color: var(--muted); }
-.app-shell[data-theme][data-color-scheme] .thread-pr-slot-head strong { color: var(--text); font-size: 12.5px; font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .thread-pr-slot-head small { font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-slot-head strong { color: var(--text); font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-slot-head small { font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-field { color: var(--muted); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .thread-pr-check strong { color: var(--text); font-size: 12.5px; font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .thread-pr-check small { font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-check strong { color: var(--text); font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-check small { font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-editor { gap: 12px; padding: 12px; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-editor.confirm { border-color: var(--line); background: var(--panel); }
-.app-shell[data-theme][data-color-scheme] .thread-pr-editor.confirm.stopped { border-color: rgba(240, 136, 132, .35); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .thread-pr-editor.confirm.stopped { border-color: var(--dock-red-line); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .thread-pr-editor-head > svg { color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .thread-pr-editor-head strong { color: var(--text); font-size: 13px; font-weight: 600; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-help-button { border: 0; border-radius: var(--r-control); color: var(--muted); background: transparent; }
@@ -1023,7 +925,7 @@
 }
 .app-shell[data-theme][data-color-scheme] .thread-pr-plan b,
 .app-shell[data-theme][data-color-scheme] .thread-pr-fineprint.local-effect b { font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .thread-pr-fineprint { font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-fineprint { font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-empty,
 .app-shell[data-theme][data-color-scheme] .git-pr-empty { gap: 6px; border: 1px solid var(--line-quiet); border-radius: var(--r-lg); }
 .app-shell[data-theme][data-color-scheme] .thread-pr-empty strong,
@@ -1033,8 +935,8 @@
 
 /* All pull requests: search, filters and a hairline-separated list. */
 .app-shell[data-theme][data-color-scheme] .git-pr-search { padding: 0 3px 0 9px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--field); }
-.app-shell[data-theme][data-color-scheme] .git-pr-search input { height: 28px; font-size: 12.5px; }
-.app-shell[data-theme][data-color-scheme] .git-pr-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .git-pr-search input { height: 28px; font-size: var(--fs-ui); }
+.app-shell[data-theme][data-color-scheme] .git-pr-search:focus-within { border-color: var(--accent-line); box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .git-pr-filters {
   justify-self: start;
   gap: 0;
@@ -1053,14 +955,14 @@
   font-weight: 500;
 }
 .app-shell[data-theme][data-color-scheme] .git-pr-filters > button:hover { color: var(--text); }
-.app-shell[data-theme][data-color-scheme] .git-pr-filters > button.active { color: var(--text); background: var(--panel-3); box-shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 0 0 .5px rgba(0, 0, 0, .2); }
-.app-shell[data-theme][data-color-scheme="light"] .git-pr-filters > button.active { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 0 0 .5px rgba(0, 0, 0, .08); }
+.app-shell[data-theme][data-color-scheme] .git-pr-filters > button.active { color: var(--text); background: var(--panel-3); box-shadow: var(--lm-seg-shadow); }
+.app-shell[data-theme][data-color-scheme="light"] .git-pr-filters > button.active { background: var(--lm-seg-surface); box-shadow: var(--lm-seg-shadow); }
 .app-shell[data-theme][data-color-scheme] .git-pr-list { gap: 1px; }
 .app-shell[data-theme][data-color-scheme] .git-pr-row { padding: 7px 8px; border: 0; border-radius: var(--r-md); }
 .app-shell[data-theme][data-color-scheme] .git-pr-row:hover { border-color: transparent; background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .git-pr-row-main strong { color: var(--text); font-size: 12.5px; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .git-pr-row-main strong { color: var(--text); font-size: var(--fs-ui); font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .git-pr-row-main small { font-size: 11px; }
-.app-shell[data-theme][data-color-scheme] .git-pr-row-tags em { padding: 0 5px; border: 0; border-radius: var(--r-chip); color: var(--info); background: rgba(134, 198, 247, .12); font-size: 10.5px; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .git-pr-row-tags em { padding: 0 5px; border: 0; border-radius: var(--r-chip); color: var(--info); background: var(--dock-info-soft); font-size: var(--fs-meta); font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .git-pr-body > summary { color: var(--muted); font-size: 12px; }
 
 /* ---- Checks popover (portalled inside the shell) ---- */
@@ -1072,11 +974,11 @@
 }
 .app-shell[data-theme][data-color-scheme] .checks-popover .project-prompt-actions { background: var(--menu-surface); }
 .app-shell[data-theme][data-color-scheme] .checks-editor input { height: 30px; border-radius: var(--r-control); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .checks-editor input:focus { border-color: var(--green-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .checks-editor input:focus { border-color: var(--accent-line); box-shadow: var(--ring); }
 
 /* ---- Small docks keep the rail compact ---- */
 @media (max-height: 640px) {
-  .app-shell[data-theme][data-color-scheme] .studio-tabs { --studio-tab-step: 40px; }
+  .app-shell[data-theme][data-color-scheme] .studio-tabs { --studio-tab-step: 40px; --studio-tab-separator-margin: 3px; }
   .app-shell[data-theme][data-color-scheme] .studio-tabs button,
   .app-shell[data-theme][data-color-scheme] .studio-tab-indicator { height: 38px; }
   .app-shell[data-theme][data-color-scheme] .studio-tabs button span { display: none; }
@@ -1101,7 +1003,6 @@
   .app-shell[data-theme][data-color-scheme] .git-change-row,
   .app-shell[data-theme][data-color-scheme] .file-results button,
   .app-shell[data-theme][data-color-scheme] .git-pr-row { transition: background-color var(--lm-d-1) ease, color var(--lm-d-1) ease; }
-  .app-shell[data-theme][data-color-scheme] .attachment-drop { transition: color var(--lm-d-1) ease, border-color var(--lm-d-1) ease, background-color var(--lm-d-1) ease; }
   .app-shell[data-theme][data-color-scheme] .git-commit-button,
   .app-shell[data-theme][data-color-scheme] .github-create-button { transition: filter var(--lm-d-1) ease, opacity var(--lm-d-2) ease; }
 }
@@ -1113,10 +1014,1282 @@
 .app-shell[data-theme][data-color-scheme] .thread-usage-cost { border-color: var(--line); }
 .app-shell[data-theme][data-color-scheme] .thread-usage-actions button { min-height: 28px; border-color: transparent; border-radius: var(--r-control); background: transparent; font-size: 12px; font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .thread-usage-actions button:hover:not(:disabled) { border-color: transparent; background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .thread-usage-badge { min-height: 18px; padding: 0 6px; border-radius: var(--r-chip); background: var(--lm-press); font-size: 10.5px; font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .thread-usage-token-grid { border-radius: var(--r-md); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .thread-usage-badge { min-height: 18px; padding: 0 6px; border-radius: var(--r-chip); background: var(--lm-press); font-size: var(--fs-meta); font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .thread-usage-cost-value { font-weight: 600; letter-spacing: -.02em; }
-.app-shell[data-theme][data-color-scheme] .thread-usage-token-total > strong,
 .app-shell[data-theme][data-color-scheme] .thread-usage-context-reading strong { font-weight: 600; letter-spacing: -.015em; }
 .app-shell[data-theme][data-color-scheme] .thread-usage-context-track { height: 4px; }
 .app-shell[data-theme][data-color-scheme] .thread-usage .thread-usage-context-warning { border-radius: var(--r-md); }
+
+/* ============================================================================
+   Tools panel structure (2026-11-17)
+   One pattern for every tab: header (icon, title = rail label, optional
+   subtitle, icon actions, close) → optional toolbar of labelled commands →
+   content using one section heading, one note and one empty state.
+   ========================================================================== */
+
+/* ---- Status tints that follow the theme ----
+   tokens.css may define --red-soft / --orange-soft / --info-soft per theme;
+   until then each tint is mixed from the theme's own status ink, with the
+   dark Mythra values as the floor for engines without color-mix(). */
+.app-shell[data-theme][data-color-scheme] {
+  --dock-red-soft: var(--red-soft, rgba(240, 136, 132, .12));
+  --dock-red-line: var(--red-line, rgba(240, 136, 132, .35));
+  --dock-orange-soft: var(--orange-soft, rgba(232, 171, 104, .12));
+  --dock-info-soft: var(--info-soft, rgba(134, 198, 247, .12));
+}
+@supports (color: color-mix(in srgb, red 50%, transparent)) {
+  .app-shell[data-theme][data-color-scheme] {
+    --dock-red-soft: var(--red-soft, color-mix(in srgb, var(--red) 12%, transparent));
+    --dock-red-line: var(--red-line, color-mix(in srgb, var(--red) 35%, transparent));
+    --dock-orange-soft: var(--orange-soft, color-mix(in srgb, var(--orange) 13%, transparent));
+    --dock-info-soft: var(--info-soft, color-mix(in srgb, var(--info) 13%, transparent));
+  }
+}
+
+/* ---- Header: icon actions sit between the title and Close ---- */
+.app-shell[data-theme][data-color-scheme] .studio-header.has-actions { grid-template-columns: 18px minmax(0, 1fr) auto 28px; }
+.app-shell[data-theme][data-color-scheme] .studio-header-actions { display: flex; align-items: center; gap: 2px; }
+.app-shell[data-theme][data-color-scheme] .studio-header .studio-header-action {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .studio-header .studio-header-action:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .studio-header .studio-header-action:disabled { opacity: .45; cursor: default; }
+.app-shell[data-theme][data-color-scheme] .studio-header .icon-button { color: var(--muted); }
+
+/* ---- Toolbar: the tab's labelled commands, right under the header ---- */
+.app-shell[data-theme][data-color-scheme] .studio-toolbar { margin-bottom: 12px; }
+
+/* ---- One note: icon, one line, details behind ⓘ ---- */
+.app-shell[data-theme][data-color-scheme] .dock-note {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 8px 8px 10px;
+  border: 0;
+  border-radius: var(--r-md);
+  color: var(--muted);
+  background: var(--lm-hover);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.app-shell[data-theme][data-color-scheme] .dock-note > svg { margin-top: 2.5px; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .dock-note-text { min-width: 0; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .dock-note-text strong { color: var(--ink-2); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .dock-note-text .secondary-button { min-height: 24px; margin-left: 4px; padding: 0 8px; font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .dock-note.warning { color: var(--ink-2); background: var(--dock-orange-soft); }
+.app-shell[data-theme][data-color-scheme] .dock-note.warning > svg { color: var(--orange); }
+.app-shell[data-theme][data-color-scheme] .dock-note.error { color: var(--text); background: var(--dock-red-soft); }
+.app-shell[data-theme][data-color-scheme] .dock-note.error > svg { color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .dock-note.success { color: var(--ink-2); }
+.app-shell[data-theme][data-color-scheme] .dock-note.success > svg { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .dock-note-info { align-self: start; margin: -2px -2px -2px 0; }
+.app-shell[data-theme][data-color-scheme] .dock-note-info-trigger {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted-2);
+  background: transparent;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .dock-note-info-trigger:hover,
+.app-shell[data-theme][data-color-scheme] .dock-note-info-trigger[aria-expanded="true"] { color: var(--text); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .worktree-card .dock-note { margin: 0; }
+
+/* ---- One empty state, with an action when there is one ---- */
+.app-shell[data-theme][data-color-scheme] .studio-empty { padding: 18px 16px; }
+.app-shell[data-theme][data-color-scheme] .studio-empty span { max-width: 36ch; line-height: 1.5; }
+.app-shell[data-theme][data-color-scheme] .studio-empty.compact {
+  min-height: 0;
+  gap: 4px;
+  padding: 14px 12px;
+}
+.app-shell[data-theme][data-color-scheme] .studio-empty.compact > svg { width: 16px; height: 16px; margin-bottom: 2px; }
+.app-shell[data-theme][data-color-scheme] .studio-empty.compact strong { font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .studio-empty .studio-empty-action {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: var(--lm-hover);
+  font: 500 var(--fs-ui) var(--font-sans);
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .studio-empty .studio-empty-action > svg { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .studio-empty .studio-empty-action:hover { color: var(--text); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .studio-list .studio-empty + .studio-empty { margin-top: 6px; }
+
+/* ---- Segmented controls size to their own buttons (Git has two views,
+   Changes has List | Diff) ---- */
+.app-shell[data-theme][data-color-scheme] .git-view-tabs { display: grid; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+.app-shell[data-theme][data-color-scheme] .git-changes-mode { margin-top: 2px; }
+
+/* ==========================================================================
+   Round 2 (Tools dock): one compact header, review-first Changes, quiet
+   checkpoints and single empty states. Same shell scope as everything above,
+   so these later rules win without raising specificity.
+   ========================================================================== */
+
+/* ---- Panel header: the tab's name and its icon actions, nothing else ---- */
+.app-shell[data-theme][data-color-scheme] .studio-header,
+.app-shell[data-theme][data-color-scheme] .studio-header.has-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 14px;
+}
+.app-shell[data-theme][data-color-scheme] .studio-header-title { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .studio-header-title h2 { flex: 0 0 auto; margin: 0; }
+.app-shell[data-theme][data-color-scheme] .studio-header-context {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-2);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.app-shell[data-theme][data-color-scheme] .studio-header-actions:empty { display: none; }
+.app-shell[data-theme][data-color-scheme] .studio-panel-meta { margin: -2px 2px 10px; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .studio-add-more { margin-top: 10px; }
+.app-shell[data-theme][data-color-scheme] .studio-add-more .thread-pr-inline-button { display: inline-flex; align-items: center; gap: 4px; }
+.app-shell[data-theme][data-color-scheme] .studio-toolbar { align-items: center; }
+.app-shell[data-theme][data-color-scheme] .studio-toolbar .dock-note-info { margin: 0 0 0 -2px; }
+
+/* One secondary-button look across the dock (light mode had two). */
+.app-shell[data-theme][data-color-scheme] .studio-dock .github-secondary-button {
+  border: 0;
+  color: var(--ink-2);
+  background: var(--lm-hover);
+}
+.app-shell[data-theme][data-color-scheme] .studio-dock .github-secondary-button:hover:not(:disabled) { color: var(--text); background: var(--lm-press); filter: none; }
+
+/* ---- Changes: toolbar, file rows, clean state ---- */
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar {
+  display: flex;
+  align-items: center;
+  margin: 0 0 10px;
+}
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar .git-changes-mode { flex: 0 1 auto; width: auto; margin: 0; }
+.app-shell[data-theme][data-color-scheme] .git-updated-at {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-2);
+  font-size: 11.5px;
+  text-align: right;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.app-shell[data-theme][data-color-scheme] .git-updated-at > svg { vertical-align: -1px; margin-right: 3px; }
+.app-shell[data-theme][data-color-scheme] .git-view-toolbar .git-updated-at { flex: 0 1 auto; text-align: left; }
+.app-shell[data-theme][data-color-scheme] .git-changes-loading { display: flex; align-items: center; gap: 6px; margin: 8px 2px; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .git-change-group > header { display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
+.app-shell[data-theme][data-color-scheme] .git-change-group > header > .git-row-action { min-height: 24px; border: 0; color: var(--muted); background: transparent; font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .git-change-group > header > .git-row-action:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .git-change-select { grid-template-columns: 16px minmax(0, 1fr) auto; }
+.app-shell[data-theme][data-color-scheme] .git-change-counts {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  display: inline-flex;
+  gap: 5px;
+  padding-left: 6px;
+  font: 500 11px/1 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+}
+.app-shell[data-theme][data-color-scheme] .git-change-counts ins,
+.app-shell[data-theme][data-color-scheme] .checkpoint-counts ins { color: var(--diff-add-mark); text-decoration: none; }
+.app-shell[data-theme][data-color-scheme] .git-change-counts del,
+.app-shell[data-theme][data-color-scheme] .checkpoint-counts del { color: var(--diff-del-mark); text-decoration: none; }
+/* Per-file actions stay quiet: discard appears on hover, focus or selection,
+   and is red only while pointed at. Keyboard users still reach it (Tab). */
+.app-shell[data-theme][data-color-scheme] .git-change-line .git-row-action.danger { color: var(--muted); opacity: 0; transition: opacity var(--t-fast) ease, color var(--t-fast) ease; }
+.app-shell[data-theme][data-color-scheme] .git-change-row:hover .git-row-action.danger,
+.app-shell[data-theme][data-color-scheme] .git-change-row.selected .git-row-action.danger { opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .git-change-row:focus-within .git-row-action.danger { opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .git-change-line .git-row-action.danger:hover:not(:disabled) { color: var(--red); background: var(--dock-red-soft); }
+.app-shell[data-theme][data-color-scheme] .git-change-line .git-row-action.danger:focus { opacity: 1; }
+@media (hover: none) {
+  .app-shell[data-theme][data-color-scheme] .git-change-line .git-row-action.danger { opacity: 1; }
+}
+.app-shell[data-theme][data-color-scheme] .git-change-line .git-row-action:not(.danger) > span { display: none; }
+.app-shell[data-theme][data-color-scheme] .git-change-line .git-row-action:not(.danger) { width: 24px; padding: 0; color: var(--muted); }
+
+.app-shell[data-theme][data-color-scheme] .studio-empty.git-clean-state,
+.app-shell[data-theme][data-color-scheme] .studio-empty.git-initialize-state { margin-top: 8px; }
+.app-shell[data-theme][data-color-scheme] .studio-empty.git-clean-state > svg { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .git-clean-push { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .studio-empty .studio-empty-action:disabled { opacity: .5; cursor: default; }
+
+.app-shell[data-theme][data-color-scheme] .git-friendly-error { align-items: start; }
+.app-shell[data-theme][data-color-scheme] .git-friendly-error > div { min-width: 0; flex: 1 1 auto; }
+.app-shell[data-theme][data-color-scheme] .git-friendly-error details { margin-top: 3px; }
+.app-shell[data-theme][data-color-scheme] .git-friendly-error summary { color: var(--muted); font-size: 11.5px; cursor: pointer; }
+.app-shell[data-theme][data-color-scheme] .git-friendly-error code { display: block; margin-top: 4px; color: var(--muted); font: 11px/1.45 var(--font-mono); overflow-wrap: anywhere; white-space: pre-wrap; }
+
+/* ---- Changes: the commit box comes last and stays in reach ---- */
+.app-shell[data-theme][data-color-scheme] .git-commit-card.git-commit-bar {
+  position: sticky;
+  /* Sticky honours the panel's 20px bottom padding; reach past it so the box
+     sits on the panel's real edge and no diff line shows underneath it. */
+  bottom: -20px;
+  z-index: 2;
+  display: grid;
+  gap: 8px;
+  margin: 14px -14px -20px;
+  padding: 12px 14px 14px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--sidebar);
+  box-shadow: none;
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-field {
+  display: grid;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--field);
+  transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease;
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-field:focus-within { border-color: var(--accent-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .git-commit-field .git-commit-message,
+.app-shell[data-theme][data-color-scheme] .git-commit-field .git-commit-message:focus {
+  padding: 8px 10px 4px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  resize: vertical;
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-field-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding: 0 4px 4px; }
+.app-shell[data-theme][data-color-scheme] .git-commit-suggested { margin-right: auto; padding-left: 6px; color: var(--muted-2); font-size: 11px; }
+.app-shell[data-theme][data-color-scheme] .git-commit-field-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: transparent;
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-field-button:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .git-commit-field-button:disabled { opacity: .45; cursor: default; }
+.app-shell[data-theme][data-color-scheme] .git-commit-field-button > svg { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .git-commit-actions { display: flex; align-items: stretch; gap: 1px; }
+.app-shell[data-theme][data-color-scheme] .git-commit-actions .git-commit-button { flex: 1 1 auto; width: auto; min-height: 30px; font-size: var(--fs-ui); }
+.app-shell[data-theme][data-color-scheme] .git-commit-actions .git-commit-button:not(:only-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.app-shell[data-theme][data-color-scheme] .git-commit-more { display: flex; }
+.app-shell[data-theme][data-color-scheme] .git-commit-more .app-action-trigger {
+  width: 30px;
+  min-height: 30px;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  color: var(--on-accent);
+  background: var(--lm-fill);
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-more .app-action-trigger:hover:not(:disabled) { color: var(--on-accent); background: var(--lm-fill); filter: brightness(1.06); }
+.app-shell[data-theme][data-color-scheme] .git-commit-more .app-action-trigger:disabled { filter: saturate(.4); opacity: .5; }
+.app-shell[data-theme][data-color-scheme] .git-commit-more .app-action-list { top: auto; bottom: calc(100% + 6px); }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar .git-commit-scope { justify-self: start; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar .git-commit-includes { margin: 0; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar .git-commit-includes > summary { font-size: 11.5px; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .git-commit-success { display: flex; align-items: start; gap: 8px; margin: 0 0 10px; padding: 8px 10px; }
+.app-shell[data-theme][data-color-scheme] .git-commit-success > svg { margin-top: 1px; flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .git-commit-success > div { display: grid; gap: 1px; min-width: 0; }
+
+/* ---- Changes: Diff ---- */
+.app-shell[data-theme][data-color-scheme] .diff-summary-meta { margin: 0 2px 8px; color: var(--muted-2); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+/* ---- Git tab ---- */
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-row { display: flex; align-items: center; gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle { flex: 1 1 auto; grid-template-columns: minmax(0, 1fr) 30px; align-items: center; }
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle input { order: 2; margin: 0; }
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-toggle > span { display: grid; gap: 1px; text-align: left; }
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-info {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted-2);
+  background: transparent;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-info:hover,
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-info[aria-expanded="true"] { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .git-history-tools {
+  display: flex;
+  gap: 6px;
+  margin: 4px 2px 0;
+  padding: 0;
+  border: 0;
+  color: var(--muted-2);
+  background: transparent;
+  font-size: 12px;
+}
+.app-shell[data-theme][data-color-scheme] .git-history-tools .thread-pr-inline-button { padding: 0; font-size: 12px; }
+
+/* ---- Checkpoints ---- */
+.app-shell[data-theme][data-color-scheme] .checkpoint-card-head { grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-card-head time { color: var(--muted-2); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; padding-top: 2px; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-counts { font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-meta { display: flex; flex-wrap: wrap; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-branch { font-family: var(--font-mono); font-size: 10.5px; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-actions { display: flex; flex-wrap: wrap; align-items: center; padding-left: 26px; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-actions .app-action-trigger {
+  min-height: 26px;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+}
+.app-shell[data-theme][data-color-scheme] .checkpoint-actions .app-action-trigger > svg { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-actions .app-action-trigger:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-actions .app-action-trigger.compact { width: 26px; padding: 0; justify-content: center; margin-left: auto; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-unchanged-toggle {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 4px;
+  border: 0;
+  color: var(--muted-2);
+  background: transparent;
+  font-size: 12px;
+  text-align: center;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .checkpoint-unchanged-toggle:hover { color: var(--text); }
+
+/* ---- Menus in the dock: destructive items sit apart, at the end ---- */
+.app-shell[data-theme][data-color-scheme] .studio-dock .app-action-list > button:not(.danger-action) + .danger-action { margin-top: 5px; }
+.app-shell[data-theme][data-color-scheme] .studio-dock .app-action-list > button:not(.danger-action) + .danger-action::before {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: 8px;
+  right: 8px;
+  height: 1px;
+  background: var(--line);
+}
+.app-shell[data-theme][data-color-scheme] .studio-dock .app-action-list > .danger-action { position: relative; }
+
+/* ---- Agents ---- */
+.app-shell[data-theme][data-color-scheme] .studio-list-row .studio-row-detail { color: var(--muted-2); font-size: 11px; }
+
+/* ---- Usage ---- */
+.app-shell[data-theme][data-color-scheme] .thread-usage-meta { display: flex; align-items: center; gap: 6px; margin: 2px 0 0; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .thread-usage-meta > svg { flex: 0 0 auto; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .thread-usage-attachments-line { margin: 4px 2px 0; }
+.app-shell[data-theme][data-color-scheme] .thread-usage-totals { margin: 2px 0 6px; }
+.app-shell[data-theme][data-color-scheme] .thread-usage-totals > summary { display: flex; align-items: center; }
+.app-shell[data-theme][data-color-scheme] .thread-usage-summary-value { margin-left: auto; color: var(--ink-2); font-weight: 500; font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .thread-usage-subhead { margin: 10px 0 4px; color: var(--muted); font-size: 11.5px; font-weight: 600; }
+
+/* ---- Files: the preview takes room only once a file is open ---- */
+.app-shell[data-theme][data-color-scheme] .file-browser-body { grid-template-rows: minmax(0, 1fr); }
+.app-shell[data-theme][data-color-scheme] .file-browser-body.has-preview { grid-template-rows: minmax(120px, 40%) minmax(0, 1fr); }
+.app-shell[data-theme][data-color-scheme] .file-preview-bar { gap: 4px; }
+.app-shell[data-theme][data-color-scheme] .file-preview-bar > span { flex: 1 1 auto; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .file-preview-close {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .file-preview-close:hover { color: var(--text); background: var(--lm-hover); }
+
+/* Round 2 fixes after the first look. */
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-row { flex-wrap: nowrap; }
+.app-shell[data-theme][data-color-scheme] .git-auto-publish-row .git-auto-publish-toggle { flex: 1 1 0; }
+.app-shell[data-theme][data-color-scheme] .git-history-tools { align-items: flex-start; line-height: 1.5; }
+.app-shell[data-theme][data-color-scheme] .git-history-tools > svg { margin-top: 3px; flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .git-history-tools .thread-pr-inline-button { min-height: 0; border: 0; color: var(--ink-2); background: transparent; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 2px; }
+.app-shell[data-theme][data-color-scheme] .git-history-tools .thread-pr-inline-button:hover { color: var(--text); text-decoration-color: currentColor; }
+/* Full-diff file headers: the same quiet discard as the Files list. */
+.app-shell[data-theme][data-color-scheme] .studio-dock .diff-file-actions .danger-action { transition: opacity var(--t-fast) ease; }
+.app-shell[data-theme][data-color-scheme] .studio-dock .diff-file > summary:hover .danger-action { opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .studio-dock .diff-file > summary:focus-within .danger-action { opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .studio-dock .diff-file-actions .danger-action:focus { opacity: 1; }
+@media (hover: none) {
+  .app-shell[data-theme][data-color-scheme] .studio-dock .diff-file-actions .danger-action { opacity: 1; }
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-field .git-commit-message { resize: none; }
+.app-shell[data-theme][data-color-scheme] .thread-usage-totals > summary { width: 100%; font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .thread-usage-totals { padding: 8px 2px 0; }
+.app-shell[data-theme][data-color-scheme] .thread-usage-totals dl > div { grid-template-columns: minmax(0, 1fr) auto; }
+.app-shell[data-theme][data-color-scheme] .thread-usage-totals dd { text-align: right; font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .file-browser-body:not(.has-preview) .file-results { align-self: start; max-height: 100%; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-card:last-of-type { border-bottom-width: 1px; border-bottom-left-radius: var(--r-lg); border-bottom-right-radius: var(--r-lg); }
+.app-shell[data-theme][data-color-scheme] .studio-panel-meta + .checkpoint-list { margin-top: 0; }
+/* Stage and discard keep fixed columns, so rows without a discard (new files) line up. */
+.app-shell[data-theme][data-color-scheme] .git-change-line { grid-template-columns: minmax(0, 1fr) 24px 24px; }
+.app-shell[data-theme][data-color-scheme] .git-change-line > .git-row-action:not(.danger) { grid-column: 2; }
+.app-shell[data-theme][data-color-scheme] .git-change-line > .git-row-action.danger { grid-column: 3; }
+.app-shell[data-theme][data-color-scheme] .git-commit-field .git-commit-message,
+.app-shell[data-theme][data-color-scheme] .git-commit-field .git-commit-message:focus { min-height: 46px; height: auto; max-height: 160px; line-height: 1.45; field-sizing: content; }
+
+/* Diff rows: the name takes the free width, so +/− and Stage sit together on the right. */
+.app-shell[data-theme][data-color-scheme] .diff-file summary code { flex: 1 1 auto; min-width: 0; }
+
+/* A narrow dock drops the "Updated …" stamp instead of cutting it to "Updated just …". */
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar { container-type: inline-size; }
+@container (max-width: 270px) {
+  .app-shell[data-theme][data-color-scheme] .git-changes-toolbar .git-updated-at { visibility: hidden; }
+}
+
+/* ==========================================================================
+   Round 3 (review loop): one Changes toolbar, Diff rows that lead with the
+   file name, a quiet commit bar, checkpoint and usage tidy-ups.
+   ========================================================================== */
+
+/* ---- Changes toolbar: Files | Diff, checks, then the "…" menu ---- */
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar { flex-wrap: wrap; }
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar .git-changes-mode > button { min-width: 0; gap: 6px; padding: 0 9px; }
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar { gap: 6px; }
+/* The checks control joins this row; its result and discovery cards wrap to a
+   full-width line of their own at the end. */
+.app-shell[data-theme][data-color-scheme] .git-changes-extra { display: contents; }
+.app-shell[data-theme][data-color-scheme] .git-changes-extra .checks-split > button { min-height: 28px; }
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar .checks-reveal { flex: 1 0 100%; order: 5; }
+.app-shell[data-theme][data-color-scheme] .git-changes-spacer { flex: 1 1 0; min-width: 0; order: 1; }
+/* Checks is secondary to the Files / Diff switch: it sits at the end of the
+   row, and before a command is saved it is a quiet text action (O7). */
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar .checks-split { order: 2; }
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar .checks-split.quiet > .checks-edit { display: none; }
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar .checks-split.quiet > .checks-run {
+  border-color: transparent;
+  color: var(--muted);
+  background: transparent;
+  font-weight: 500;
+}
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar .checks-split.quiet > .checks-run > svg { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar .checks-split.quiet > .checks-run:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
+
+/* ---- Diff: summary and scope on one line ---- */
+.app-shell[data-theme][data-color-scheme] .diff-scope-line { display: flex; align-items: center; gap: 8px; min-height: 26px; margin: 0 0 8px 2px; }
+.app-shell[data-theme][data-color-scheme] .diff-scope-line .diff-summary-meta { flex: 1 1 auto; min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .diff-scope-static { flex: 0 0 auto; color: var(--muted-2); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .diff-scope-menu .app-action-trigger { min-height: 26px; padding: 0 8px; border: 0; border-radius: var(--r-control); color: var(--ink-2); background: var(--lm-hover); font-size: 12px; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .diff-scope-menu .app-action-trigger:hover:not(:disabled) { color: var(--text); background: var(--lm-press); }
+
+/* ---- Diff rows: name first, folder under it, +/− and actions in fixed columns ---- */
+.app-shell[data-theme][data-color-scheme] .diff-file { overflow: clip; }
+.app-shell[data-theme][data-color-scheme] .diff-file-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  padding: 3px 6px 3px 0;
+}
+.app-shell[data-theme][data-color-scheme] .diff-file.open > .diff-file-head { border-bottom: 1px solid var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .diff-file-toggle {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 6px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 3px 6px 3px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .diff-file-toggle:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .diff-file-chevron { grid-row: 1 / span 2; color: var(--muted-2); transition: transform 160ms var(--ease); }
+.app-shell[data-theme][data-color-scheme] .diff-file.open .diff-file-chevron { transform: rotate(90deg); color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .diff-file-name { grid-column: 2; min-width: 0; overflow: hidden; color: var(--text); font: 500 12px/1.35 var(--font-mono); white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .diff-file-dir { grid-column: 2; min-width: 0; overflow: hidden; color: var(--muted-2); font: 11px/1.35 var(--font-mono); white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.app-shell[data-theme][data-color-scheme] .diff-file-stats { display: flex; justify-content: flex-end; gap: 5px; min-width: 40px; padding-left: 4px; font: 500 11.5px/1 var(--font-sans); font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .diff-file-stats em { font-style: normal; }
+.app-shell[data-theme][data-color-scheme] .diff-file-stats em.new { padding: 2px 6px; border-radius: var(--r-chip); color: var(--muted); background: var(--lm-press); font-size: 11px; }
+/* Stage/Unstage and Revert: the same two 24px icon columns as the Files list. */
+.app-shell[data-theme][data-color-scheme] .diff-file-actions { display: grid; grid-template-columns: 24px 24px; align-items: center; gap: 0; margin: 0; }
+.app-shell[data-theme][data-color-scheme] .diff-file-actions > button { width: 24px; padding: 0; justify-content: center; color: var(--muted); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .diff-file-actions > button:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .diff-file-actions > button.staged { color: var(--info); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .diff-file-actions > em { grid-column: 1 / -1; }
+.app-shell[data-theme][data-color-scheme] .diff-line-file-header { display: none; }
+.app-shell[data-theme][data-color-scheme] .diff-file-action-slot { width: 24px; }
+.app-shell[data-theme][data-color-scheme] .studio-dock .diff-file-actions .danger-action { opacity: 1; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .studio-dock .diff-file-actions .danger-action:hover:not(:disabled) { color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .diff-file-body .diff-view { border-top: 0; }
+.app-shell[data-theme][data-color-scheme] .diff-file-body .diff-view:focus-visible { outline: 1.5px solid var(--accent-line); outline-offset: -2px; }
+.app-shell[data-theme][data-color-scheme] .diff-file-note { display: flex; align-items: center; gap: 6px; margin: 0; padding: 10px 12px; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .diff-file-note.bad { color: var(--red); }
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-theme][data-color-scheme] .diff-file-chevron { transition: none; }
+}
+
+/* ---- Commit bar: a quiet, right-aligned primary; "what it includes" beside it ---- */
+.app-shell[data-theme][data-color-scheme] .git-commit-card.git-commit-bar { grid-template-columns: minmax(0, 1fr) auto; grid-auto-flow: row dense; align-items: center; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar > * { grid-column: 1 / -1; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar > .git-commit-actions { grid-column: 2; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar > .git-commit-includes { grid-column: 1; align-self: center; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar > .git-commit-includes[open] { grid-column: 1 / -1; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar .git-commit-actions { gap: 0; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar .git-commit-actions .git-commit-button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--accent-line);
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+  background: var(--accent-soft);
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-bar .git-commit-actions .git-commit-button:hover:not(:disabled) {
+  color: color-mix(in srgb, var(--accent) 70%, var(--text));
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  filter: none;
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-bar .git-commit-actions .git-commit-button:disabled { color: var(--muted); border-color: var(--line); background: transparent; filter: none; opacity: .6; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar .git-commit-more .app-action-trigger {
+  width: 28px;
+  border: 1px solid var(--accent-line);
+  border-left-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+  background: var(--accent-soft);
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-bar .git-commit-more .app-action-trigger:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--accent) 20%, transparent); filter: none; }
+.app-shell[data-theme][data-color-scheme="light"] .git-commit-bar .git-commit-actions .git-commit-button,
+.app-shell[data-theme][data-color-scheme="light"] .git-commit-bar .git-commit-more .app-action-trigger { color: color-mix(in srgb, var(--accent) 62%, var(--text)); }
+
+/* ---- Checkpoints, Skills: a section heading with its scope or link beside it ---- */
+.app-shell[data-theme][data-color-scheme] .checkpoint-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; margin: 0 0 6px; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-section-head > .panel-label { margin: 0; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-section-head > .studio-panel-meta { min-width: 0; margin: 0; overflow: hidden; color: var(--muted-2); white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-card-head strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* ---- Usage: Compact context with the thread's automatic compaction ---- */
+.app-shell[data-theme][data-color-scheme] .usage-context-controls { display: grid; gap: 8px; margin: 0 0 12px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .usage-compact-now { justify-self: start; display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; border: 0; border-radius: var(--r-control); color: var(--ink-2); background: var(--lm-hover); font: 500 var(--fs-ui) var(--font-sans); cursor: pointer; }
+.app-shell[data-theme][data-color-scheme] .usage-compact-now > svg { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .usage-compact-now:hover:not(:disabled) { color: var(--text); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .usage-compact-now:disabled { opacity: .45; cursor: default; }
+.app-shell[data-theme][data-color-scheme] .thread-compaction { display: grid; gap: 8px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .thread-compaction-head { display: flex; align-items: start; justify-content: space-between; gap: 10px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .thread-compaction-head .usage-compact-now { flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .thread-compaction-field { min-width: 0; margin: 0; padding: 0; border: 0; }
+.app-shell[data-theme][data-color-scheme] .thread-compaction-field:disabled { opacity: .6; }
+.app-shell[data-theme][data-color-scheme] .thread-compaction-copy { display: grid; gap: 2px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .thread-compaction-copy strong { color: var(--ink-2); font-size: 12.5px; font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .thread-compaction-copy small { color: var(--muted); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .thread-compaction-issue { display: flex; align-items: start; gap: 6px; margin: 6px 0 0; color: var(--amber); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .thread-compaction-issue > svg { margin-top: 2px; flex: 0 0 auto; }
+
+/* ---- Git: repository, branch and status each on their own line ---- */
+.app-shell[data-theme][data-color-scheme] .git-checkout-branch { grid-template-columns: minmax(0, 1fr); }
+.app-shell[data-theme][data-color-scheme] .git-folder-label { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .git-folder-label.isolated { color: var(--info); }
+.app-shell[data-theme][data-color-scheme] .git-remote-actions button > b { margin-left: 2px; padding: 0 5px; border-radius: var(--r-chip); color: var(--accent); background: var(--accent-soft); font-size: 11px; font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .git-history-list > li { grid-template-columns: minmax(0, 1fr); }
+.app-shell[data-theme][data-color-scheme] .git-history-list small .git-history-oid { color: var(--muted-2); font: 10.5px var(--font-mono); }
+.app-shell[data-theme][data-color-scheme] .studio-header-slot { display: contents; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar .git-commit-includes > summary { white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .diff-scope-menu .app-action-list { width: min(300px, calc(100vw - 24px)); }
+.app-shell[data-theme][data-color-scheme] .diff-scope-icon-slot { display: inline-block; width: 13px; height: 13px; flex: 0 0 auto; }
+/* A narrow dock stacks "What's included" under the commit button instead of beside it. */
+.app-shell[data-theme][data-color-scheme] .git-commit-card.git-commit-bar { container: commit-bar / inline-size; }
+@container commit-bar (max-width: 300px) {
+  .app-shell[data-theme][data-color-scheme] .git-commit-bar > .git-commit-actions { grid-column: 1 / -1; justify-content: flex-end; }
+  .app-shell[data-theme][data-color-scheme] .git-commit-bar > .git-commit-includes { grid-column: 1 / -1; }
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-publish { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--muted); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .git-commit-publish > svg { flex: 0 0 auto; color: var(--accent); }
+
+/* ==========================================================================
+   Round 4: the diff viewer, the Changes footer and wide review.
+   ========================================================================== */
+
+/* ---- Diff rows: gutter | sign | code ----
+   Each line is a grid row of the <pre>. Numbers come from data attributes
+   (::before old, ::after new), so they are never selected or copied. Without
+   wrapping every row is as wide as the longest line and the pre scrolls
+   sideways while the gutter stays put. */
+.app-shell[data-theme][data-color-scheme] .diff-body { position: relative; }
+.app-shell[data-theme][data-color-scheme] .diff-view.numbered {
+  --diff-gutter-col: calc(var(--diff-digits, 3) * 1ch + 9px);
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
+  align-content: start;
+  padding: 4px 0;
+  overflow-x: auto;
+  font: 11.5px/1.6 var(--font-mono);
+  white-space: pre;
+  tab-size: 4;
+}
+.app-shell[data-theme][data-color-scheme] .diff-view.numbered.wrap { grid-template-columns: minmax(0, 1fr); overflow-x: hidden; }
+.app-shell[data-theme][data-color-scheme] .diff-row { display: flex; min-width: 0; color: var(--lm-code-ink); }
+.app-shell[data-theme][data-color-scheme] .diff-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex: 0 0 auto;
+  width: calc(var(--diff-gutter-col) * 2);
+  border-right: 1px solid var(--line-quiet);
+  color: var(--diff-gutter-ink);
+  background: var(--lm-code-bg);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.app-shell[data-theme][data-color-scheme] .diff-gutter::before,
+.app-shell[data-theme][data-color-scheme] .diff-gutter::after {
+  flex: 0 0 var(--diff-gutter-col);
+  box-sizing: border-box;
+  padding-right: 5px;
+  text-align: right;
+}
+.app-shell[data-theme][data-color-scheme] .diff-gutter::before { content: attr(data-old); }
+.app-shell[data-theme][data-color-scheme] .diff-gutter::after { content: attr(data-new); }
+.app-shell[data-theme][data-color-scheme] .diff-code { flex: 1 0 auto; padding: 0 14px 0 6px; }
+.app-shell[data-theme][data-color-scheme] .diff-sign { display: inline-block; width: 1ch; color: var(--muted-2); user-select: none; -webkit-user-select: none; }
+/* Wrapped lines hang under their own code, never under the sign. */
+.app-shell[data-theme][data-color-scheme] .diff-view.numbered.wrap .diff-code {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: calc(6px + 1ch);
+  text-indent: -1ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Added and removed lines: the tint across the row, a 2px mark on the gutter's edge. */
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-add { color: var(--lm-code-ink); background: var(--diff-add-bg); }
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-del { color: var(--lm-code-ink); background: var(--diff-del-bg); }
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-add > .diff-gutter {
+  background: linear-gradient(color-mix(in srgb, var(--diff-add-bg) 55%, transparent), color-mix(in srgb, var(--diff-add-bg) 55%, transparent)), var(--lm-code-bg);
+  box-shadow: inset 2px 0 0 var(--diff-add-mark);
+}
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-del > .diff-gutter {
+  background: linear-gradient(color-mix(in srgb, var(--diff-del-bg) 55%, transparent), color-mix(in srgb, var(--diff-del-bg) 55%, transparent)), var(--lm-code-bg);
+  box-shadow: inset 2px 0 0 var(--diff-del-mark);
+}
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-add .diff-sign { color: var(--diff-add-mark); }
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-del .diff-sign { color: var(--diff-del-mark); }
+/* Hunk headers read as quiet separators; meta lines (several files) stay muted. */
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-hunk { color: var(--muted); background: var(--diff-hunk-bg); }
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-hunk > .diff-gutter { background: linear-gradient(var(--diff-hunk-bg), var(--diff-hunk-bg)), var(--lm-code-bg); }
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-hunk > .diff-code { padding-top: 2px; padding-bottom: 2px; font-size: 11px; }
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-meta,
+.app-shell[data-theme][data-color-scheme] .diff-row.diff-line-note { color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .diff-line-end { display: none; }
+/* The rows the keyboard cursor covers (only while the diff has focus). */
+.app-shell[data-theme][data-color-scheme] .diff-row.cursor > .diff-code { background: var(--accent-soft); }
+.app-shell[data-theme][data-color-scheme] .diff-row.cursor > .diff-gutter { box-shadow: inset 2px 0 0 var(--accent); color: var(--text); }
+
+/* Inside a file card the diff flows with the panel (one vertical scroller). */
+.app-shell[data-theme][data-color-scheme] .diff-file-body .diff-view.numbered { min-height: 0; max-height: none; border: 0; border-radius: 0; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-preview .diff-view.numbered,
+.app-shell[data-theme][data-color-scheme] .git-change-preview .diff-view.numbered { min-height: 0; max-height: 420px; overflow: auto; }
+
+/* ---- Line feedback: one gutter button follows the pointer or the keyboard cursor ---- */
+.app-shell[data-theme][data-color-scheme] .diff-line-comment {
+  position: absolute;
+  left: 3px;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  /* An outlined chip in the text accent (AA on every theme's panel), not
+     the solid fill: a dark glyph on the light theme's sky fill read weakly
+     at this size. */
+  color: var(--accent);
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--accent-line), var(--lm-chip-shadow);
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .diff-line-comment:hover { background: var(--accent-soft); }
+.app-shell[data-theme][data-color-scheme] .diff-keyboard-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 5px 10px;
+  border-top: 1px solid var(--line-quiet);
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.app-shell[data-theme][data-color-scheme] .diff-keyboard-hint[hidden] { display: none; }
+/* Each key stays on the same line as what it does. */
+.app-shell[data-theme][data-color-scheme] .diff-keyboard-hint > span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .diff-keyboard-hint kbd {
+  min-width: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink-2);
+  background: var(--lm-hover);
+  font: 500 10.5px/16px var(--font-sans);
+  text-align: center;
+}
+
+/* ---- Syntax colours (shared with code blocks in the conversation) ---- */
+.app-shell[data-theme][data-color-scheme] .syn-keyword { color: var(--syntax-keyword); }
+.app-shell[data-theme][data-color-scheme] .syn-string { color: var(--syntax-string); }
+.app-shell[data-theme][data-color-scheme] .syn-comment { color: var(--syntax-comment); font-style: italic; }
+.app-shell[data-theme][data-color-scheme] .syn-number,
+.app-shell[data-theme][data-color-scheme] .syn-constant { color: var(--syntax-number); }
+.app-shell[data-theme][data-color-scheme] .syn-function { color: var(--syntax-function); }
+.app-shell[data-theme][data-color-scheme] .syn-type,
+.app-shell[data-theme][data-color-scheme] .syn-tag { color: var(--syntax-type); }
+.app-shell[data-theme][data-color-scheme] .syn-attr { color: var(--syntax-attr); }
+.app-shell[data-theme][data-color-scheme] .syn-property { color: var(--syntax-property); }
+.app-shell[data-theme][data-color-scheme] .syn-punct { color: var(--syntax-punct); }
+.app-shell[data-theme][data-color-scheme] .syn-operator { color: var(--syntax-operator); }
+.app-shell[data-theme][data-color-scheme] .syn-heading { color: var(--syntax-heading); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .syn-meta { color: var(--syntax-comment); }
+.app-shell[data-theme][data-color-scheme] .syn-inserted { color: var(--diff-add-ink); }
+.app-shell[data-theme][data-color-scheme] .syn-deleted { color: var(--diff-del-ink); }
+
+/* ---- One colour for every +N / −N (Files, Diff, Checkpoints) ---- */
+.app-shell[data-theme][data-color-scheme] .git-change-counts ins,
+.app-shell[data-theme][data-color-scheme] .checkpoint-counts ins,
+.app-shell[data-theme][data-color-scheme] .diff-file-stats em.added { color: var(--diff-add-mark); }
+.app-shell[data-theme][data-color-scheme] .git-change-counts del,
+.app-shell[data-theme][data-color-scheme] .checkpoint-counts del,
+.app-shell[data-theme][data-color-scheme] .diff-file-stats em.removed { color: var(--diff-del-mark); }
+
+/* ---- Diff file rows: "Current edits", read-only comparison rows, quiet discard ---- */
+.app-shell[data-theme][data-color-scheme] .diff-file-sub { grid-column: 2; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .diff-file-sub > .diff-file-dir { flex: 0 1 auto; }
+.app-shell[data-theme][data-color-scheme] .diff-file-live {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--r-chip);
+  color: var(--info);
+  background: var(--dock-info-soft);
+  font: 500 10.5px/16px var(--font-sans);
+  font-style: normal;
+  white-space: nowrap;
+}
+/* Discard shows on hover or focus of its row, like the Files list. */
+.app-shell[data-theme][data-color-scheme] .studio-dock .diff-file-actions .danger-action { opacity: 0; transition: opacity var(--t-fast) ease, color var(--t-fast) ease; }
+.app-shell[data-theme][data-color-scheme] .studio-dock .diff-file-head:hover .danger-action { opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .studio-dock .diff-file-head:focus-within .danger-action { opacity: 1; }
+@media (hover: none) {
+  .app-shell[data-theme][data-color-scheme] .studio-dock .diff-file-actions .danger-action { opacity: 1; }
+}
+
+/* ---- Diff header line: summary, wide review, scope ---- */
+.app-shell[data-theme][data-color-scheme] .diff-wide-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: transparent;
+  font: 500 12px var(--font-sans);
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .diff-wide-toggle > svg { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .diff-wide-toggle:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .diff-wide-toggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.app-shell[data-theme][data-color-scheme] .diff-wide-toggle[aria-pressed="true"] > svg { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .diff-wrap-toggle {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .diff-wrap-toggle:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .diff-wrap-toggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.app-shell[data-theme][data-color-scheme] .diff-scope-line { container: diff-scope / inline-size; }
+@container diff-scope (max-width: 340px) {
+  .app-shell[data-theme][data-color-scheme] .diff-summary-new { display: none; }
+}
+@container diff-scope (max-width: 270px) {
+  .app-shell[data-theme][data-color-scheme] .diff-wide-toggle > span { display: none; }
+}
+
+/* ---- A file linked from the conversation ---- */
+.app-shell[data-theme][data-color-scheme] .diff-link-missing {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .diff-link-missing:focus { outline: none; border-color: var(--accent-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .diff-link-missing-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .diff-link-missing-head > svg { margin-top: 1px; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .diff-link-missing-head > div { display: grid; gap: 1px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .diff-link-missing-head strong { color: var(--text); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .diff-link-missing-head small { overflow: hidden; color: var(--muted); font: 11px var(--font-mono); white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .diff-link-missing > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.app-shell[data-theme][data-color-scheme] .diff-link-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .diff-link-missing-actions > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: var(--lm-hover);
+  font: 500 12px var(--font-sans);
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .diff-link-missing-actions > button:hover { color: var(--text); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .diff-link-missing-actions > button > svg { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .diff-link-note {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 7px;
+  margin: 0 0 8px;
+  padding: 7px 8px 7px 10px;
+  border-radius: var(--r-md);
+  color: var(--muted);
+  background: var(--dock-info-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.app-shell[data-theme][data-color-scheme] .diff-link-note > svg { margin-top: 2px; color: var(--info); }
+.app-shell[data-theme][data-color-scheme] .diff-link-note strong { color: var(--text); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .diff-link-dismiss { width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-control); color: var(--muted); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .diff-link-dismiss:hover { color: var(--text); background: var(--lm-hover); }
+
+/* ---- Changes: header, scrolling body, footer ----
+   The panel is a column: the header and toolbar stay, the list or diff
+   scrolls, and the commit bar is a real footer — the same place whether there
+   is one file or a hundred. */
+.app-shell[data-theme][data-color-scheme] .studio-panel.changes-fill { padding-bottom: 0; overflow: hidden; }
+.app-shell[data-theme][data-color-scheme] .studio-panel.changes-fill > .git-workspace { flex: 1 1 auto; min-height: 0; }
+.app-shell[data-theme][data-color-scheme] .git-workspace.changes-surface { display: flex; flex-direction: column; gap: 0; }
+.app-shell[data-theme][data-color-scheme] .git-workspace.changes-surface > * { flex: none; }
+.app-shell[data-theme][data-color-scheme] .git-workspace.changes-surface > .git-changes-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0 -14px;
+  padding: 0 14px 14px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.app-shell[data-theme][data-color-scheme] .git-workspace.changes-surface > .git-commit-card.git-commit-bar {
+  position: static;
+  margin: 0 -14px;
+  padding: 10px 14px 12px;
+}
+/* At rest the bar is one line: message field and the commit button. */
+.app-shell[data-theme][data-color-scheme] .git-commit-card.git-commit-bar.collapsed { gap: 6px 8px; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar.collapsed > .git-commit-field { grid-column: 1; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar.collapsed > .git-commit-actions { grid-column: 2; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar.collapsed .git-commit-field .git-commit-message,
+.app-shell[data-theme][data-color-scheme] .git-commit-bar.collapsed .git-commit-field .git-commit-message:focus {
+  min-height: 30px;
+  height: 30px;
+  max-height: 30px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  overflow: hidden;
+  line-height: 18px;
+  white-space: pre;
+  text-overflow: ellipsis;
+  field-sizing: fixed;
+}
+@container commit-bar (max-width: 300px) {
+  .app-shell[data-theme][data-color-scheme] .git-commit-bar.collapsed > .git-commit-actions { grid-column: 2; }
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-context { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.app-shell[data-theme][data-color-scheme] .git-commit-context strong { color: var(--ink-2); font-weight: 600; }
+
+/* ---- Checkpoints: the restore point and thread lead; the run's prompt is
+   a two-line excerpt under them, shown in full while the card has focus ---- */
+.app-shell[data-theme][data-color-scheme] .checkpoint-card-head .checkpoint-thread { color: var(--muted); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-card-head .checkpoint-excerpt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.app-shell[data-theme][data-color-scheme] .checkpoint-card:focus-within .checkpoint-card-head .checkpoint-excerpt { -webkit-line-clamp: unset; line-clamp: none; }
+
+/* ---- Header icon buttons: their name as a visible tooltip ---- */
+.app-shell[data-theme][data-color-scheme] .studio-header-action[data-tip],
+.app-shell[data-theme][data-color-scheme] .diff-link-dismiss[data-tip] { position: relative; }
+.app-shell[data-theme][data-color-scheme] .studio-header-action[data-tip]::after,
+.app-shell[data-theme][data-color-scheme] .diff-link-dismiss[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: var(--z-popover, 50);
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: var(--menu-surface);
+  box-shadow: var(--lm-pop-shadow);
+  font: 500 11.5px/1.3 var(--font-sans);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) ease 0s;
+}
+.app-shell[data-theme][data-color-scheme] .studio-header-action[data-tip]:hover::after,
+.app-shell[data-theme][data-color-scheme] .diff-link-dismiss[data-tip]:hover::after { opacity: 1; transition-delay: .35s; }
+.app-shell[data-theme][data-color-scheme] .studio-header-action[data-tip]:focus-visible::after { opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .diff-link-dismiss[data-tip]:focus-visible::after { opacity: 1; }
+
+/* ---- Resize edge: a grip shows where to drag ---- */
+.app-shell[data-theme][data-color-scheme] .studio-dock > .dock-resize::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 3px;
+  height: 32px;
+  margin-top: -16px;
+  border-radius: 2px;
+  background: var(--line-strong);
+  opacity: 0;
+  transition: opacity var(--t-fast) ease;
+}
+.app-shell[data-theme][data-color-scheme] .studio-dock:hover > .dock-resize::before { opacity: .9; }
+.app-shell[data-theme][data-color-scheme] .studio-dock > .dock-resize:hover::before { background: var(--accent); opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .studio-dock > .dock-resize:focus-visible::before { background: var(--accent); opacity: 1; }
+
+/* ---- Wide review: a drawer below the top bar while reading a diff (O3/B01) ----
+   The drawer starts under the top bar (StudioDock measures the bar's real
+   bottom into --review-top, since the bar can wrap onto two rows), so the
+   run status, Run, Search and the Tools panel toggle stay visible and usable.
+   It runs to the window's right edge and leaves a 240px strip of the
+   conversation on its left (--review-left is where the chat column starts),
+   capped at 1180px wide. The covered conversation and composer are inert
+   (App), keep their width (--review-slot, the dock's usual column, so
+   nothing reflows underneath) and sit under a dimmed strip that returns the
+   Tools to its usual width when clicked. */
+.app-shell[data-theme][data-color-scheme] .studio-dock.open.review-wide {
+  position: fixed;
+  z-index: var(--z-drawer);
+  top: var(--review-top, var(--topbar-h));
+  right: 0;
+  bottom: 0;
+  left: calc(var(--review-left, 0px) + 240px);
+  flex-basis: auto;
+  width: auto;
+  min-width: min(var(--dock-width, 430px), 100%);
+  max-width: 1180px;
+  margin: 0 0 0 auto;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line-strong);
+  border-top-left-radius: var(--r-lg);
+  box-shadow: var(--lm-drawer-shadow);
+  transform: none;
+  opacity: 1;
+}
+.app-shell[data-theme][data-color-scheme] .review-wide-scrim {
+  position: fixed;
+  z-index: calc(var(--z-drawer) - 1);
+  top: var(--review-top, var(--topbar-h));
+  right: 0;
+  bottom: 0;
+  left: var(--review-left, 0px);
+  background: var(--scrim);
+}
+.app-shell[data-theme][data-color-scheme] .main-panel[data-review-wide] .conversation,
+.app-shell[data-theme][data-color-scheme] .main-panel[data-review-wide] .composer-zone { margin-right: var(--review-slot, 0px); }
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .studio-dock.open.review-wide { animation: review-wide-in var(--lm-d-2) var(--lm-ease-out); }
+  .app-shell[data-theme][data-color-scheme] .review-wide-scrim { animation: review-scrim-in var(--lm-d-2) ease; }
+}
+@keyframes review-wide-in { from { opacity: .6; transform: translateX(24px); } to { opacity: 1; transform: none; } }
+@keyframes review-scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-theme][data-color-scheme] .studio-dock .diff-file-actions .danger-action,
+  .app-shell[data-theme][data-color-scheme] .studio-header-action[data-tip]::after,
+  .app-shell[data-theme][data-color-scheme] .studio-dock > .dock-resize::before { transition: none; }
+}
+/* The "opened from the conversation" note stays in view above the file it names. */
+.app-shell[data-theme][data-color-scheme] .git-changes-scroll > .diff-link-note {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: linear-gradient(var(--dock-info-soft), var(--dock-info-soft)), var(--sidebar);
+}
+.app-shell[data-theme][data-color-scheme] .git-changes-scroll .diff-file { scroll-margin-top: 64px; }
+
+/* Terminal: the link strip keeps its fixed row (so the PTY never resizes on
+   hover), but while it has nothing to say it reads as part of the screen. */
+.app-shell[data-theme][data-color-scheme] .terminal-link-strip:empty { border-top-color: transparent; }
+
+/* ---- Changes: honest read states (B02) ---- */
+.app-shell[data-theme][data-color-scheme] .diff-read-error { display: grid; gap: 8px; margin: 0 0 10px; }
+.app-shell[data-theme][data-color-scheme] .diff-read-error .git-friendly-error { margin: 0; }
+.app-shell[data-theme][data-color-scheme] .diff-read-error-note { margin: 0 2px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.app-shell[data-theme][data-color-scheme] .dock-note .dock-note-link {
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--accent);
+  background: none;
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .dock-note .dock-note-link:hover { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .dock-note .dock-note-link:focus-visible { outline: none; border-radius: 3px; box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .dock-note strong { color: var(--text); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .diff-scope-line + .dock-note,
+.app-shell[data-theme][data-color-scheme] .dock-note + .dock-note { margin-bottom: 8px; }
+.app-shell[data-theme][data-color-scheme] .diff-file-note.bad { align-items: flex-start; justify-content: space-between; gap: 10px; color: color-mix(in srgb, var(--red) 70%, var(--text)); }
+.app-shell[data-theme][data-color-scheme] .diff-file-note.bad strong { color: var(--text); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .diff-file-note.bad > button { flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .diff-file-note.warn { color: var(--ink-2); background: var(--dock-orange-soft); }
+.app-shell[data-theme][data-color-scheme] .diff-file-note.warn strong { color: var(--text); font-weight: 600; }
+
+/* ---- Since last push: the footer never offers a commit of another set (O4/B03) ---- */
+.app-shell[data-theme][data-color-scheme] .git-workspace.changes-surface > .git-comparison-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 0 -14px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--sidebar);
+}
+.app-shell[data-theme][data-color-scheme] .git-comparison-footer > p { flex: 1 1 200px; min-width: 0; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.app-shell[data-theme][data-color-scheme] .git-comparison-footer > p strong { color: var(--ink-2); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .git-comparison-footer > button { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 12px; white-space: nowrap; }
+
+/* ==========================================================================
+   Round 6 (R6-1): Tools dock and review
+   ========================================================================== */
+
+/* ---- Long diff lines: an edge cue, a visible scrollbar and Wrap beside them (Sol B05, Opus I6) ----
+   Only a file whose lines are actually wider than the panel shows any of it.
+   The fade sits over the code's right edge while more code is to the right
+   and goes once the reader has scrolled to the end. */
+.app-shell[data-theme][data-color-scheme] .diff-body.overflows > .diff-view.numbered.nowrap {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+.app-shell[data-theme][data-color-scheme] .diff-body.overflows > .diff-view.numbered.nowrap::-webkit-scrollbar { height: 8px; }
+.app-shell[data-theme][data-color-scheme] .diff-body.overflows > .diff-view.numbered.nowrap::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 6px; background: var(--line-strong) padding-box; }
+.app-shell[data-theme][data-color-scheme] .diff-body.overflows > .diff-view.numbered.nowrap::-webkit-scrollbar-track { background: transparent; }
+.app-shell[data-theme][data-color-scheme] .diff-edge-fade {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  width: 28px;
+  background: linear-gradient(to right, transparent, var(--lm-code-bg));
+  pointer-events: none;
+}
+.app-shell[data-theme][data-color-scheme] .diff-overflow-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  margin: 0;
+  padding: 4px 6px 4px 10px;
+  border-top: 1px solid var(--line-quiet);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+/* Opus R6 D6: files after the first overflowing one keep only the scroll cue. */
+.app-shell[data-theme][data-color-scheme] .diff-overflow-hint.quiet { min-height: 0; padding-block: 3px; }
+.app-shell[data-theme][data-color-scheme] .diff-overflow-hint > span { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .diff-overflow-hint kbd {
+  min-width: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink-2);
+  background: var(--lm-hover);
+  font: 500 10.5px/16px var(--font-sans);
+  text-align: center;
+}
+.app-shell[data-theme][data-color-scheme] .diff-overflow-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: transparent;
+  font: 500 11.5px var(--font-sans);
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .diff-overflow-wrap > svg { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .diff-overflow-wrap:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .diff-overflow-wrap:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* ---- One shape at every width (Opus I7) ----
+   The Files / Diff switch keeps its icons and the summary keeps "· N new"
+   in a narrow dock; only Widen gives way, to an icon (it keeps its name). */
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar .git-changes-mode > button > svg { display: inline-block; flex: 0 0 auto; }
+@container diff-scope (max-width: 340px) {
+  .app-shell[data-theme][data-color-scheme] .diff-summary-new { display: inline; }
+  .app-shell[data-theme][data-color-scheme] .diff-wide-toggle > span { display: none; }
+}
+@container diff-scope (max-width: 250px) {
+  .app-shell[data-theme][data-color-scheme] .diff-summary-new { display: none; }
+}
+.app-shell[data-theme][data-color-scheme] .diff-wide-toggle[aria-disabled="true"] { color: var(--muted-2); cursor: default; }
+.app-shell[data-theme][data-color-scheme] .diff-wide-toggle[aria-disabled="true"] > svg { color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .diff-wide-toggle[aria-disabled="true"]:hover { color: var(--muted-2); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .diff-wrap-toggle:disabled { color: var(--muted-2); opacity: .6; cursor: default; }
+.app-shell[data-theme][data-color-scheme] .diff-wrap-toggle:disabled:hover { background: transparent; }
+
+/* ---- Checks: setup lives in Actions and the Changes "…" menu (Sol M07, Opus O7) ----
+   Changes shows checks once a command is saved or something is running or
+   reporting; the unset control stays mounted (its editor opens from the
+   "…" menu) but takes no room. */
+.app-shell[data-theme][data-color-scheme] .git-changes-toolbar .checks-split.quiet { display: none; }
+
+/* ---- A diff that couldn't be read: recovery first (Sol M01) ---- */
+.app-shell[data-theme][data-color-scheme] .diff-read-error-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 2px; }
+.app-shell[data-theme][data-color-scheme] .diff-read-error-actions > button { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; }
+.app-shell[data-theme][data-color-scheme] .git-commit-bar.diff-unavailable .git-commit-actions .git-commit-button:not(:disabled) {
+  color: var(--ink-2);
+  border-color: var(--line);
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-bar.diff-unavailable .git-commit-more .app-action-trigger { color: var(--ink-2); background: transparent; }
+
+/* ---- What a staged commit records (Sol B01) ---- */
+.app-shell[data-theme][data-color-scheme] .git-commit-target {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-target > span { flex: 1 1 160px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .git-commit-target > button {
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 0 2px;
+  border: 0;
+  color: var(--accent);
+  background: none;
+  font: 500 11.5px var(--font-sans);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-target > button:hover { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .git-commit-target > button:focus-visible { outline: none; border-radius: 3px; box-shadow: var(--ring); }
+
+/* ---- Wide review keeps an unsent note in reach (Sol B04) ---- */
+.app-shell[data-theme][data-color-scheme] .git-workspace.changes-surface > .review-draft-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0 -14px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--accent-line);
+  color: var(--ink-2);
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--sidebar);
+  font-size: 12px;
+}
+.app-shell[data-theme][data-color-scheme] .review-draft-bar > svg { flex: 0 0 auto; color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .review-draft-bar > span { flex: 1 1 160px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .review-draft-bar strong { color: var(--text); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .review-draft-bar > button { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; min-height: 28px; padding: 0 12px; white-space: nowrap; }
+
+/* ---- Wide review leaves a strip of chat sized to the window (Sol B02) ---- */
+.app-shell[data-theme][data-color-scheme] .studio-dock.open.review-wide { left: calc(var(--review-left, 0px) + var(--review-strip, 240px)); }
+
+/* ---- Checkpoints: the thread on its own line (Sol M06) ---- */
+.app-shell[data-theme][data-color-scheme] .checkpoint-card-head .checkpoint-thread-line {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* A narrow dock lets the summary take two short lines rather than cutting
+   "· N new" off: the same parts at every width (Opus I7). */
+@container diff-scope (max-width: 340px) {
+  .app-shell[data-theme][data-color-scheme] .diff-scope-line .diff-summary-meta {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    line-height: 1.35;
+  }
+  .app-shell[data-theme][data-color-scheme] .diff-scope-line .diff-summary-new { white-space: nowrap; }
+}

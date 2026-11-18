@@ -93,12 +93,11 @@ export function ProjectRunControl({
     };
   }, [open]);
 
-  const state = running ? "running" : ready ? "ready" : "not set";
   const title = running
     ? `Stop ${runCommandTitle(run)}`
     : ready
       ? `Run ${run!.setupCommand ? `${run!.setupCommand}, then ` : ""}${run!.command}${terminalBusy ? " (the terminal is busy)" : ""}`
-      : "No run command yet. Click to set one, or ask the assistant.";
+      : "Run isn’t set up yet. Choose the command it starts for this project";
   const draft = command.trim();
   const setupDraft = setup.trim();
 
@@ -106,18 +105,20 @@ export function ProjectRunControl({
     <div className={`project-run-control ${ready ? "ready" : ""} ${running ? "running" : ""}`} ref={rootRef}>
       <button
         type="button"
-        className={`project-run-trigger ${ready ? "ready" : ""} ${running ? "running" : ""}`}
+        className={`project-run-trigger ${ready ? "ready" : ""} ${running ? "running" : ""} ${!ready && !running ? "unset" : ""}`}
         onClick={() => {
           if (running) onStop();
           else if (ready) onRun();
           else setOpen(true);
         }}
-        aria-label={`Run: ${state}`}
+        aria-label={running ? `Stop ${runCommandTitle(run)}` : ready ? `Run ${runCommandTitle(run)}` : "Set up the Run button"}
         title={title}
       >
         {running ? <Square size={12} /> : <Play size={13} />}
+        {/* Unset, it still reads "Run" (muted); choosing it opens the setup
+            editor, the same one its menu arrow opens. */}
         <span>{running ? "Stop" : "Run"}</span>
-        <small>{running ? "Running" : ready ? runCommandTitle(run) : "Not set"}</small>
+        {(running || ready) && <small>{running ? "Running" : runCommandTitle(run)}</small>}
       </button>
       <button
         type="button"

@@ -52,7 +52,7 @@ export const THEMES: Array<{ id: ThemeName; name: string; description: string; s
   { id: "light-mythra", name: "Light Mythra", description: "Paper white with clear sky-cyan accents", swatches: ["#e7e8eb", "#ffffff", "#0a95d4"] },
   { id: "kiwi", name: "Kiwi", description: "Deep graphite with electric green", swatches: ["#212226", "#313237", "#a6df72"] },
   { id: "daylight", name: "Light Kiwi", description: "Paper white with a deep leaf green", swatches: ["#e5e9e1", "#ffffff", "#3a861d"] },
-  { id: "synthwave", name: "Synthwave", description: "Deep graphite with hot neon pink", swatches: ["#212226", "#313237", "#ff6ac1"] },
+  { id: "synthwave", name: "Synthwave", description: "Violet night with hot neon pink", swatches: ["#1e1630", "#33274b", "#ff6ac1"] },
   { id: "atari", name: "Atari", description: "Warm tan with deep brick-red accents", swatches: ["#e2d3b7", "#fbf5e9", "#8e3b32"] },
 ];
 
@@ -68,7 +68,7 @@ export function themeColorScheme(theme: ThemeName): "light" | "dark" {
 }
 
 export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; description: string }> = [
-  { id: "studio", name: "Studio", description: "Simple dots in the active provider's color" },
+  { id: "studio", name: "Studio", description: "Simple dots in the theme's accent color" },
   { id: "aurora", name: "Aurora", description: "A slow drift of northern-light pastels" },
   { id: "astra", name: "Astra", description: "A living nebula with gentle starlight" },
   { id: "pixel", name: "Pixel", description: "A chunky retro VU meter with a square thumb" },

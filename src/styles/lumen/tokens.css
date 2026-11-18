@@ -38,7 +38,7 @@
      light-mythra  white and cool gray, sky-blue accent
      kiwi          neutral graphite, leaf-green accent
      daylight      white and sage gray, deep leaf-green accent
-     synthwave     neutral graphite, hot pink accent
+     synthwave     violet-tinted night surfaces, hot pink accent, its own code colours
      atari         warm parchment, brick accent
    Midnight and Monochrome are retired; saved selections migrate to Mythra
    (sanitizeTheme / sanitizeProjectDefaults) before reaching the shell.
@@ -59,6 +59,50 @@
   --lm-spring: cubic-bezier(.2, .8, .2, 1);
   --lm-spring-soft: cubic-bezier(.25, .8, .25, 1);
   --lm-stagger: 24ms;
+  /* One stacking scale, lowest to highest. Lumen and component sheets use
+     these names instead of raw numbers (values inside one card or list that
+     only order siblings may stay local numbers).
+       --z-raised      a control lifted over its neighbours
+       --z-sticky      sticky headers inside a scroller
+       --z-composer    the composer and its menus, above the transcript
+       --z-drawer      the narrow-window Tools drawer (<=900px)
+       --z-drawer-chrome  the top bar, kept above that drawer
+       --z-peek-scrim / --z-peek  the floating sidebar over a tucked layout
+       --z-popover     menus, popovers, pickers and floating cards
+       --z-modal       sheets and dialogs drawn without the top layer
+       --z-toast       toasts and notices
+       --z-top         the drag ghost, the performance overlay and the
+                       no-top-layer dialog fallbacks (Safari 13 class)
+     Native top-layer dialogs and popovers ignore z-index; these values only
+     order the fallbacks and the in-flow layers. */
+  --z-raised: 1;
+  --z-sticky: 10;
+  --z-composer: 20;
+  --z-drawer: 30;
+  --z-drawer-chrome: 31;
+  --z-peek-scrim: 39;
+  --z-peek: 40;
+  --z-popover: 100;
+  --z-modal: 200;
+  --z-toast: 300;
+  --z-top: 1000;
+  /* Brand marks: each provider's own logo plate and the ink on it. They are
+     the same in every theme (a brand colour, not a theme colour), and live on
+     :root so portalled fallbacks outside the shell can read them too. */
+  --brand-claude: #d97757; --brand-on-claude: #ffffff;
+  --brand-anthropic: #f1f0eb; --brand-on-anthropic: #171714;
+  --brand-cursor: #edecec; --brand-on-cursor: #26251e;
+  --brand-cursor-dark: #11100d; --brand-on-cursor-dark: #ffffff;
+  --brand-openai: #1a1d18; --brand-on-openai: #ffffff;
+  --brand-openrouter: #c8ff00; --brand-openrouter-light: #7624f4;
+  --brand-lmstudio-light: #16856c;
+  /* Light-theme app-icon tile behind a provider logo (onboarding tiles). */
+  --brand-tile-light: #1d1d1f; --brand-on-tile-light: #ffffff;
+  /* Scrims behind dialogs that sit over busy content. --lm-scrim (shell
+     scoped, per scheme) stays the default; these are the firmer variants. */
+  --scrim-firm: rgba(0, 0, 0, .45);
+  --scrim-deep: rgba(2, 3, 4, .72);
+  --scrim-media: rgba(0, 0, 0, .75);
   --font-display: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Inter Display", "Inter", "Segoe UI Variable Display", "Segoe UI", sans-serif;
 }
 
@@ -123,15 +167,32 @@
   --ink-2: #c6c7cb;
   --lm-reading-ink: #d2d3d7;
   --muted: #9a9aa0;
-  --muted-2: #8e8e94;
-  --green: #64ddf2;
+  /* Third-level ink (section headings, placeholders, row meta). Raised from
+     #8e8e94, the smallest step that reads at WCAG AA (4.5:1) on the canvas,
+     sidebar, panels and menus; --muted and --text keep Morgan's softer ink. */
+  --muted-2: #98989e;
+  --accent: #64ddf2;
   --accent-2: #4fcbe8;
   --on-accent: #062029;
-  --green-soft: rgba(100, 221, 242, .12);
-  --green-line: rgba(100, 221, 242, .34);
+  --accent-soft: rgba(100, 221, 242, .12);
+  --accent-line: rgba(100, 221, 242, .34);
+  /* Compatibility aliases (one release): --green* was the accent's old name
+     and held cyan, lime, pink and blue depending on the theme. New rules use
+     --accent*; the aliases keep any rule or user CSS that still reads the old
+     names working. Never use --green* for "success" — that is --success. */
+  --green: var(--accent);
+  --green-soft: var(--accent-soft);
+  --green-line: var(--accent-line);
   --orange: #e8ab68;
   --red: #f08884;
   --info: #86c6f7;
+  /* Status tints: a faint wash and a hairline in each status ink, for error,
+     warning and info cards, banners and badges. Every theme block below sets
+     its own from its own --red / --orange / --info, so a tint always matches
+     the ink it sits behind. */
+  --red-soft: rgba(240, 136, 132, .12); --red-line: rgba(240, 136, 132, .35);
+  --orange-soft: rgba(232, 171, 104, .12); --orange-line: rgba(232, 171, 104, .35);
+  --info-soft: rgba(134, 198, 247, .12); --info-line: rgba(134, 198, 247, .35);
   /* Warning copy and running indicators use the same readable status ink in
      every palette, including the darker oranges of the light themes. */
   --amber: var(--orange);
@@ -145,7 +206,14 @@
   --lm-code-bg: #1b1c1f;
   --lm-code-ink: #d0d0d4;
   --lm-scrim: rgba(0, 0, 0, .42);
-  --lm-hover: rgba(255, 255, 255, .055);
+  /* --scrim (round 6): the one backdrop colour behind every dialog, sheet,
+     palette and drawer (overlays.css lists them). Dark themes sit near black
+     already, so the dim has to be firm for the layer to own the screen. */
+  --scrim: rgba(0, 0, 0, .5);
+  --lm-scroll-shadow: rgba(0, 0, 0, .3);
+  /* Hover sits clearly below the selected fill so the two never read alike
+     in a source list (selection also adds weight and an accent mark). */
+  --lm-hover: rgba(255, 255, 255, .035);
   --lm-press: rgba(255, 255, 255, .09);
   --elev-1: 0 1px 2px rgba(0, 0, 0, .3);
   --elev-2: 0 6px 18px -8px rgba(0, 0, 0, .5);
@@ -159,47 +227,77 @@
      @supports.
      Accent fills are flat: --lm-grad is a single-colour "gradient" so every
      rule that paints `var(--lm-fill) var(--lm-grad)` gets a solid fill.
-     --green stays the readable accent for text, links and focus; a theme may
+     --accent stays the readable accent for text, links and focus; a theme may
      light its fills (--lm-fill) separately. */
-  --lm-fill: var(--green);
+  --lm-fill: var(--accent);
   --lm-fill-2: var(--lm-fill);
   --lm-grad: linear-gradient(var(--lm-fill), var(--lm-fill));
   --lm-grad-text: linear-gradient(var(--text), var(--text));
-  --lm-grad-soft: linear-gradient(var(--green-soft), var(--green-soft));
+  --lm-grad-soft: linear-gradient(var(--accent-soft), var(--accent-soft));
   --lm-glow: none;
-  --lm-tint: var(--green-soft);
-  --lm-tint-strong: var(--green-soft);
+  --lm-tint: var(--accent-soft);
+  --lm-tint-strong: var(--accent-soft);
   /* Container washes and accent-coloured shadows are retired: both tokens are
      transparent so the accent stays on actions, selection and focus. */
   --lm-wash: rgba(0, 0, 0, 0);
   --lm-accent-glow: rgba(0, 0, 0, 0);
   --lm-bubble-edge: var(--line);
-  --ring: 0 0 0 3px var(--green-soft);
+  /* The user's message bubble and the code-copy chip that floats over code.
+     One surface step above the canvas in every theme; a theme may override. */
+  --bubble: var(--panel-2);
+  --ring: 0 0 0 3px var(--accent-soft);
   --surface-quiet: var(--lm-hover);
   --surface-selected: var(--lm-press);
   --toggle-active-track: var(--lm-fill);
 }
 @supports (color: color-mix(in srgb, red, blue)) {
   .app-shell[data-theme][data-color-scheme] {
-    --lm-tint-strong: color-mix(in srgb, var(--green) 18%, transparent);
-    --ring: 0 0 0 3px color-mix(in srgb, var(--green) 32%, transparent);
+    --lm-tint-strong: color-mix(in srgb, var(--accent) 18%, transparent);
+    --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 32%, transparent);
     --surface-quiet: color-mix(in srgb, var(--text) 3%, transparent);
   }
 }
 
 /* ---- Dark themes share the graphite surfaces; only the accent changes ---- */
 .app-shell[data-theme="mythra"][data-color-scheme] {
-  --green: #64ddf2; --accent-2: #4fcbe8; --on-accent: #062029;
-  --green-soft: rgba(100, 221, 242, .12); --green-line: rgba(100, 221, 242, .34);
+  --accent: #64ddf2; --accent-2: #4fcbe8; --on-accent: #062029;
+  --accent-soft: rgba(100, 221, 242, .12); --accent-line: rgba(100, 221, 242, .34);
 }
 .app-shell[data-theme="kiwi"][data-color-scheme] {
-  --green: #a6df72; --accent-2: #93cf5e; --on-accent: #132008;
-  --green-soft: rgba(166, 223, 114, .12); --green-line: rgba(166, 223, 114, .32);
+  --accent: #a6df72; --accent-2: #93cf5e; --on-accent: #132008;
+  --accent-soft: rgba(166, 223, 114, .12); --accent-line: rgba(166, 223, 114, .32);
 }
 .app-shell[data-theme="synthwave"][data-color-scheme] {
-  --green: #ff6ac1; --accent-2: #ef58b1; --on-accent: #2a0a1c;
-  --green-soft: rgba(255, 106, 193, .12); --green-line: rgba(255, 106, 193, .34);
-  --orange: #ffb45f; --red: #ff7582; --info: #8be1ff;
+  --scrim: rgba(12, 5, 26, .54);
+  --accent: #ff6ac1; --accent-2: #ef58b1; --on-accent: #2a0a1c;
+  --accent-soft: rgba(255, 106, 193, .12); --accent-line: rgba(255, 106, 193, .34);
+  /* Destructive red is a warm tomato, not pink, so it can never be mistaken
+     for the hot-pink accent beside it. */
+  --orange: #ffb45f; --red: #ff6b4a; --info: #8be1ff;
+  --red-soft: rgba(255, 107, 74, .12); --red-line: rgba(255, 107, 74, .38);
+  --orange-soft: rgba(255, 180, 95, .12); --orange-line: rgba(255, 180, 95, .36);
+  --info-soft: rgba(139, 225, 255, .12); --info-line: rgba(139, 225, 255, .36);
+  /* Round 5 (O15), round 6 (I11): Synthwave is a designed theme, not an
+     accent swap. Its surfaces are a saturated indigo-violet night (hue ~262°,
+     clearly bluer and more chromatic than the graphite set) one step apart
+     like the graphite set; lines, hover and press fills and every ink carry
+     a lavender cast, so a grey-on-grey Mythra screen and a Synthwave screen
+     differ before the pink appears. Contrast is at or above round 5 on every
+     surface: text >= 9.3:1, muted >= 4.5:1 on menus, sidebar and panels
+     (4.6:1 on a selected menu row), accent >= 5.3:1 on everything but the
+     third panel step. */
+  --lm-canvas: #1e1630;
+  --bg: #1e1630; --sidebar: #241a38; --panel: #2a1f41; --panel-2: #33274b; --panel-3: #3f325a;
+  --field: #231a36; --menu-surface: #2d2343; --topbar: rgba(30, 22, 48, .9);
+  --line: rgba(232, 200, 255, .1); --line-strong: rgba(232, 200, 255, .16); --line-quiet: rgba(232, 200, 255, .06);
+  --text: #efe7f8; --ink-2: #d2c7e4; --lm-reading-ink: #ddd3eb; --muted: #ae9fc8; --muted-2: #ac9dc6;
+  --lm-island-edge: rgba(232, 200, 255, .1);
+  --lm-hover: rgba(232, 200, 255, .045); --lm-press: rgba(232, 200, 255, .11);
+  --lm-code-bg: #190f2a; --lm-code-ink: #dcd2ea;
+  --lm-pop-shadow: 0 0 0 1px rgba(8, 2, 20, .6), 0 14px 34px -8px rgba(8, 2, 20, .6), 0 4px 10px -4px rgba(8, 2, 20, .4);
+}
+html[data-platform="windows"] .app-shell[data-theme="synthwave"][data-color-scheme] {
+  --text: #e5ddef; --ink-2: #c9bedb; --lm-reading-ink: #d3c9e2; --muted: #a798c0; --muted-2: #a798c0;
 }
 
 /* ---- Windows: dark text renders heavier there ----
@@ -213,6 +311,8 @@ html[data-platform="windows"] .app-shell[data-theme][data-color-scheme="dark"] {
   --ink-2: #bebfc3;
   --lm-reading-ink: #c9cace;
   --muted: #94959b;
+  /* Keep the third ink at or below the second after Windows eases it. */
+  --muted-2: #94959b;
 }
 
 /* ---- Shared light treatment ---- */
@@ -222,8 +322,11 @@ html[data-platform="windows"] .app-shell[data-theme][data-color-scheme="dark"] {
   --lm-island-shadow: none;
   --lm-pop-shadow: 0 0 0 1px rgba(0, 0, 0, .08), 0 14px 34px -10px rgba(0, 0, 0, .22), 0 3px 8px -3px rgba(0, 0, 0, .1);
   --lm-scrim: rgba(0, 0, 0, .22);
+  /* A cool dark veil, not flat grey: the app reads as "behind", not "disabled". */
+  --scrim: rgba(15, 20, 30, .26);
+  --lm-scroll-shadow: rgba(0, 0, 0, .1);
   --lm-on-danger: #ffffff;
-  --lm-hover: rgba(0, 0, 0, .045);
+  --lm-hover: rgba(0, 0, 0, .03);
   --lm-press: rgba(0, 0, 0, .075);
   --elev-1: 0 1px 2px rgba(0, 0, 0, .06);
   --elev-2: 0 6px 16px -8px rgba(0, 0, 0, .16);
@@ -233,20 +336,27 @@ html[data-platform="windows"] .app-shell[data-theme][data-color-scheme="dark"] {
 
 /* ---- Light Mythra ----
    Morgan: cyan / light blue, not teal. Solid fills are a clear sky cyan
-   (#0a95d4) with dark ink; --green is the related deeper sky blue (#0068b5,
+   (#0a95d4) with dark ink; --accent is the related deeper sky blue (#0068b5,
    5.8:1 on white) for text accents, links, markers and focus rings. */
 .app-shell[data-theme="light-mythra"][data-color-scheme] {
   --lm-canvas: #f3f4f6;
   --bg: #ffffff; --sidebar: #f3f4f6; --panel: #ffffff; --panel-2: #f3f4f6; --panel-3: #e7e8eb;
   --field: #ffffff; --menu-surface: #ffffff; --topbar: rgba(255, 255, 255, .9);
   --line: rgba(0, 0, 0, .09); --line-strong: rgba(0, 0, 0, .15); --line-quiet: rgba(0, 0, 0, .055);
-  --text: #1d1d1f; --ink-2: #3a3a3e; --muted: #6a6a70; --muted-2: #6e6e74;
-  --green: #0068b5; --accent-2: #005d9f;
+  /* Muted inks, the text accent and the status inks are the smallest steps
+     that keep 4.5:1 on selected rows and on their own status tints. */
+  --text: #1d1d1f; --ink-2: #3a3a3e; --muted: #606066; --muted-2: #64646a;
+  --accent: #005fa6; --accent-2: #00558f;
   --lm-fill: #0a95d4; --on-accent: #021a24;
-  --green-soft: rgba(10, 149, 212, .12); --green-line: rgba(0, 104, 181, .32);
-  --orange: #a35f12; --red: #c23a36; --info: #1767a0;
+  --accent-soft: rgba(10, 149, 212, .12); --accent-line: rgba(0, 104, 181, .32);
+  --orange: #955610; --red: #b3322f; --info: #1767a0;
+  --red-soft: rgba(179, 50, 47, .09); --red-line: rgba(179, 50, 47, .3);
+  --orange-soft: rgba(149, 86, 16, .1); --orange-line: rgba(149, 86, 16, .3);
+  --info-soft: rgba(23, 103, 160, .09); --info-line: rgba(23, 103, 160, .3);
   --lm-island-edge: rgba(0, 0, 0, .09);
   --lm-code-bg: #f5f6f8; --lm-code-ink: #26323a;
+  /* L05: the sky-cyan fill with dark ink is Morgan's deliberate brand call
+     (5.3:1). A white-ink fill would need #0877c4, a different, darker blue. */
 }
 
 /* ---- Light Kiwi ---- */
@@ -256,9 +366,12 @@ html[data-platform="windows"] .app-shell[data-theme][data-color-scheme="dark"] {
   --field: #ffffff; --menu-surface: #ffffff; --topbar: rgba(255, 255, 255, .9);
   --line: rgba(20, 35, 10, .1); --line-strong: rgba(20, 35, 10, .16); --line-quiet: rgba(20, 35, 10, .055);
   --text: #1a1f15; --ink-2: #384232; --muted: #5d6656; --muted-2: #616a5a;
-  --green: #3a861d; --accent-2: #317719; --on-accent: #ffffff;
-  --green-soft: rgba(58, 134, 29, .11); --green-line: rgba(58, 134, 29, .32);
+  --accent: #3a861d; --accent-2: #317719; --on-accent: #ffffff;
+  --accent-soft: rgba(58, 134, 29, .11); --accent-line: rgba(58, 134, 29, .32);
   --orange: #a35f12; --red: #bc3f3a; --info: #14639f;
+  --red-soft: rgba(188, 63, 58, .09); --red-line: rgba(188, 63, 58, .3);
+  --orange-soft: rgba(163, 95, 18, .1); --orange-line: rgba(163, 95, 18, .3);
+  --info-soft: rgba(20, 99, 159, .09); --info-line: rgba(20, 99, 159, .3);
   --lm-island-edge: rgba(20, 35, 10, .1);
   --lm-code-bg: #f5f7f3; --lm-code-ink: #2f3d26;
 }
@@ -272,9 +385,12 @@ html[data-platform="windows"] .app-shell[data-theme][data-color-scheme="dark"] {
   --field: #fffaf0; --menu-surface: #fffaf0; --topbar: rgba(246, 238, 221, .92);
   --line: rgba(76, 52, 31, .13); --line-strong: rgba(76, 52, 31, .22); --line-quiet: rgba(76, 52, 31, .07);
   --text: #2f251b; --ink-2: #54432f; --muted: #5d4734; --muted-2: #604936;
-  --green: #8e3b32; --accent-2: #7c322a; --on-accent: #fff8ec;
-  --green-soft: rgba(142, 59, 50, .1); --green-line: rgba(142, 59, 50, .32);
+  --accent: #8e3b32; --accent-2: #7c322a; --on-accent: #fff8ec;
+  --accent-soft: rgba(142, 59, 50, .1); --accent-line: rgba(142, 59, 50, .32);
   --info: #864039; --orange: #885813; --red: #a02e29;
+  --red-soft: rgba(160, 46, 41, .1); --red-line: rgba(160, 46, 41, .32);
+  --orange-soft: rgba(136, 88, 19, .11); --orange-line: rgba(136, 88, 19, .32);
+  --info-soft: rgba(134, 64, 57, .1); --info-line: rgba(134, 64, 57, .32);
   --lm-island-edge: rgba(76, 52, 31, .13);
   --lm-hover: rgba(76, 52, 31, .06); --lm-press: rgba(76, 52, 31, .1);
   --lm-code-bg: #fffaf0; --lm-code-ink: #4a3a28;
@@ -336,3 +452,127 @@ html[data-platform="windows"] .app-shell[data-theme][data-color-scheme="dark"] {
 @media (max-width: 1180px) { .app-shell[data-theme][data-color-scheme] { --measure: 720px; } }
 @media (max-width: 1000px) { .app-shell[data-theme][data-color-scheme] { --measure: 680px; } }
 @media (max-width: 860px) { .app-shell[data-theme][data-color-scheme] { --topbar-h: 50px; } }
+
+/* ---- Round 3 semantic tokens (M07) ----
+   New names only; nothing existing is renamed.
+   --lm-menu-focus / --lm-menu-focus-edge: keyboard focus in menus and lists.
+   Hover is a fill; focus is that fill plus a solid accent edge, so the two
+   never look alike (a 9% tint alone was ~1.3:1 against the menu).
+   --success / --success-soft: "Connected", "Done" and other good outcomes.
+   They are a status green in every palette, separate from the interaction
+   accent (Synthwave's pink, Mythra's cyan), and each ink keeps 4.5:1 on its
+   own tint. Base values first, then per-scheme and per-theme overrides. */
+.app-shell[data-theme][data-color-scheme] {
+  --lm-menu-focus: var(--lm-press);
+  --lm-menu-focus-edge: var(--accent);
+  --success: #7fd08e;
+  --success-soft: rgba(127, 208, 142, .12);
+}
+.app-shell[data-theme][data-color-scheme="light"] {
+  --success: #1d7334;
+  --success-soft: rgba(29, 115, 52, .1);
+}
+.app-shell[data-theme="kiwi"][data-color-scheme] { --success: #a6df72; --success-soft: rgba(166, 223, 114, .12); }
+.app-shell[data-theme="synthwave"][data-color-scheme] { --success: #7fe0a0; --success-soft: rgba(127, 224, 160, .12); }
+/* Light Kiwi: the accent green on its own 11% tint measured ~4.0:1. */
+.app-shell[data-theme="daylight"][data-color-scheme] { --success: #2b6614; --success-soft: rgba(43, 102, 20, .1); }
+.app-shell[data-theme="atari"][data-color-scheme] { --success: #3d6418; --success-soft: rgba(61, 100, 24, .11); }
+
+/* ---- Round 3 control tokens (G6) ----
+   Named values for what used to be repeated raw colours in component rules.
+   Base values are the dark-scheme look; the light block below swaps them.
+   --lm-clear            fully transparent stop for fade gradients
+   --lm-knob(-shadow)    the round knob of a switch (off state), --lm-knob-on
+                         (-shadow) the white knob on an accent track
+   --lm-switch-off(-edge) light-scheme switch track when off
+   --lm-seg-surface/-shadow    the raised "selected" piece of a segmented
+                         control; -strong is the deeper onboarding variant
+   --lm-control-lift     the 1px lift under light-scheme buttons and selects
+   --lm-chip-shadow      small lift under a selected engine chip
+   --lm-composer-shadow  the composer card
+   --lm-drawer-shadow    the narrow-window dock drawer edge
+   --lm-selected-hover   hover on an already-selected dark row
+   --lm-thumb-edge(-shadow) the effort slider thumb ring and its shadow
+   --lm-preview-edge(-strong) hairlines inside the small theme previews
+   --lm-inset-well       recessed output wells (workflow step logs)
+   --diff-*              added / removed line ink, wash, marks and the line-number gutter
+   --syntax-*            code token colours for diffs and code blocks (AA on code + tints)
+   --chart-1 / --chart-2 the two data series in Usage charts */
+.app-shell[data-theme][data-color-scheme] {
+  --lm-clear: rgba(0, 0, 0, 0);
+  --lm-knob: #e6e6e9;
+  --lm-knob-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  --lm-knob-on: #ffffff;
+  --lm-knob-on-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  --lm-switch-off: rgba(0, 0, 0, .1);
+  --lm-switch-off-edge: rgba(0, 0, 0, .04);
+  --lm-seg-surface: var(--panel-3);
+  --lm-seg-shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 0 0 .5px rgba(0, 0, 0, .2);
+  --lm-seg-shadow-strong: 0 1px 2px rgba(0, 0, 0, .3), 0 0 0 .5px rgba(0, 0, 0, .25);
+  --lm-control-lift: 0 1px 1px rgba(0, 0, 0, .04);
+  --lm-chip-shadow: 0 1px 2px rgba(0, 0, 0, .18);
+  --lm-composer-shadow: 0 8px 24px -14px rgba(0, 0, 0, .55), 0 1px 3px rgba(0, 0, 0, .18);
+  --lm-drawer-shadow: -16px 0 40px -12px rgba(0, 0, 0, .35);
+  --lm-selected-hover: rgba(255, 255, 255, .1);
+  --lm-thumb-edge: #ffffff;
+  --lm-thumb-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  --lm-preview-edge: rgba(0, 0, 0, .12);
+  --lm-preview-edge-strong: rgba(0, 0, 0, .14);
+  --lm-inset-well: rgba(0, 0, 0, .2);
+  --diff-add-ink: #9fd892; --diff-add-bg: rgba(87, 196, 104, .13); --diff-add-mark: #57c468;
+  --diff-del-ink: #f0a29e; --diff-del-bg: rgba(240, 110, 104, .12); --diff-del-mark: #f06e68;
+  --diff-gutter-ink: #8e8f97; --diff-hunk-bg: rgba(126, 168, 230, .07);
+  /* Code colours (diff viewer and code blocks). Every ink is >= 4.5:1 on the
+     code background and on the added/removed line tints. Red and green are
+     left to the diff marks, so a colour never reads as "removed" or "added". */
+  --syntax-keyword: #c4a7f7; --syntax-string: #e3c189; --syntax-comment: #989da5;
+  --syntax-number: #f0a878; --syntax-function: #82c9f2; --syntax-type: #7fd4c6;
+  --syntax-tag: #7fd4c6; --syntax-attr: #c4a7f7; --syntax-property: #a9c4ea;
+  --syntax-punct: #9a9ba3; --syntax-operator: #b4b5bc; --syntax-heading: #82c9f2;
+  --chart-1: #3987e5; --chart-2: #d95926;
+}
+.app-shell[data-theme][data-color-scheme="light"] {
+  --lm-knob: #ffffff;
+  --lm-knob-shadow: 0 1px 2px rgba(0, 0, 0, .22), 0 0 0 .5px rgba(0, 0, 0, .06);
+  --lm-seg-surface: #ffffff;
+  --lm-seg-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 0 0 .5px rgba(0, 0, 0, .08);
+  --lm-seg-shadow-strong: 0 1px 2px rgba(0, 0, 0, .1), 0 0 0 .5px rgba(0, 0, 0, .1);
+  --lm-composer-shadow: 0 8px 22px -14px rgba(0, 0, 0, .2), 0 1px 2px rgba(0, 0, 0, .06);
+  /* Light tints are ~1.6x the old wash so changed lines scan on white. */
+  --diff-add-ink: #23652a; --diff-add-bg: rgba(46, 160, 67, .16); --diff-add-mark: #1f7a33;
+  --diff-del-ink: #a8302b; --diff-del-bg: rgba(207, 34, 46, .13); --diff-del-mark: #c4302b;
+  --diff-gutter-ink: #5c616a; --diff-hunk-bg: rgba(9, 105, 218, .06);
+  --syntax-keyword: #7438b0; --syntax-string: #835400; --syntax-comment: #575e68;
+  --syntax-number: #a1400d; --syntax-function: #0a5ca0; --syntax-type: #0d6b66;
+  --syntax-tag: #0d6b66; --syntax-attr: #7438b0; --syntax-property: #24508a;
+  --syntax-punct: #555c66; --syntax-operator: #4a5059; --syntax-heading: #0a5ca0;
+  --chart-1: #2a78d6; --chart-2: #eb6834;
+}
+.app-shell[data-theme="atari"][data-color-scheme] { --chart-1: #8e3b32; --chart-2: #977030; }
+/* Synthwave's own code colours: neon pink keywords, cyan calls, violet
+   types, warm strings. Each is >= 4.5:1 on its code background, on panels
+   and on the added/removed line tints. */
+.app-shell[data-theme="synthwave"][data-color-scheme] {
+  --lm-selected-hover: rgba(232, 200, 255, .14);
+  --syntax-keyword: #ff86cf; --syntax-string: #f5cf86; --syntax-comment: #a096b2;
+  --syntax-number: #ffa883; --syntax-function: #80d8fa; --syntax-type: #bba5ff;
+  --syntax-tag: #ff86cf; --syntax-attr: #bba5ff; --syntax-property: #b3c3f7;
+  --syntax-punct: #a59cb4; --syntax-operator: #c4bccf; --syntax-heading: #80d8fa;
+  --diff-gutter-ink: #968da6; --diff-hunk-bg: rgba(187, 165, 255, .07);
+}
+
+/* ---- Approval grant (R4) ----
+   The button that grants an agent's request is a neutral, high-contrast
+   inverse fill, never the theme accent: an accent can be as warm as Deny's
+   red (Synthwave's hot pink beside its tomato red), and "grant" must not
+   look like "brand". It follows each theme's own ink and canvas, so it is the
+   strongest neutral in every theme and always clearly distinct from Deny's
+   red outline. */
+.app-shell[data-theme][data-color-scheme] {
+  --approval-allow-bg: var(--text);
+  --approval-allow-ink: var(--bg);
+  --approval-allow-hover: color-mix(in srgb, var(--text) 86%, var(--bg));
+}
+.app-shell[data-theme][data-color-scheme="light"] {
+  --approval-allow-hover: color-mix(in srgb, var(--text) 82%, var(--bg));
+}

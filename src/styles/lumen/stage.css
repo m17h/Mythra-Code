@@ -71,7 +71,7 @@
   font-size: 12px;
   font-weight: 450;
 }
-.app-shell[data-theme][data-color-scheme] .runtime-status > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .runtime-status > svg { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .topbar-usage-chip { height: 28px; border: 0; border-radius: var(--r-control); background: transparent; font-size: 12px; font-weight: 450; }
 .app-shell[data-theme][data-color-scheme] .topbar-usage-chip:hover { background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger {
@@ -91,7 +91,7 @@
   background: var(--lm-press);
   box-shadow: none;
 }
-.app-shell[data-theme][data-color-scheme] .workspace-tools-trigger.active > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .workspace-tools-trigger.active > svg { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger.active kbd { color: var(--muted-2); border-color: transparent; background: transparent; }
 .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger.active:hover:not(:disabled) {
   color: var(--text);
@@ -129,7 +129,7 @@
 }
 .app-shell[data-theme][data-color-scheme] .project-prompt-trigger:hover { color: var(--text); border-color: transparent; background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-trigger.custom { color: var(--text); border-color: transparent; background: transparent; }
-.app-shell[data-theme][data-color-scheme] .project-prompt-trigger.custom > svg:first-child { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-trigger.custom > svg:first-child { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-trigger.custom:hover { background: var(--lm-hover); }
 /* Inline tags inside toolbar items ("Inherited", "Dev server"): plain
    secondary text, not boxed monospace chips. */
@@ -166,9 +166,9 @@
 .app-shell[data-theme][data-color-scheme] .project-run-trigger:hover,
 .app-shell[data-theme][data-color-scheme] .project-run-edit:hover { color: var(--text); border-color: transparent; background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .project-run-trigger.ready { color: var(--text); border-color: transparent; background: transparent; }
-.app-shell[data-theme][data-color-scheme] .project-run-trigger.ready > svg:first-child { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .project-run-trigger.ready > svg:first-child { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .project-run-trigger.ready:hover { background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .project-run-trigger.running { color: var(--text); border-color: transparent; background: rgba(232, 171, 104, .14); }
+.app-shell[data-theme][data-color-scheme] .project-run-trigger.running { color: var(--text); border-color: transparent; background: var(--orange-soft); }
 .app-shell[data-theme][data-color-scheme] .project-run-trigger.running > svg:first-child { color: var(--amber); }
 
 /* ---- Conversation search: a find bar under the toolbar ---- */
@@ -180,6 +180,9 @@
   background: var(--menu-surface);
   box-shadow: var(--lm-pop-shadow);
 }
+/* Pro-ui field text is 13px; the match count stays small and tabular. */
+.app-shell[data-theme][data-color-scheme] .conv-search-bar input { font-size: var(--fs-ui); }
+.app-shell[data-theme][data-color-scheme] .conv-search-bar small { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* ---- Buttons ----
    Primary: a flat accent push button. Secondary: a neutral push button
@@ -200,7 +203,7 @@
   box-shadow: none;
 }
 .app-shell[data-theme][data-color-scheme] .primary-button:active:not(:disabled) { background: var(--lm-fill); filter: brightness(.94); }
-.app-shell[data-theme][data-color-scheme] .primary-button:disabled { filter: saturate(.4); opacity: .5; box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .primary-button:disabled { color: var(--muted-2); background: var(--lm-press); filter: none; opacity: 1; box-shadow: none; cursor: default; }
 .app-shell[data-theme][data-color-scheme] .secondary-button {
   border: 1px solid var(--line);
   border-radius: var(--r-control);
@@ -211,10 +214,10 @@
   letter-spacing: 0;
 }
 .app-shell[data-theme][data-color-scheme] .secondary-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: var(--lm-press); filter: brightness(1.12); }
-.app-shell[data-theme][data-color-scheme="light"] .secondary-button { border-color: var(--line-strong); background: var(--panel); box-shadow: 0 1px 1px rgba(0, 0, 0, .04); }
+.app-shell[data-theme][data-color-scheme="light"] .secondary-button { border-color: var(--line-strong); background: var(--panel); box-shadow: var(--lm-control-lift); }
 .app-shell[data-theme][data-color-scheme="light"] .secondary-button:hover:not(:disabled) { background: var(--panel-2); filter: none; }
 .app-shell[data-theme][data-color-scheme] .secondary-button.danger { color: var(--red); border-color: var(--line); }
-.app-shell[data-theme][data-color-scheme] .secondary-button.danger:hover:not(:disabled) { color: var(--red); border-color: var(--red); background: rgba(240, 136, 132, .1); filter: none; }
+.app-shell[data-theme][data-color-scheme] .secondary-button.danger:hover:not(:disabled) { color: var(--red); border-color: var(--red); background: var(--red-soft); filter: none; }
 
 /* ---- Welcome (no workspace selected) ---- */
 .app-shell[data-theme][data-color-scheme] .welcome-orbit {
@@ -222,7 +225,7 @@
   height: 64px;
   border: 1px solid var(--line);
   border-radius: 16px;
-  color: var(--green);
+  color: var(--accent);
   background: var(--panel);
   box-shadow: var(--elev-1);
 }
@@ -259,52 +262,22 @@
 .app-shell[data-theme][data-color-scheme] .trust-strip svg {
   width: 14px;
   height: 14px;
-  color: var(--green);
+  color: var(--accent);
 }
 
-/* Workspace choice: two selectable cards. */
-.app-shell[data-theme][data-color-scheme] .isolation-choice { width: min(560px, 100%); gap: 8px; margin: 16px 0 4px; }
+/* Tools choice: two selectable cards. */
 .app-shell[data-theme][data-color-scheme] .isolation-choice > button {
   position: relative;
-  min-height: 62px;
   grid-template-columns: 28px minmax(0, 1fr);
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  color: var(--muted);
-  background: var(--panel);
   cursor: pointer;
 }
-.app-shell[data-theme][data-color-scheme] .isolation-choice > button:hover:not(:disabled) { color: var(--ink-2); border-color: var(--line-strong); background: var(--panel); }
-.app-shell[data-theme][data-color-scheme] .isolation-choice > button.active {
-  color: var(--text);
-  border-color: var(--green);
-  background-color: var(--panel);
-  background-image: none;
-  box-shadow: 0 0 0 1px var(--green);
-}
-.app-shell[data-theme][data-color-scheme] .isolation-choice > button > svg {
-  width: 28px;
-  height: 28px;
-  padding: 6px;
-  border-radius: var(--r-md);
-  color: var(--muted);
-  background: var(--lm-hover);
-}
-.app-shell[data-theme][data-color-scheme] .isolation-choice > button.active > svg { color: var(--green); background: var(--green-soft); }
-.app-shell[data-theme][data-color-scheme] .isolation-choice strong { color: var(--text); font-family: var(--font-sans); font-size: 13px; font-weight: 600; letter-spacing: 0; }
-.app-shell[data-theme][data-color-scheme] .isolation-choice > button.git-initialize-choice { border-style: dashed; border-color: var(--green-line); color: var(--green); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice strong { font-family: var(--font-sans); letter-spacing: 0; }
 
 /* Shortcut buttons into the workbench. */
-.app-shell[data-theme][data-color-scheme] .empty-state-actions { gap: 6px; margin-top: 12px; }
 .app-shell[data-theme][data-color-scheme] .empty-state-actions button {
-  min-height: 30px;
   gap: 6px;
-  padding: 0 11px 0 6px;
   border: 1px solid var(--line);
   border-radius: var(--r-control);
-  color: var(--ink-2);
   background: transparent;
   font-size: 12.5px;
   font-weight: 500;
@@ -317,20 +290,98 @@
   color: var(--muted);
   background: transparent;
 }
-.app-shell[data-theme][data-color-scheme] .empty-state-actions button:hover { color: var(--text); border-color: var(--line-strong); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .handoff-draft-banner { padding: 10px 12px; border-color: var(--green-line); border-radius: var(--r-lg); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .handoff-draft-banner { padding: 10px 12px; border-color: var(--accent-line); border-radius: var(--r-lg); background: var(--accent-soft); }
 
 /* ---- Banners ---- */
 .app-shell[data-theme][data-color-scheme] .error-banner {
   padding: 9px 10px 9px 12px;
-  border: 1px solid rgba(240, 136, 132, .4);
+  border: 1px solid var(--red-line);
   border-radius: var(--r-lg);
   color: var(--text);
   background: var(--panel);
-  background-image: linear-gradient(rgba(240, 136, 132, .08), rgba(240, 136, 132, .08));
+  background-image: linear-gradient(var(--red-soft), var(--red-soft));
   box-shadow: none;
 }
 .app-shell[data-theme][data-color-scheme] .error-banner button.error-settings { min-height: 26px; padding: 0 10px; border-radius: var(--r-control); }
+/* D10: the message reads first at body size, the actions sit in a row
+   beneath it, and the close button keeps the top-right corner. */
+.app-shell[data-theme][data-color-scheme] .error-banner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 40px 10px 14px;
+  font-size: var(--fs-ui);
+  line-height: 1.45;
+}
+.app-shell[data-theme][data-color-scheme] .error-banner > span { flex: none; }
+.app-shell[data-theme][data-color-scheme] .error-banner-actions { justify-content: flex-start; gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .error-banner-actions > button:not(.error-settings) {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-control);
+  color: var(--muted);
+}
+.app-shell[data-theme][data-color-scheme] .error-banner-actions > button:not(.error-settings):hover { color: var(--text); background: var(--lm-hover); }
+
+/* ---- A thread that can't be opened (D10 / M04) ----
+   Its title and recovery row sit in the stage; the landing under it is the
+   separate new thread. Retry is primary, Models & accounts secondary, and
+   Remove a quiet text button last. */
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-panel {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 auto 28px;
+  padding: 14px 14px 14px 16px;
+  border: 1px solid var(--red-line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  background-image: linear-gradient(var(--red-soft), var(--red-soft));
+  text-align: left;
+}
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-head { display: grid; grid-template-columns: 16px minmax(0, 1fr) 26px; gap: 10px; align-items: start; }
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-head > svg { margin-top: 2px; color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-copy h2 { margin: 0 0 4px; color: var(--text); font-size: 14px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-copy p { margin: 0; color: var(--ink-2); font-size: var(--fs-ui); line-height: 1.5; }
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-close { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: var(--r-control); color: var(--muted); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-close:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-left: 26px; }
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-actions > .primary-button,
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-actions > .secondary-button { min-height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; font-size: var(--fs-ui); }
+/* Retry is primary but not the theme accent: on a red-tinted surface a warm
+   accent (Synthwave's pink) clashes with the danger hue. It uses the same
+   neutral inverse fill as the approval grant button. */
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-actions > .primary-button {
+  border: 1px solid transparent;
+  color: var(--approval-allow-ink);
+  background: var(--approval-allow-bg);
+  box-shadow: none;
+}
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-actions > .primary-button:hover { background: var(--approval-allow-hover); }
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-actions > .primary-button > svg { color: currentColor; }
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-remove {
+  min-height: 30px;
+  margin-left: auto;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: transparent;
+  font: 450 var(--fs-ui) var(--font-sans);
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .thread-unavailable-remove:hover { color: var(--red); background: var(--red-soft); }
+/* The landing under the panel is the new thread: no logo, a quieter title. */
+.app-shell[data-theme][data-color-scheme] .thread-empty-state.after-unavailable > .mythra-logo { display: none; }
+/* M03: the landing under a failed thread is the quieter, secondary path. */
+.app-shell[data-theme][data-color-scheme] .thread-empty-state.after-unavailable > h1 { color: var(--ink-2); font-size: var(--fs-lede); font-weight: 600; letter-spacing: 0; }
+.app-shell[data-theme][data-color-scheme] .thread-empty-state.after-unavailable > p { font-size: 12.5px; }
 
 /* ---- Update notice: a floating bar under the toolbar ---- */
 .app-shell[data-theme][data-color-scheme] .app-update-notice-region { top: calc(var(--topbar-h) + 8px); }
@@ -342,14 +393,14 @@
   background: var(--menu-surface);
   box-shadow: var(--lm-pop-shadow);
 }
-.app-shell[data-theme][data-color-scheme] .app-update-notice-icon { width: 28px; height: 28px; border-radius: var(--r-md); color: var(--green); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-icon { width: 28px; height: 28px; border-radius: var(--r-md); color: var(--accent); background: var(--accent-soft); }
 .app-shell[data-theme][data-color-scheme] .app-update-notice-action { height: 28px; padding: 0 12px; border: 0; border-radius: var(--r-control); color: var(--on-accent); background: var(--lm-fill); }
 .app-shell[data-theme][data-color-scheme] .app-update-notice-action:hover { border-color: transparent; background: var(--lm-fill); filter: brightness(1.06); }
 .app-shell[data-theme][data-color-scheme] .app-update-notice-dismiss { width: 28px; height: 28px; border-radius: var(--r-control); }
-.app-shell[data-theme][data-color-scheme] .app-update-notice-progress { left: 20px; right: 20px; height: 2px; background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-progress { left: 20px; right: 20px; height: 2px; background: var(--accent-soft); }
 .app-shell[data-theme][data-color-scheme] .app-update-notice-progress > span { background: var(--lm-fill); box-shadow: none; }
-.app-shell[data-theme][data-color-scheme] .app-update-notice.failed { border-color: rgba(240, 136, 132, .45); }
-.app-shell[data-theme][data-color-scheme] .app-update-notice.failed .app-update-notice-icon { color: var(--red); background: rgba(240, 136, 132, .14); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice.failed { border-color: var(--red-line); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice.failed .app-update-notice-icon { color: var(--red); background: var(--red-soft); }
 .app-shell[data-theme][data-color-scheme] .app-update-notice.failed .app-update-notice-action { color: var(--text); background: var(--panel-3); }
 
 /* ---- Toast: a compact HUD that drops from the top edge ---- */
@@ -364,7 +415,7 @@
   font-weight: 500;
 }
 .app-shell[data-theme][data-color-scheme] .app-toast.success { border-color: var(--line); }
-.app-shell[data-theme][data-color-scheme] .app-toast-icon { width: 26px; height: 26px; border-radius: var(--r-md); color: var(--green); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .app-toast-icon { width: 26px; height: 26px; border-radius: var(--r-md); color: var(--accent); background: var(--accent-soft); }
 .app-shell[data-theme][data-color-scheme] .app-toast.info .app-toast-icon { color: var(--ink-2); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .app-toast > button { width: 26px; height: 26px; border-radius: var(--r-control); }
 
@@ -387,7 +438,7 @@
      overlapping. */
 .app-shell[data-theme][data-color-scheme] .topbar-left { flex: 1 1 0; min-width: 0; }
 .app-shell[data-theme][data-color-scheme] .topbar-left > * { flex-shrink: 0; }
-.app-shell[data-theme][data-color-scheme] .topbar-left > .project-heading { flex: 0 1 auto; min-width: 64px; max-width: 320px; }
+.app-shell[data-theme][data-color-scheme] .topbar-left > .project-heading { flex: 0 1 auto; min-width: 64px; }
 .app-shell[data-theme][data-color-scheme] .project-heading > span,
 .app-shell[data-theme][data-color-scheme] .project-heading small { display: block; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .app-shell[data-theme][data-color-scheme] .topbar-right { flex: 0 0 auto; }
@@ -395,50 +446,11 @@
 .app-shell[data-theme][data-color-scheme] .topbar-usage-chip > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-chip { height: 28px; flex-shrink: 0; }
 
-@container chat-main (max-width: 1080px) {
-  .app-shell[data-theme][data-color-scheme] .command-palette-trigger kbd,
-  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger kbd { display: none; }
-  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger { padding-right: 11px; }
-  .app-shell[data-theme][data-color-scheme] .runtime-status > span { display: none; }
-  .app-shell[data-theme][data-color-scheme] .runtime-status { padding: 0 9px; }
-  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip { max-width: 150px; }
-  .app-shell[data-theme][data-color-scheme] .project-heading { max-width: 220px; }
-}
-@container chat-main (max-width: 960px) {
+/* Spacing tightens with the column; what is shown is decided by the measured
+   shedding ladder below (data-shed), not by these breakpoints. */
+@container chat-main (max-width: 840px) {
   .app-shell[data-theme][data-color-scheme] .topbar { gap: 8px; padding-left: 12px; padding-right: 8px; }
   .app-shell[data-theme][data-color-scheme] .topbar-left { gap: 6px; }
-  .app-shell[data-theme][data-color-scheme] .command-palette-trigger { width: 28px; padding: 0; justify-content: center; }
-  .app-shell[data-theme][data-color-scheme] .command-palette-trigger > span { display: none; }
-  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger > span { display: none; }
-  .app-shell[data-theme][data-color-scheme] .project-run-trigger small { display: none; }
-  .app-shell[data-theme][data-color-scheme] .project-heading { max-width: 180px; }
-}
-@container chat-main (max-width: 860px) {
-  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger { width: 28px; padding: 0; justify-content: center; }
-  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger > span { display: none; }
-  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip { width: 28px; padding: 0; justify-content: center; }
-  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip > span,
-  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip > svg:not(:first-child) { display: none; }
-  .app-shell[data-theme][data-color-scheme] .thread-pr-chip.empty { width: 28px; padding: 0; justify-content: center; }
-  .app-shell[data-theme][data-color-scheme] .thread-pr-chip.empty > span,
-  .app-shell[data-theme][data-color-scheme] .thread-pr-chip > em { display: none; }
-}
-/* Legacy's 720px step hides search, export and the status line. Lumen keeps
-   search and export as icon buttons; the status dot (not interactive, named
-   by its title) is the only thing that goes. */
-@container chat-main (max-width: 760px) {
-  .app-shell[data-theme][data-color-scheme] .command-palette-trigger { display: flex; }
-  .app-shell[data-theme][data-color-scheme] .topbar-export-button { display: grid; }
-  .app-shell[data-theme][data-color-scheme] .runtime-status { display: none; }
-  .app-shell[data-theme][data-color-scheme] .project-heading small { display: none; }
-  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger { width: 28px; padding: 0; justify-content: center; }
-  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger small,
-  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger > svg:last-child { display: none; }
-  .app-shell[data-theme][data-color-scheme] .project-run-trigger { width: 32px; padding: 0; justify-content: center; }
-  .app-shell[data-theme][data-color-scheme] .project-run-trigger > span { display: none; }
-  .app-shell[data-theme][data-color-scheme] .isolation-chip,
-  .app-shell[data-theme][data-color-scheme] .handoff-chip { width: 28px; padding: 0; justify-content: center; }
-  .app-shell[data-theme][data-color-scheme] .thread-pr-chip { max-width: 92px; padding: 0 8px; }
 }
 @container chat-main (max-width: 600px) {
   .app-shell[data-theme][data-color-scheme] .topbar { gap: 6px; padding-left: 8px; padding-right: 6px; }
@@ -490,7 +502,6 @@
   .app-shell[data-theme][data-color-scheme] .isolation-chip,
   .app-shell[data-theme][data-color-scheme] .handoff-chip { width: 28px; padding: 0; justify-content: center; }
   .app-shell[data-theme][data-color-scheme] .command-palette-trigger { display: flex; }
-  .app-shell[data-theme][data-color-scheme] .topbar-export-button { display: grid; }
   .app-shell[data-theme][data-color-scheme] .project-run-trigger { width: 32px; padding: 0; justify-content: center; }
   .app-shell[data-theme][data-color-scheme] .thread-pr-chip:not(.empty) { max-width: 92px; padding: 0 8px; }
 }
@@ -511,10 +522,10 @@
      plays its own assembly and is not animated by Lumen. */
   .app-shell[data-theme][data-color-scheme] .thread-empty-state > *:not(.mythra-logo),
   .app-shell[data-theme][data-color-scheme] .welcome-screen > * { animation: lm-rise var(--lm-d-4) var(--lm-ease-out) backwards; }
+  /* Pro-ui: no stagger cascades. Everything after the logo arrives as one
+     block, a beat (--lm-d-1) after it. */
   .app-shell[data-theme][data-color-scheme] .thread-empty-state > :nth-child(n+2),
-  .app-shell[data-theme][data-color-scheme] .welcome-screen > :nth-child(n+2) { animation-delay: 80ms; }
-  .app-shell[data-theme][data-color-scheme] .thread-empty-state > :nth-child(n+4),
-  .app-shell[data-theme][data-color-scheme] .welcome-screen > :nth-child(n+4) { animation-delay: 140ms; }
+  .app-shell[data-theme][data-color-scheme] .welcome-screen > :nth-child(n+2) { animation-delay: var(--lm-d-1); }
   .app-shell[data-theme][data-color-scheme] .isolation-choice > button,
   .app-shell[data-theme][data-color-scheme] .empty-state-actions button {
     transition: color var(--lm-d-1) ease, border-color var(--lm-d-1) ease, background-color var(--lm-d-1) ease, box-shadow var(--lm-d-2) ease;
@@ -523,3 +534,222 @@
   .app-shell[data-theme][data-color-scheme] .conv-search-bar { animation: lm-pop-down var(--lm-d-2) var(--lm-ease-out) backwards; }
   .app-shell[data-theme][data-color-scheme] .app-update-notice-progress > span { transition: width var(--lm-d-3) var(--lm-ease-out); }
 }
+
+/* ---- Top bar organisation (2026-11-17) ----
+   Left: identity (project, thread title) and status chips. Right: status,
+   Run, search, usage, the "…" thread menu and the Tools panel toggle. Project
+   instructions, Export, Fork, Undo, Compact, Rename and Open folder live in
+   the thread menu, so the bar keeps its labels at normal widths. */
+.app-shell[data-theme][data-color-scheme] .topbar-left > .project-heading { max-width: 440px; }
+.app-shell[data-theme][data-color-scheme] .topbar-right .project-run-control { margin-right: 2px; }
+/* Run now sits on the right: its editor opens towards the window, not past it. */
+.app-shell[data-theme][data-color-scheme] .topbar-right .project-run-popover { left: auto; right: 0; transform-origin: top right; }
+
+.app-shell[data-theme][data-color-scheme] .thread-menu { position: relative; display: flex; align-items: center; }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-trigger.compact {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-trigger.compact > svg { width: 16px; height: 16px; }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-trigger.compact:hover:not(:disabled) { color: var(--text); border-color: transparent; background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-menu.open .app-action-trigger.compact { color: var(--text); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-menu.open .app-action-trigger.compact > svg:last-child { transform: none; }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list {
+  top: calc(100% + 6px);
+  width: 296px;
+  max-height: min(480px, calc(100vh - 80px));
+  padding: 5px;
+  border: 0;
+  border-radius: var(--r-xl);
+  background: var(--menu-surface);
+  box-shadow: var(--lm-pop-shadow);
+  animation: none;
+}
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list > button {
+  min-height: 30px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+}
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list > button:hover:not(:disabled) { background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list > button:focus-visible { outline: none; background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list > button > svg { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list > button strong { font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list > button small { font-size: 11px; line-height: 1.35; }
+/* D26: one row height for every item; descriptions live in tooltips. */
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list.single-line { width: 256px; }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list.single-line > button { min-height: 28px; padding: 0 8px; }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list.single-line > button strong { font-weight: 400; }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list > button:disabled strong { color: var(--muted-2); }
+/* Project instructions open from the menu, anchored to its right edge. */
+.app-shell[data-theme][data-color-scheme] .project-prompt-control.menu-anchored { position: absolute; top: 0; right: 0; width: 0; height: 100%; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-control.align-end > .project-prompt-popover { left: auto; right: 0; transform-origin: top right; }
+/* The thread title stays visible at every width (truncated), so opening the
+   Tools dock never leaves the bar with no idea which thread is open. */
+@container chat-main (max-width: 640px) {
+  .app-shell[data-theme][data-color-scheme] .project-heading small { display: block; }
+}
+@supports not (container-type: inline-size) {
+  .app-shell[data-theme][data-color-scheme] .project-heading small { display: block; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list { animation: lm-pop-down var(--lm-d-2) var(--lm-ease-out) backwards; transform-origin: top right; }
+}
+
+/* ---- New-thread landing, round 2 (D34) ----
+   One quiet stack: a small mark, the question, one line of context, a
+   segmented Shared / Isolated choice and three ghost shortcuts. The claims
+   checklist is gone; descriptions live in tooltips and one caption. */
+.app-shell[data-theme][data-color-scheme] .thread-empty-state .mythra-logo { --mythra-logo-size: 64px; --mythra-logo-gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .thread-empty-state h1 { margin: 10px 0 6px; font-size: 26px; }
+.app-shell[data-theme][data-color-scheme] .thread-empty-state p { margin-bottom: 18px; color: var(--muted); font-size: 13.5px; }
+.app-shell[data-theme][data-color-scheme] .thread-empty-project { color: var(--ink-2); font-weight: 550; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice {
+  width: auto;
+  display: inline-flex;
+  gap: 0;
+  margin: 0;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--lm-press);
+}
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button {
+  min-height: 0;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  box-shadow: none;
+}
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button:hover:not(:disabled) { color: var(--text); border-color: transparent; background: transparent; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button.active {
+  color: var(--text);
+  border-color: transparent;
+  background: var(--panel-3);
+  box-shadow: var(--lm-seg-shadow);
+}
+.app-shell[data-theme][data-color-scheme="light"] .isolation-choice > button.active { background: var(--lm-seg-surface); box-shadow: var(--lm-seg-shadow); }
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button > svg { width: 14px; height: 14px; padding: 0; border-radius: 0; color: inherit; background: transparent; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button.active > svg { color: var(--accent); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button > span { display: inline-flex; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice strong { color: inherit; font-size: 12.5px; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button:disabled { opacity: .55; cursor: default; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button.git-initialize-choice { border: 0; color: var(--accent); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button.git-initialize-choice:hover:not(:disabled) { color: var(--accent); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .isolation-caption { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .empty-state-actions { gap: 2px; margin-top: 18px; }
+.app-shell[data-theme][data-color-scheme] .empty-state-actions button { min-height: 28px; padding: 0 10px 0 4px; border-color: transparent; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .empty-state-actions button:hover { color: var(--text); border-color: transparent; background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .welcome-screen h1 { font-size: 26px; }
+@media (max-width: 700px) {
+  .app-shell[data-theme][data-color-scheme] .isolation-choice { grid-template-columns: none; }
+}
+
+/* ---- Top bar, round 2 ----
+   Waiting on the user is amber, not the working spinner (D18). */
+.app-shell[data-theme][data-color-scheme] .runtime-status.attention { color: var(--orange); }
+.app-shell[data-theme][data-color-scheme] .runtime-status.attention > svg { color: var(--orange); }
+.app-shell[data-theme][data-color-scheme] .runtime-status.working { color: var(--ink-2); }
+
+/* Conversation search (⌘F) shows focus like every other field (K13). */
+.app-shell[data-theme][data-color-scheme] .conv-search-bar:focus-within { border-color: var(--accent-line); box-shadow: var(--ring); }
+/* Whatever ends the landing stack takes the bottom auto margin, so the stack
+   stays vertically centred when the Chats landing ends on its subtitle. */
+.app-shell[data-theme][data-color-scheme] .thread-empty-state > :last-child { margin-bottom: auto; }
+
+/* ---- Top bar, round 3 (G4, G7, C1, approvals jump) ----
+   Status words that ask something of the person ("Needs approval",
+   "Setup needed") are buttons; plain status ("Ready", "Working") is text. */
+.app-shell[data-theme][data-color-scheme] .runtime-status-slot { display: inline-flex; align-items: center; flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .runtime-status-action {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  white-space: nowrap;
+}
+.app-shell[data-theme][data-color-scheme] .runtime-status-action.attention,
+.app-shell[data-theme][data-color-scheme] .runtime-status-action.setup { color: var(--orange); background: var(--orange-soft); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .runtime-status-action > svg { color: var(--orange); }
+.app-shell[data-theme][data-color-scheme] .runtime-status-action:hover { box-shadow: inset 0 0 0 1px var(--orange-line); }
+/* "Setup needed" must never read as "Needs approval": besides its own word
+   and wrench, it is an outlined chip, while approval is a filled one. */
+.app-shell[data-theme][data-color-scheme] .runtime-status-action.setup { background: transparent; box-shadow: inset 0 0 0 1px var(--orange-line); }
+.app-shell[data-theme][data-color-scheme] .runtime-status-action.setup:hover { background: var(--orange-soft); }
+.app-shell[data-theme][data-color-scheme] .runtime-status-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Run before it is set up: the same word, quieter, opening its setup. */
+.app-shell[data-theme][data-color-scheme] .project-run-trigger.unset { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .project-run-trigger.unset > svg:first-child { color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .project-run-trigger.unset:hover { color: var(--text); }
+/* Usage: the figure is the point; the window name and "left" are extras. */
+.app-shell[data-theme][data-color-scheme] .topbar-usage-chip > .usage-chip-text { display: inline-flex; min-width: 0; white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .usage-chip-value { font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .usage-chip-window,
+.app-shell[data-theme][data-color-scheme] .usage-chip-suffix { color: var(--muted); white-space: pre; }
+
+/* ---- Top bar shedding, round 4 (B06) ----
+   useTopbarFit measures the bar and writes every level it had to reach into
+   `data-shed` ("1 2 3"), so `[data-shed~="N"]` means "at least level N".
+   Order (src/lib/topbarFit.ts): 1 key hints → 2 usage window name →
+   3 empty "Pull requests" chip (joins the … menu) → 4 Search label →
+   5 idle usage chip, whole (joins the … menu; "62% left" never becomes a
+   bare "62%") → 6 unset Run's word → 7 Tools label → 8 Run's label →
+   9 PR prefix + short status words + sign-in chip.
+   Status words never disappear and the thread title keeps ~200px first.
+   Base rules restate "shown" so the legacy viewport/container rules in
+   styles.css can't hide anything on their own. */
+.app-shell[data-theme][data-color-scheme] .topbar .runtime-status { display: inline-flex; max-width: none; flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .topbar .runtime-status > span:not(.sr-only) { display: inline; overflow: visible; }
+.app-shell[data-theme][data-color-scheme] .topbar .command-palette-trigger { display: flex; width: auto; padding: 0 6px 0 9px; justify-content: flex-start; }
+.app-shell[data-theme][data-color-scheme] .topbar .command-palette-trigger > span,
+.app-shell[data-theme][data-color-scheme] .topbar .command-palette-trigger kbd,
+.app-shell[data-theme][data-color-scheme] .topbar .workspace-tools-trigger > span,
+.app-shell[data-theme][data-color-scheme] .topbar .workspace-tools-trigger kbd { display: inline; }
+.app-shell[data-theme][data-color-scheme] .topbar .topbar-usage-slot { display: contents; }
+.app-shell[data-theme][data-color-scheme] .topbar .thread-pr-chip.empty > span { display: inline; }
+.app-shell[data-theme][data-color-scheme] .topbar .isolation-chip > span,
+.app-shell[data-theme][data-color-scheme] .topbar .handoff-chip > span { display: inline; }
+.app-shell[data-theme][data-color-scheme] .topbar-left > .project-heading { flex: 0 1 auto; }
+
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="1"] .command-palette-trigger kbd,
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="1"] .workspace-tools-trigger kbd { display: none; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="1"] .workspace-tools-trigger { padding-right: 11px; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="2"] .usage-chip-window { display: none; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="3"] .thread-pr-chip.empty { display: none; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="4"] .command-palette-trigger { width: 28px; padding: 0; justify-content: center; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="4"] .command-palette-trigger > span { display: none; }
+/* M03 (round 6): the quota chip leaves whole; its "left" word is never shed. */
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="5"] .topbar-usage-slot:not(.needs-action) { display: none; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="6"] .project-run-trigger.unset { width: 30px; padding: 0; justify-content: center; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="6"] .project-run-trigger.unset > span { display: none; }
+/* M09: at the last step even the sign-in chip moves to the … menu. */
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="9"] .topbar-usage-slot.needs-action { display: none; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="7"] .workspace-tools-trigger { width: 28px; padding: 0; justify-content: center; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="7"] .workspace-tools-trigger > span { display: none; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="8"] .project-run-trigger { padding: 0 8px; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="8"] .project-run-trigger > span,
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="8"] .project-run-trigger small,
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="8"] .isolation-chip > span,
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="8"] .handoff-chip > span { display: none; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="8"] .isolation-chip,
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="8"] .handoff-chip { width: 28px; padding: 0; justify-content: center; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="9"] .thread-pr-prefix,
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="9"] .thread-pr-chip > em { display: none; }
+.app-shell[data-theme][data-color-scheme] .project-heading-path { color: var(--muted-2); }
+/* "Ready" is a state, so its dot is the status green, not the interaction accent (M07). */
+.app-shell[data-theme][data-color-scheme] div.runtime-status:not(.working) > svg { color: var(--success); }
+.app-shell[data-theme][data-color-scheme] div.runtime-status.unavailable { color: var(--orange); }
+.app-shell[data-theme][data-color-scheme] div.runtime-status.unavailable > svg { color: var(--orange); }

@@ -72,3 +72,15 @@ export function parentPath(path: string): string | null {
   if (/^[a-zA-Z]:$/.test(parent)) return `${parent}${trimmed[index]}`;
   return parent;
 }
+
+/**
+ * A home-relative form for display: "/Users/alex/code/app" → "~/code/app".
+ * Only the conventional home roots are shortened; anything else is unchanged.
+ */
+export function homeRelativePath(path: string): string {
+  const posix = /^\/(?:Users|home)\/[^/]+(?=\/|$)/.exec(path);
+  if (posix) return `~${path.slice(posix[0].length)}`;
+  const windows = /^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)/.exec(path);
+  if (windows) return `~${path.slice(windows[0].length)}`;
+  return path;
+}

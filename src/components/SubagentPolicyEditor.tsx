@@ -1,4 +1,6 @@
+import "./SubagentPolicyEditor.css";
 import { Check, Minus, Plus, ShieldCheck } from "lucide-react";
+import { Switch } from "./SettingsBits";
 import { ChildAgentRoster } from "./ChildAgentRoster";
 import { crewSafeConcurrency, type ChildAgentReadiness } from "../lib/childAgents";
 import type { ProjectSubagentSettings } from "../types";
@@ -40,16 +42,7 @@ export function SubagentPolicyEditor({ policy, readiness, disabled, modelCatalog
               ? "The model may split a turn across parallel sub-agents."
               : "Sub-agents are off for this setup."}</small>
           </span>
-          <button
-            type="button"
-            role="switch"
-            aria-label="Allow sub-agent spawning"
-            aria-checked={policy.enabled}
-            className={`toggle-switch ${policy.enabled ? "on" : ""}`}
-            onClick={() => onChange({ ...policy, enabled: !policy.enabled, childAgents: roster })}
-          >
-            <span />
-          </button>
+          <Switch checked={policy.enabled} label="Allow sub-agent spawning" onChange={() => onChange({ ...policy, enabled: !policy.enabled, childAgents: roster })} />
         </div>
 
         <div className={`policy-row ${policy.enabled ? "" : "muted"}`}>

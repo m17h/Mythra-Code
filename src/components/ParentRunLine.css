@@ -17,7 +17,7 @@
 .parent-run-line-copy > span { overflow: hidden; color: var(--ink-2); white-space: nowrap; text-overflow: ellipsis; }
 .parent-run-line-copy > small { color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.35; overflow-wrap: anywhere; }
 .parent-run-line-actions { min-width: 0; max-width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 2px; margin-left: auto; }
-.parent-run-line-actions button { flex: 0 1 auto; min-width: 0; max-width: 100%; min-height: 24px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font: inherit; white-space: normal; overflow-wrap: anywhere; }
+.parent-run-line-actions button { flex: 0 1 auto; min-width: 0; max-width: 100%; min-height: 24px; padding: 0 8px; border: 0; border-radius: var(--r-control); background: transparent; color: var(--muted); font: inherit; white-space: normal; overflow-wrap: anywhere; }
 .parent-run-line-actions button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
 /* Keep the action and full model name readable when the composer is narrow. */
 .parent-run-line-actions button.primary { color: var(--text); }

@@ -1,0 +1,112 @@
+/* ============================================================================
+   Lumen primitives: the shared Switch and EmptyState
+   ----------------------------------------------------------------------------
+   Components: src/components/Switch.tsx (Switch, SwitchTrack) and
+   src/components/EmptyState.tsx. One look for every on/off control and every
+   "nothing here yet" message, so the app stops having six switches and thirty
+   empty states. Same contract as the rest of Lumen (see tokens.css): shell
+   scope on every rule, no @layer, no :is()/:where()/:has()/:focus-visible in
+   selector lists, motion only inside prefers-reduced-motion: no-preference.
+   ========================================================================== */
+
+/* ---- Switch ----
+   The look itself is the shared `.toggle-switch` (settings.css: accent track
+   when on with an --on-accent knob, recessed neutral track when off), so the
+   Settings `Switch` in SettingsBits.tsx and this one can never drift apart.
+   Here: the small size for menus and dense rows, the decorative track used
+   inside whole-row switches, and the disabled/unavailable states. */
+.app-shell[data-theme][data-color-scheme] span.lm-switch { display: inline-flex; align-items: center; box-sizing: border-box; flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .lm-switch > span { display: block; flex: none; border-radius: 50%; }
+.app-shell[data-theme][data-color-scheme] .toggle-switch.lm-switch-sm { width: 28px; height: 16px; padding: 2px; }
+.app-shell[data-theme][data-color-scheme] .toggle-switch.lm-switch-sm > span { width: 12px; height: 12px; }
+.app-shell[data-theme][data-color-scheme] .toggle-switch.lm-switch-sm.on > span { transform: translateX(12px); }
+.app-shell[data-theme][data-color-scheme] .lm-switch:disabled { cursor: default; opacity: .45; }
+.app-shell[data-theme][data-color-scheme] .lm-switch.unavailable { cursor: default; opacity: .55; }
+/* A whole row that is the switch takes the clicks and shows the focus ring. */
+.app-shell[data-theme][data-color-scheme] [role="switch"] > .lm-switch { pointer-events: none; }
+
+/* ---- Menu rows ----
+   Keyboard focus on a menu row reads like a native menu highlight: the
+   neutral selected fill plus a hairline accent edge, not the 2px ring used
+   for free-standing controls. One rule per selector (Lumen contract). */
+.app-shell[data-theme][data-color-scheme] [role="menu"] button[role="menuitem"]:focus-visible { outline: none; background: var(--lm-press); box-shadow: inset 0 0 0 1px var(--accent-line); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] [role="menu"] button[role="menuitem"]:focus { outline: none; background: var(--lm-press); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.app-shell[data-theme][data-color-scheme] [role="menu"] button[role="menuitemradio"]:focus-visible { outline: none; background: var(--lm-press); box-shadow: inset 0 0 0 1px var(--accent-line); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] [role="menu"] button[role="menuitemradio"]:focus { outline: none; background: var(--lm-press); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.app-shell[data-theme][data-color-scheme] [role="menu"] button[role="menuitemcheckbox"]:focus-visible { outline: none; background: var(--lm-press); box-shadow: inset 0 0 0 1px var(--accent-line); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] [role="menu"] button[role="menuitemcheckbox"]:focus { outline: none; background: var(--lm-press); box-shadow: inset 0 0 0 1px var(--accent-line); }
+
+/* ---- Empty state ---- */
+.app-shell[data-theme][data-color-scheme] .lm-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 28px 20px;
+  color: var(--muted);
+  text-align: center;
+}
+.app-shell[data-theme][data-color-scheme] .lm-empty-icon { display: inline-flex; margin-bottom: 2px; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .lm-empty-title { color: var(--text); font-size: var(--fs-ui); font-weight: 600; line-height: 1.35; }
+.app-shell[data-theme][data-color-scheme] .lm-empty-text { max-width: 38ch; color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .lm-empty-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  margin-top: 6px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: var(--lm-press);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .lm-empty-action:hover { border-color: var(--line-strong); }
+.app-shell[data-theme][data-color-scheme="light"] .lm-empty-action { border-color: var(--line-strong); background: var(--panel); box-shadow: var(--elev-1); }
+.app-shell[data-theme][data-color-scheme] .lm-empty-compact { gap: 4px; padding: 18px 14px; }
+.app-shell[data-theme][data-color-scheme] .lm-empty-compact .lm-empty-title { font-size: 12.5px; }
+.app-shell[data-theme][data-color-scheme] .lm-empty-compact .lm-empty-text { font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .lm-empty-inline {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 4px 8px;
+  padding: 8px 10px;
+  text-align: left;
+}
+.app-shell[data-theme][data-color-scheme] .lm-empty-inline .lm-empty-icon { margin: 0; }
+.app-shell[data-theme][data-color-scheme] .lm-empty-inline .lm-empty-title { color: var(--muted); font-size: 12px; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .lm-empty-inline .lm-empty-text { flex-basis: 100%; padding-left: 21px; }
+/* Placements. Grid lists span the empty state across every column. */
+.app-shell[data-theme][data-color-scheme] .cursor-model-options > .lm-empty { grid-column: 1 / -1; min-height: 150px; }
+.app-shell[data-theme][data-color-scheme] .model-menu-empty { min-height: 120px; }
+.app-shell[data-theme][data-color-scheme] .palette-empty { padding: 36px 20px; }
+.app-shell[data-theme][data-color-scheme] .sidebar-empty { margin: 4px 0; padding: 16px 12px; }
+/* In a source list the empty line is secondary text, not a headline. */
+.app-shell[data-theme][data-color-scheme] .sidebar-empty .lm-empty-title { color: var(--muted); font-size: 12px; font-weight: 500; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .lm-switch { transition: background-color var(--lm-d-2) ease; }
+  .app-shell[data-theme][data-color-scheme] .lm-switch > span { transition: transform var(--lm-d-2) var(--lm-ease-out), background-color var(--lm-d-2) ease; }
+  .app-shell[data-theme][data-color-scheme] .lm-empty { animation: lm-fade var(--lm-d-2) var(--lm-ease-out) backwards; }
+}
+
+/* ---- Disclosure summaries (round 4) ----
+   Every "show more" outside Settings uses the same quiet chevron that turns
+   when open (Settings has .set-disclosure); never the browser's triangle. */
+.app-shell[data-theme][data-color-scheme] .lm-summary { list-style: none; cursor: pointer; }
+.app-shell[data-theme][data-color-scheme] .lm-summary::-webkit-details-marker { display: none; }
+.app-shell[data-theme][data-color-scheme] .lm-summary::marker { content: ""; }
+.app-shell[data-theme][data-color-scheme] .lm-chevron { flex: none; display: inline-block; margin: 0 4px 0 -1px; color: var(--muted); vertical-align: -2px; }
+.app-shell[data-theme][data-color-scheme] .lm-summary:hover > .lm-chevron { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] details[open] > .lm-summary > .lm-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .lm-chevron { transition: transform var(--lm-d-1) var(--lm-ease-out); }
+}

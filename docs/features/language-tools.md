@@ -1,6 +1,6 @@
 # Shared language tools
 
-Settings → Tools & MCP contains the language-tool inventory. Installations are
+Settings → MCP & language servers contains the language-tool inventory. Installations are
 shared across projects on the current computer, not across computers. Settings
 are saved immediately; the modal's general Save button is not required.
 

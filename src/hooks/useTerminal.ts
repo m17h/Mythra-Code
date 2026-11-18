@@ -160,7 +160,7 @@ function createSession(scope: string, touchedAt: number): TerminalSession {
 }
 
 /**
- * The Workspace terminal, scoped to one execution path at a time.
+ * The Tools terminal, scoped to one execution path at a time.
  *
  * Output, running state, and the PTY process all belong to the execution path
  * that produced them. A single shared buffer meant a command started in one

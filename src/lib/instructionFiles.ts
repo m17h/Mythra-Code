@@ -57,7 +57,7 @@ export function registerGlobalInstructionFileFlusher(flush: () => Promise<void>)
 export async function flushPendingGlobalInstructionFileEdits(): Promise<void> {
   const results = await Promise.allSettled([...globalInstructionFlushers].map((flush) => flush()));
   if (results.some((result) => result.status === "rejected")) {
-    throw new Error("A global instruction file needs attention. Reopen Settings → Prompts to resolve its save or recovery state.");
+    throw new Error("A global instruction file needs attention. Reopen Settings → Instructions to resolve its save or recovery state.");
   }
 }
 

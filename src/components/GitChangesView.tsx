@@ -1,7 +1,8 @@
-import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
-import { CircleAlert, FileWarning, LoaderCircle, Minus, Plus, RefreshCw, Undo2 } from "lucide-react";
+import { useEffect, useId, useState, type KeyboardEvent, type ReactNode } from "react";
+import { CheckCircle2, CircleAlert, FileWarning, LoaderCircle, Minus, Plus, RefreshCw, Undo2, ChevronRight } from "lucide-react";
 import { AppActionMenu, type AppActionMenuItem } from "./AppActionMenu";
-import { DiffText } from "./DiffView";
+import { DISCARD_LABEL, DiffText } from "./DiffView";
+import { HighlightedCode } from "./SyntaxCode";
 import {
   CHANGE_AREA_LABELS,
   CHANGE_AREAS,
@@ -11,7 +12,7 @@ import {
   fileCount,
   groupChanges,
   partiallyStagedPaths,
-  readTime,
+  relativeAge,
   splitChangePath,
 } from "../lib/gitChanges";
 import type { GitChange, GitChangeArea } from "../lib/gitInspection";
@@ -24,11 +25,59 @@ export type GitPathAction = "stage" | "unstage" | "revert";
  *  hundred interactive rows in a narrow dock is still a wall. */
 const GROUP_PREVIEW = 120;
 
+/** Group explanations live in the heading's tooltip, not under every heading. */
 const AREA_HELP: Record<GitChangeArea, string> = {
-  staged: "Included in “Commit staged”.",
+  staged: "Included when you commit staged changes.",
   unstaged: "Edits to tracked files that are not staged yet.",
   untracked: "Files Git is not tracking yet.",
 };
+
+/** Re-renders now and then so "2 min ago" stays true while a panel is idle. */
+function useNow(intervalMs = 30_000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
+
+/** "Updated just now" with the exact time on hover. */
+export function GitUpdatedAt({ at, loading }: { at: number | null | undefined; loading?: boolean }) {
+  const now = useNow();
+  if (loading && !at) return <span className="git-updated-at" role="status"><LoaderCircle className="spin" size={11} aria-hidden="true" /> Reading…</span>;
+  const age = at ? relativeAge(at, now) : null;
+  if (!age || !at) return <span className="git-updated-at" />;
+  return <span className="git-updated-at" title={`Read at ${new Date(at).toLocaleString()}`}>Updated {age}</span>;
+}
+
+/**
+ * Git's own error text is for the details disclosure. The sentence people
+ * read first names what happened in plain words.
+ */
+export function friendlyGitMessage(raw: string, fallback = "Couldn't read this folder's Git status."): string {
+  if (/not a git repository/i.test(raw)) return "This folder isn't a Git repository.";
+  if (/index\.lock|unable to create .*\.lock|another git process/i.test(raw)) return "Another Git command is using this repository. Try again in a moment.";
+  if (/dubious ownership|safe\.directory/i.test(raw)) return "Git doesn't trust this folder because another user owns it.";
+  if (/program not found|command not found|no such file or directory.*git|failed to spawn/i.test(raw)) return "Git couldn't be started. Check that Git is installed.";
+  if (/permission denied/i.test(raw)) return "Git doesn't have permission to read this folder.";
+  if (/timed? ?out/i.test(raw)) return "Git took too long to answer. Try again.";
+  return fallback;
+}
+
+export function FriendlyGitError({ raw, onRetry, fallback }: { raw: string; onRetry?: () => void; fallback?: string }) {
+  const message = friendlyGitMessage(raw, fallback);
+  return (
+    <div className="git-local-note bad git-friendly-error" role="alert">
+      <CircleAlert size={13} aria-hidden="true" />
+      <div>
+        <span>{message}</span>
+        {raw.trim() && raw.trim() !== message && <details><summary className="lm-summary"><ChevronRight size={12} aria-hidden="true" className="lm-chevron" />Details</summary><code>{raw.trim()}</code></details>}
+      </div>
+      {onRetry && <button type="button" className="thread-pr-inline-button" onClick={onRetry}>Try again</button>}
+    </div>
+  );
+}
 
 export interface GitChangesViewProps {
   changes: ReturnType<typeof useProjectGitChanges>;
@@ -41,6 +90,14 @@ export interface GitChangesViewProps {
   onUnstageAll: () => void;
   moreItems: AppActionMenuItem[];
   commit: ReactNode;
+  /** The surrounding panel already offers Refresh. */
+  hideRefresh?: boolean;
+  /** The surrounding panel already shows the summary, freshness and More menu. */
+  hideToolbar?: boolean;
+  /** +added −removed lines per path, when the panel has a diff against HEAD. */
+  lineCounts?: ReadonlyMap<string, { additions: number; deletions: number }>;
+  /** Shown with the clean state, e.g. a Push for saved commits. */
+  cleanNote?: ReactNode;
 }
 
 export function GitChangesView(props: GitChangesViewProps) {
@@ -53,7 +110,6 @@ export function GitChangesView(props: GitChangesViewProps) {
   const changed = listed?.changedFiles ?? snapshot?.changedFiles ?? 0;
   const canUnstageAll = !listed && !snapshot ? true : staged > 0;
   const canStageAll = !listed ? true : listed.unstagedFiles + listed.untrackedFiles > 0;
-  const freshness = readTime(state.loadedAt);
 
   const moveFocus = (event: KeyboardEvent<HTMLElement>) => {
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -71,16 +127,16 @@ export function GitChangesView(props: GitChangesViewProps) {
     <div className="git-changes">
       {props.commit}
 
-      <div className="git-view-toolbar">
+      {!props.hideToolbar && <div className="git-view-toolbar">
         <div className="git-view-summary">
           {props.absent
             ? <span>No repository yet</span>
             : state.loading && !listed
               ? <span><LoaderCircle className="spin" size={12} aria-hidden="true" /> Reading changes…</span>
               : <span><strong>{changed ? fileCount(changed) : "No changes"}</strong>{staged ? ` · ${staged} staged` : ""}</span>}
-          {freshness && listed && <small>read {freshness}</small>}
+          {listed && <GitUpdatedAt at={state.loadedAt} />}
         </div>
-        {state.available && !props.absent && (
+        {state.available && !props.absent && !props.hideRefresh && (
           <button
             type="button"
             className="icon-button tiny"
@@ -93,23 +149,26 @@ export function GitChangesView(props: GitChangesViewProps) {
             <RefreshCw size={13} className={state.loading ? "spin" : undefined} aria-hidden="true" />
           </button>
         )}
-        <AppActionMenu label="More" ariaLabel="More local Git actions" items={props.moreItems} />
-      </div>
+        <AppActionMenu compact ariaLabel="More Git actions" items={props.moreItems} />
+      </div>}
 
-      {state.error && (
-        <div className="git-local-note bad" role="alert">
-          <CircleAlert size={13} aria-hidden="true" />
-          <span>{state.error}</span>
-          <button type="button" className="thread-pr-inline-button" onClick={state.refresh}>Try again</button>
-        </div>
+      {props.hideToolbar && state.loading && !listed && !props.absent && !state.error && (
+        <p className="git-changes-loading" role="status"><LoaderCircle className="spin" size={12} aria-hidden="true" /> Reading changes…</p>
       )}
+
+      {state.error && !props.absent && <FriendlyGitError raw={state.error} onRetry={state.refresh} />}
 
       {listed?.truncated && (
         <p className="git-fineprint">This folder has more changes than Mythra Code lists at once. Counts are at least what is shown; use the terminal for the complete list.</p>
       )}
 
       {state.available && listed && rows.length === 0 && !state.error && (
-        <p className="git-changes-empty">Nothing to commit. The working folder matches the last commit.</p>
+        <div className="studio-empty git-clean-state">
+          <CheckCircle2 size={20} aria-hidden="true" />
+          <strong>No changes</strong>
+          <span>Everything matches the last commit.</span>
+          {props.cleanNote}
+        </div>
       )}
 
       {rows.length > 0 && (
@@ -125,6 +184,7 @@ export function GitChangesView(props: GitChangesViewProps) {
               mutationDisabled={props.mutationDisabled}
               mutationDisabledReason={props.mutationDisabledReason}
               onPathAction={props.onPathAction}
+              lineCounts={props.lineCounts}
               bulk={area === "staged"
                 ? { label: "Unstage all", icon: Minus, run: props.onUnstageAll, enabled: canUnstageAll, title: "Keep every edit, but take it all out of the next commit" }
                 : { label: "Stage all", icon: Plus, run: props.onStageAll, enabled: canStageAll, title: "Stage every unstaged and new file" }}
@@ -146,6 +206,7 @@ function ChangeGroup(props: {
   mutationDisabled: boolean;
   mutationDisabledReason: string;
   onPathAction?: (action: GitPathAction, path: string) => void;
+  lineCounts?: GitChangesViewProps["lineCounts"];
   bulk: { label: string; icon: typeof Plus; run: () => void; enabled: boolean; title: string };
 }) {
   const { area, rows, state } = props;
@@ -158,8 +219,7 @@ function ChangeGroup(props: {
   return (
     <section className={`git-change-group ${area}`} aria-labelledby={headingId}>
       <header>
-        <h3 id={headingId}>{CHANGE_AREA_LABELS[area]} <b>{rows.length}</b></h3>
-        <small>{AREA_HELP[area]}</small>
+        <h3 id={headingId} title={AREA_HELP[area]}>{CHANGE_AREA_LABELS[area]} <b>{rows.length}</b></h3>
         {showBulk && (
           <button
             type="button"
@@ -182,6 +242,9 @@ function ChangeGroup(props: {
             mutationDisabled={props.mutationDisabled}
             mutationDisabledReason={props.mutationDisabledReason}
             onPathAction={props.onPathAction}
+            // A file both staged and not staged has one HEAD-relative count, which
+            // describes neither area alone: show no numbers rather than wrong ones.
+            counts={row.area === "untracked" || props.partial.has(row.path) ? undefined : props.lineCounts?.get(row.path)}
           />
         ))}
       </ul>
@@ -201,6 +264,7 @@ function ChangeRow(props: {
   mutationDisabled: boolean;
   mutationDisabledReason: string;
   onPathAction?: (action: GitPathAction, path: string) => void;
+  counts?: { additions: number; deletions: number };
 }) {
   const { row, state, selected } = props;
   const { name, directory } = splitChangePath(row.path);
@@ -219,7 +283,7 @@ function ChangeRow(props: {
           data-change-row=""
           aria-expanded={selected}
           aria-controls={selected ? previewId : undefined}
-          aria-label={`${row.path}, ${status}${row.originalPath ? ` from ${row.originalPath}` : ""}, ${CHANGE_AREA_LABELS[row.area].toLowerCase()}`}
+          aria-label={`${row.path}, ${status}${row.originalPath ? ` from ${row.originalPath}` : ""}, ${CHANGE_AREA_LABELS[row.area].toLowerCase()}${props.counts && (props.counts.additions > 0 || props.counts.deletions > 0) ? `, ${props.counts.additions} lines added, ${props.counts.deletions} removed` : ""}`}
           title={row.originalPath ? `${row.originalPath} → ${row.path}` : row.path}
           onClick={() => state.select(selected ? null : { path: row.path, area: row.area })}
         >
@@ -230,6 +294,11 @@ function ChangeRow(props: {
               {directory && <span className="git-change-dir">{directory}</span>}
               {row.originalPath && <span className="git-change-from">from {row.originalPath}</span>}
               {props.partial && <span className="git-change-chip">{row.area === "staged" ? "+ newer edits" : "partly staged"}</span>}
+            </span>
+          )}
+          {props.counts && (props.counts.additions > 0 || props.counts.deletions > 0) && (
+            <span className="git-change-counts" aria-hidden="true">
+              <ins>+{props.counts.additions}</ins><del>−{props.counts.deletions}</del>
             </span>
           )}
         </button>
@@ -247,8 +316,8 @@ function ChangeRow(props: {
             className="git-row-action danger"
             onClick={() => props.onPathAction?.("revert", row.path)}
             disabled={actionsUnavailable}
-            title={actionsUnavailable ? reason : `Discard staged and unstaged edits to ${row.path}. Asks first.`}
-            aria-label={`Discard changes to ${row.path}…`}
+            title={actionsUnavailable ? reason : `${DISCARD_LABEL} Throws away the staged and unstaged edits to ${row.path}. Asks first.`}
+            aria-label={`Discard local changes to ${row.path}…`}
           ><Undo2 size={12} aria-hidden="true" /></button>
         )}
       </div>
@@ -285,9 +354,9 @@ function ChangePreview({ state, row, discardReason }: { state: GitChangesViewPro
       )}
       {diff && !diff.binary && (
         row.area === "untracked"
-          ? <pre className="diff-view git-change-raw" tabIndex={0} role="region" aria-label={`New file contents for ${row.path}`}>{diff.text || "Empty file."}</pre>
+          ? <pre className="diff-view git-change-raw" tabIndex={0} role="region" aria-label={`New file contents for ${row.path}`}>{diff.text ? <HighlightedCode code={diff.text} path={row.path} /> : "Empty file."}</pre>
           : diff.text.trim()
-            ? <DiffText text={diff.text} initialLines={300} scrollLabel={`Diff preview for ${row.path}`} />
+            ? <DiffText text={diff.text} initialLines={300} path={row.path} scrollLabel={`Diff preview for ${row.path}`} />
             : <p className="git-change-meta">No textual difference (for example, only file mode changed).</p>
       )}
     </>

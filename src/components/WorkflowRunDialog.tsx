@@ -1,3 +1,4 @@
+import "./WorkflowManager.css";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Play, TerminalSquare, X } from "lucide-react";
 import { useModalFocus } from "../hooks/useModalFocus";
@@ -53,8 +54,8 @@ export function WorkflowRunDialog({ workflow, projects, initialProjectId, userPr
         {workflow.steps.some((step) => step.type === "command") && (
           <div className="workflow-command-warning"><TerminalSquare size={14} /><span><strong>Shell commands included</strong><small>{machine && !machine.permission ? `Commands run in the selected project on ${machine.name}.` : `Commands run in the selected project${machine ? ` on ${machine.name}` : ""} with ${workflow.run.permission} permissions.`} Input values are substituted literally; step-result variables resolve while running.</small>{workflow.steps.filter((step) => step.type === "command").map((step) => <code key={step.id}>{interpolateWorkflowText(step.command, previewVariables)}</code>)}</span></div>
         )}
-        <div className="workflow-run-summary"><span>{workflow.steps.length} steps</span><span>{({ openai: "OpenAI", claude: "Claude", cursor: "Cursor", openrouter: "OpenRouter", lmstudio: "LM Studio" })[workflow.run.provider]} · {workflow.run.model}</span>{(!machine || machine.effort) && <span>{workflow.run.reasoningEffort}{workflow.run.ultra ? " + Ultra" : ""}</span>}{(!machine || machine.permission) && <span>Access: {workflow.run.permission === "full" ? "Full" : workflow.run.permission === "read-only" ? "Read only" : "Ask"}</span>}{machine && <span>On {machine.name}</span>}</div>
-        {!projects.length && <p>Add a project before running this recipe.</p>}
+        <div className="workflow-run-summary"><span>{workflow.steps.length} steps</span><span>{({ openai: "OpenAI", claude: "Claude", cursor: "Cursor", openrouter: "OpenRouter", lmstudio: "LM Studio" })[workflow.run.provider]} · {workflow.run.model}</span>{(!machine || machine.effort) && <span>{workflow.run.reasoningEffort}{workflow.run.ultra ? " + Ultra" : ""}</span>}{(!machine || machine.permission) && <span>Access: {workflow.run.permission === "full" ? "Full" : workflow.run.permission === "read-only" ? "Read only" : "Ask to act"}</span>}{machine && <span>On {machine.name}</span>}</div>
+        {!projects.length && <p>Add a project before running this workflow.</p>}
         {notice}
         <div className="workflow-editor-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={!project || submitting || runBlocked} aria-busy={submitting || undefined} onClick={() => { if (!submitting && !runBlocked) onRun(workflow.id, variables, projectId); }}><Play size={12} /> {submitting ? "Starting…" : "Run now"}</button></div>
       </div>

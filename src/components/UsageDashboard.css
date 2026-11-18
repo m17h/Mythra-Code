@@ -4,9 +4,8 @@
 /* Explicit layout containment keeps fallback fixed-position day cards relative
    to this dashboard in every engine. `container-type` alone does not create a
    fixed containing block in current WebKit. */
-.usage-dashboard { container-type: inline-size; contain: layout; --usage-series-1: #3987e5; --usage-series-2: #d95926; }
-.app-shell[data-color-scheme="light"] .usage-dashboard { --usage-series-1: #2a78d6; --usage-series-2: #eb6834; }
-.app-shell[data-theme="atari"] .usage-dashboard { --usage-series-1: #8e3b32; --usage-series-2: #977030; }
+/* Series colours come from the theme (--chart-1/2 in tokens.css). */
+.usage-dashboard { container-type: inline-size; contain: layout; --usage-series-1: var(--chart-1); --usage-series-2: var(--chart-2); }
 .app-shell[data-theme="atari"] .usage-dashboard :is(.usage-chart-bar, .usage-swatch).series-2 { background: repeating-linear-gradient(135deg, var(--usage-series-2) 0 3px, var(--field) 3px 5px); }
 
 .usage-dashboard-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--s-2) var(--s-4); }
@@ -37,7 +36,7 @@
 .usage-pricing-source > small { font-size: inherit; text-align: right; overflow-wrap: anywhere; }
 .usage-pricing-detail { display: block; font-size: var(--fs-micro); }
 .usage-pricing-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--line-strong); align-self: center; }
-.usage-pricing-source.ok .usage-pricing-dot, .usage-pricing-details > summary.ok .usage-pricing-dot { background: var(--green); }
+.usage-pricing-source.ok .usage-pricing-dot, .usage-pricing-details > summary.ok .usage-pricing-dot { background: var(--accent); }
 .usage-pricing-source.warn .usage-pricing-dot, .usage-pricing-details > summary.warn .usage-pricing-dot { background: var(--red); }
 .usage-dashboard-sources { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-3); }
 .usage-dashboard-sources .secondary-button { min-height: 28px; padding: 0 var(--s-3); font-size: var(--fs-meta); }
@@ -48,16 +47,18 @@
 .usage-segmented, .usage-tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--field); }
 .usage-segmented > button, .usage-tabs > button { min-height: 26px; padding: 0 10px; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-meta); font-weight: 500; cursor: pointer; }
 .usage-segmented > button:hover, .usage-tabs > button:hover { color: var(--text); }
-.usage-segmented > button.selected, .usage-tabs > button.selected { color: var(--text); background: var(--surface-selected, var(--green-soft)); box-shadow: inset 0 0 0 1px var(--green-line); }
+.usage-segmented > button.selected, .usage-tabs > button.selected { color: var(--text); background: var(--surface-selected, var(--accent-soft)); box-shadow: inset 0 0 0 1px var(--accent-line); }
 .usage-tabs > button { min-height: 28px; padding: 0 var(--s-3); font-weight: 600; }
-.usage-dashboard :is(button, summary, input):focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 62%, transparent); outline-offset: 2px; }
+.usage-dashboard :is(button, summary, input):focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
 .usage-range-custom { display: flex; flex-wrap: wrap; gap: var(--s-2); }
 .usage-range-custom label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--fs-meta); }
 .usage-range-custom input { min-height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: var(--field); font: inherit; font-size: var(--fs-meta); color-scheme: inherit; }
-.usage-coverage { margin: 0 0 var(--s-3); padding: var(--s-2) var(--s-3); border-left: 2px solid var(--green-line); background: var(--green-soft); border-radius: var(--r-xs); color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; }
+.usage-coverage { margin: 0 0 var(--s-3); padding: var(--s-2) var(--s-3); border-left: 2px solid var(--accent-line); background: var(--accent-soft); border-radius: var(--r-xs); color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; }
 
 /* Headline figures: four across, two by two, then a list. */
 .usage-dashboard-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--field); }
+/* Without dated detail the Per prompt tile is left out (Opus R6 D4). */
+.usage-dashboard-stats[data-count="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .usage-dashboard-stats > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: var(--s-3) var(--s-4); }
 .usage-dashboard-stats > div + div { border-left: 1px solid var(--line); }
 .usage-dashboard-stats span, .usage-dashboard-stats small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
@@ -66,7 +67,7 @@
 .usage-evidence { margin-top: var(--s-3); min-width: 0; }
 .usage-evidence > summary { display: flex; align-items: center; gap: 6px; width: fit-content; color: var(--muted); font-size: var(--fs-meta); border-radius: var(--r-xs); }
 .usage-evidence-body { margin-top: var(--s-2); padding: var(--s-3); max-height: min(40vh, 340px); overflow: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--field); color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; overflow-wrap: anywhere; }
-.usage-evidence-body:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 62%, transparent); outline-offset: 2px; }
+.usage-evidence-body:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
 .usage-evidence-body p { margin: 0 0 var(--s-2); }
 .usage-evidence-body p:last-child { margin-bottom: 0; }
 .usage-evidence-body ul { margin: var(--s-2) 0; padding: 0; list-style: none; }
@@ -184,10 +185,10 @@ details[open] > summary > .usage-disclosure, [aria-expanded="true"] > .usage-dis
    without tokens are filled quietly; untracked days are hollow. */
 .usage-heat {
   --heat-empty: color-mix(in srgb, var(--text) 9%, var(--field));
-  --heat-1: color-mix(in srgb, var(--green) 32%, var(--field));
-  --heat-2: color-mix(in srgb, var(--green) 54%, var(--field));
-  --heat-3: color-mix(in srgb, var(--green) 77%, var(--field));
-  --heat-4: var(--green);
+  --heat-1: color-mix(in srgb, var(--accent) 32%, var(--field));
+  --heat-2: color-mix(in srgb, var(--accent) 54%, var(--field));
+  --heat-3: color-mix(in srgb, var(--accent) 77%, var(--field));
+  --heat-4: var(--accent);
   --heat-edge: color-mix(in srgb, var(--text) 10%, transparent);
   --heat-hollow: color-mix(in srgb, var(--text) 26%, transparent);
   margin-top: var(--s-4);
@@ -195,7 +196,6 @@ details[open] > summary > .usage-disclosure, [aria-expanded="true"] > .usage-dis
 }
 .usage-heat-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s-2) var(--s-4); }
 .usage-heat-summary { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
-.usage-heat-scope { margin: var(--s-1) 0 var(--s-2); color: var(--muted); font-size: var(--fs-micro); line-height: 1.5; max-width: 90ch; }
 .usage-heat-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; color: var(--muted); font-size: var(--fs-micro); }
 .usage-heat-legend > span:first-child { margin-right: 2px; }
 .usage-heat-legend > span:nth-child(7) { margin-left: 2px; }
@@ -231,7 +231,7 @@ details[open] > summary > .usage-disclosure, [aria-expanded="true"] > .usage-dis
 /* The day card sits in the top layer, so Settings' scrolling can't clip it.
    Placement, width and height caps are set in visual pixels by script. */
 .usage-heat-card {
-  position: fixed; inset: auto; margin: 0; z-index: 260;
+  position: fixed; inset: auto; margin: 0; z-index: var(--z-popover);
   display: flex; flex-direction: column; width: 300px; box-sizing: border-box; overflow: hidden;
   padding: var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-md);
   color: var(--text); background: var(--menu-surface, var(--panel-2)); box-shadow: var(--elev-3, var(--shadow));
@@ -250,7 +250,7 @@ details[open] > summary > .usage-disclosure, [aria-expanded="true"] > .usage-dis
 .usage-heat-card-total strong { color: var(--text); font-size: var(--fs-ui); font-weight: 600; }
 .usage-heat-card-note { margin: var(--s-2) 0 0; color: var(--muted); font-size: var(--fs-micro); line-height: 1.5; }
 .usage-heat-card-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin-right: calc(-1 * var(--s-2)); padding-right: var(--s-2); border-radius: var(--r-xs); }
-.usage-heat-card-list:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 62%, transparent); outline-offset: 2px; }
+.usage-heat-card-list:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
 .usage-heat-provider { padding-top: var(--s-2); }
 .usage-heat-provider + .usage-heat-provider { margin-top: var(--s-1); border-top: 1px solid var(--line); }
 .usage-heat-provider :is(h6, li) { display: grid; grid-template-columns: minmax(0, 1fr) auto 5.5ch; gap: var(--s-2); align-items: baseline; }
@@ -264,6 +264,7 @@ details[open] > summary > .usage-disclosure, [aria-expanded="true"] > .usage-dis
 .usage-receipts { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); margin: var(--s-4) 0 0; padding-top: var(--s-3); border-top: 1px solid var(--line); font-size: var(--fs-meta); }
 .usage-receipts small { display: block; margin-top: 2px; color: var(--muted); }
 .usage-receipts strong { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-receipts strong.usage-receipts-none { color: var(--muted); font-weight: 500; }
 
 @container (max-width: 820px) {
   .usage-overview-grid { grid-template-columns: minmax(0, 1fr); }
@@ -273,14 +274,15 @@ details[open] > summary > .usage-disclosure, [aria-expanded="true"] > .usage-dis
   .usage-pricing { justify-content: flex-start; }
   .usage-pricing-details[open] > summary { margin-left: 0; }
   .usage-pricing-error { text-align: left; }
-  .usage-dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-dashboard-stats, .usage-dashboard-stats[data-count="3"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .usage-dashboard-stats > div:nth-child(3) { border-left: 0; }
+  .usage-dashboard-stats[data-count="3"] > div:nth-child(3) { grid-column: 1 / -1; }
   .usage-dashboard-stats > div:nth-child(n + 3) { border-top: 1px solid var(--line); }
   .usage-optional { display: none; }
 }
 @container (max-width: 420px) {
   .usage-dashboard-card { padding: var(--s-3); }
-  .usage-dashboard-stats { grid-template-columns: minmax(0, 1fr); }
+  .usage-dashboard-stats, .usage-dashboard-stats[data-count="3"] { grid-template-columns: minmax(0, 1fr); }
   .usage-dashboard-stats > div { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: baseline; gap: 2px var(--s-3); padding: 9px var(--s-3); }
   .usage-dashboard-stats > div + div { border-top: 1px solid var(--line); border-left: 0; }
   .usage-dashboard-stats small { grid-column: 1 / -1; }

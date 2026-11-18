@@ -12,6 +12,12 @@ export interface AppActionMenuItem {
   disabled?: boolean;
   /** Hover/focus explanation — the reason, when the item is disabled. */
   title?: string;
+  /** Current value, shown as trailing muted text on the same line ("Inherited"). */
+  value?: string;
+  /** Formatted key hint, right-aligned. */
+  shortcut?: string;
+  /** Starts a new group with a hairline above the item. */
+  separatorBefore?: boolean;
   onSelect: () => void;
 }
 
@@ -37,6 +43,8 @@ export function AppActionMenu({
   align = "end",
   icon,
   className,
+  triggerTitle,
+  descriptions = "inline",
 }: {
   label?: string;
   ariaLabel?: string;
@@ -48,6 +56,11 @@ export function AppActionMenu({
   /** Leading trigger icon; the label then truncates instead of wrapping. */
   icon?: ReactNode;
   className?: string;
+  /** Hover explanation for the trigger; icon-only triggers should always set it. */
+  triggerTitle?: string;
+  /** "tooltip" keeps every row one line tall and moves descriptions into the
+   *  hover/focus title, for menus whose rows should share one height. */
+  descriptions?: "inline" | "tooltip";
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -112,6 +125,7 @@ export function AppActionMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={ariaLabel ?? label}
+        title={triggerTitle}
         disabled={disabled}
         onClick={() => {
           initialFocusRef.current = "first";
@@ -129,16 +143,16 @@ export function AppActionMenu({
       </button>
 
       {open && (
-        <div className="app-action-list" role="menu" aria-label={ariaLabel ?? label}>
+        <div className={`app-action-list ${descriptions === "tooltip" ? "single-line" : ""}`} role="menu" aria-label={ariaLabel ?? label}>
           {items.map((item, index) => (
             <button
               key={item.id}
               ref={(node) => { itemRefs.current[index] = node; }}
               type="button"
               role="menuitem"
-              className={item.danger ? "danger-action" : ""}
+              className={[item.danger ? "danger-action" : "", item.separatorBefore ? "separated" : ""].filter(Boolean).join(" ")}
               disabled={item.disabled}
-              title={item.title}
+              title={item.title ?? (descriptions === "tooltip" ? item.description : undefined)}
               onKeyDown={(event) => {
                 if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, 1); }
                 if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, -1); }
@@ -160,8 +174,12 @@ export function AppActionMenu({
               {item.icon}
               <span>
                 <strong>{item.label}</strong>
-                {item.description && <small>{item.description}</small>}
+                {item.description && descriptions === "inline" && <small>{item.description}</small>}
               </span>
+              {(item.value || item.shortcut) && <span className="app-action-trail">
+                {item.value && <em>{item.value}</em>}
+                {item.shortcut && <kbd>{item.shortcut}</kbd>}
+              </span>}
             </button>
           ))}
         </div>

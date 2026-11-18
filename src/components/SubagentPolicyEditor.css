@@ -1,0 +1,16 @@
+/* Moved from SettingsModal.legacy.css (retired in round 3). These rules keep
+   their original selectors (and so their specificity) and their original
+   order, and sit at the top of this sheet so they still load before the
+   rules that already lived here. */
+.subagent-policy-editor { margin-top: var(--s-3); }
+.subagent-policy-editor.disabled { opacity: .55; }
+.policy-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); padding: var(--s-3); transition: opacity 140ms ease; }
+.policy-row + .policy-row { border-top: 1px solid var(--line); }
+.policy-row.on { background: var(--surface-selected); }
+.policy-row.muted { opacity: .48; }
+.policy-row > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.policy-row strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
+.policy-row small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; }
+.policy-guarantees { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: var(--s-3) 0 0; padding: 0; list-style: none; color: var(--muted-2); font-size: var(--fs-micro); }
+.policy-guarantees li { display: flex; align-items: center; gap: 5px; }
+.policy-guarantees svg { flex: 0 0 auto; color: var(--info); }

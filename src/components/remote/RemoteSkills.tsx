@@ -10,7 +10,7 @@ import { validSkillDependencyReport } from "../../lib/skillDependencies";
 import { SkillPromptEditor } from "../SkillPromptEditor";
 import { SkillDependencyNotice } from "../SkillDependencyNotice";
 import { SkillDependencyDetails } from "../SkillDependencyDetails";
-import "../SettingsModal.legacy.css";
+import "../SkillLibrary.css";
 import "../SkillLibrary.navigation.css";
 
 /** A host skill is named, never located: this id is not a path on either machine. */

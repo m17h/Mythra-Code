@@ -21,7 +21,7 @@ import { previewUsageSource, type UsageDashboardSource } from "./usageDashboardP
 import "./UsageDashboard.css";
 
 const LABELS: Record<UsageProvider, string> = {
-  openai: "OpenAI / Codex", claude: "Claude Code", openrouter: "OpenRouter",
+  openai: "OpenAI", claude: "Claude Code", openrouter: "OpenRouter",
   cursor: "Cursor", lmstudio: "LM Studio", unknown: "Unattributed",
 };
 const number = (value: number) => Math.round(value).toLocaleString();
@@ -482,8 +482,11 @@ function ProvidersCard({ providers, allTime }: { providers: ProviderUsageSummary
   </section>;
 }
 
-function Overview({ detail, range, periodRange, grain, onGrain }: {
+function Overview({ detail, range, periodRange, grain, onGrain, datedNote }: {
   detail: UsageDetail; range: UsageRange | null; periodRange: UsageRange | null; grain: UsageGrain; onGrain: (grain: UsageGrain) => void;
+  /** M09: with no dated detail at all, the one note about it sits right
+   * under the totals it qualifies, instead of a banner above them. */
+  datedNote?: string | null;
 }) {
   const { totals, unallocated } = detail;
   const averages = promptAverages(detail.buckets, "turns");
@@ -493,20 +496,26 @@ function Overview({ detail, range, periodRange, grain, onGrain }: {
   const showTrend = periodRange !== null && periodRange.from < periodRange.to && detail.buckets.length > 0;
   const repriced = repricingNote(repricingSummary(detail.buckets));
   return <>
-    <div className="usage-dashboard-stats" role="group" aria-label={`Summary · ${range ? `${formatDay(range.from)} – ${formatDay(range.to)}` : "All time"}`}>
+    <div className="usage-dashboard-stats" data-count={detail.buckets.length > 0 ? 4 : 3} role="group" aria-label={`Summary · ${range ? `${formatDay(range.from)} – ${formatDay(range.to)}` : "All time"}`}>
       <Stat label="Estimated API cost" value={totals.pricedTokens ? estimate(totals.estimatedCost) : "—"}
         detail={billed ? `${percent(totals.pricedTokens, billed)} of tokens priced` : "No usage in this range"} />
       <Stat label="Tokens" value={compact(totals.totalTokens)} detail={`${compact(input)} input · ${compact(totals.outputTokens)} output`} />
-      <Stat label="Per prompt" value={averages.cost ? estimate(averages.cost.total) : averages.tokens ? `${compact(averages.tokens.total)} tok` : "—"}
-        detail={`${averages.cost && averages.tokens ? `${compact(averages.tokens.total)} tokens · ` : ""}${promptNote(averages.prompts, averages.pricedPrompts, averages.ambiguousCost)}`} />
-      <Stat label="Cache reads" value={input ? readState === "reported" ? `${cacheShare(totals)} of input` : cacheShare(totals) : "—"}
+      {/* Opus R6 D4: per-prompt figures need dated detail; until there is
+          some, the tile is left out (the note under the totals says why)
+          instead of headlining a bare dash. */}
+      {detail.buckets.length > 0 && <Stat label="Per prompt" value={averages.cost ? estimate(averages.cost.total) : averages.tokens ? `${compact(averages.tokens.total)} tok` : "—"}
+        detail={`${averages.cost && averages.tokens ? `${compact(averages.tokens.total)} tokens · ` : ""}${promptNote(averages.prompts, averages.pricedPrompts, averages.ambiguousCost)}`} />}
+      {/* A partly reported share leads with the number that was reported;
+          the state is the caption, not the headline. */}
+      <Stat label="Cache reads" value={!input ? "—" : readState === "reported" ? `${cacheShare(totals)} of input` : readState === "partial" ? compact(totals.cacheReadTokens) : cacheShare(totals)}
         detail={readState === "reported" ? `${compact(totals.cacheReadTokens)} tokens${detail.detailTotals.cacheReadCost > 0 ? ` · ${estimate(detail.detailTotals.cacheReadCost)}` : ""}`
-          : `${totals.cacheReadTokens > 0 ? `${compact(totals.cacheReadTokens)} reported · ` : ""}${compact(cacheGap(totals, "cacheRead"))} input tokens lack cache-read metrics`} />
+          : `${readState === "partial" ? "Partly reported · " : ""}${compact(cacheGap(totals, "cacheRead"))} input tokens lack cache-read metrics`} />
     </div>
-    {!range && unallocated && <p className="usage-dashboard-caption">Per-prompt figures and the trend use dated detail only.</p>}
+    {datedNote ? <p className="usage-dashboard-caption usage-dated-note" role="note">{datedNote}</p>
+      : !range && unallocated && <p className="usage-dashboard-caption">Per-prompt figures and the trend use dated detail only.</p>}
     {repriced && <p className="usage-dashboard-caption">{repriced}</p>}
     {totals.unpricedTokens > 0 && <p className="usage-dashboard-caption">
-      {`${compact(totals.unpricedTokens)} tokens are unpriced. Dated usage can be corrected when a historical rate is supported; earlier undated usage cannot.`}
+      {`${compact(totals.unpricedTokens)} tokens have no published rate, so they aren’t in the cost.`}
     </p>}
     {(showTrend || detail.providers.length > 0) && <div className="usage-overview-grid">
       {showTrend && <TrendCard buckets={detail.buckets} range={periodRange} grain={grain} onGrain={onGrain} />}
@@ -854,6 +863,7 @@ function PricingStatus({ onRefreshPricing, openRouterPricingError }: { onRefresh
         <span className="sr-only"> · rate sources and what estimates include</span>
       </summary>
       <div className="usage-pricing-panel">
+        <p>“Tokens priced” counts usage that has a rate at all; verification says whether that rate was confirmed on the provider’s pricing page. Usage can be fully priced while a rate still waits for confirmation.</p>
         <p>The app checks each provider’s pricing page daily and whenever you refresh. New usage takes each model’s most recently verified rate. Earlier estimates keep the rate they were recorded at unless historical evidence supports a correction for dated, model-specific usage. Then that usage is repriced automatically.</p>
         <ul className="usage-pricing-sources" aria-label="Rate sources">
           {states.map(({ status, state }) => <SourceRow key={status.source} label={OFFICIAL_LABELS[status.source]} {...state} />)}
@@ -919,8 +929,15 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
   const grain = chosenGrain ?? (periodRange ? autoGrain(periodRange) : "day");
   const rangeLabel = range ? (range.from === range.to ? formatDay(range.from) : `${formatDay(range.from)} – ${formatDay(range.to)}`) : "All time";
 
+  // M09 (round 6): nothing dated yet anywhere. The calendar would be an
+  // empty card and the coverage note a second banner, both above the totals;
+  // instead one note follows the totals and the calendar waits for data.
+  const noDatedDetail = !allTime.startedDay && !allTime.detailAhead;
+  const noDatedNote = noDatedDetail && unallocated
+    ? "Nothing is dated yet. The activity calendar and per-day, per-model and per-prompt detail start with your next message; usage recorded earlier stays in these totals and under its provider."
+    : null;
   const coverageNote = !detail.startedDay
-    ? (unallocated ? "Dated, per-model detail starts with your next message. Usage recorded earlier stays in the all-time and provider totals." : null)
+    ? (unallocated && !(noDatedNote && view === "overview") ? "Dated, per-model detail starts with your next message. Usage recorded earlier stays in the all-time and provider totals." : null)
     : detail.detailAhead
       ? "Some dated detail was saved without its all-time total (the app likely closed mid-save). All-time totals use the saved ledger; dated detail is hidden until the records agree."
     : range && trackedFrom && range.from < trackedFrom
@@ -946,16 +963,18 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
     <header className="usage-dashboard-head">
       <div>
         <h4 className="usage-dashboard-heading">Local usage</h4>
-        <p>What Mythra Code recorded on this device, priced at API-equivalent rates. Not your whole provider account, and not a subscription bill.</p>
+        <p>Recorded on this device, priced at API rates. Not a subscription bill.</p>
       </div>
       <PricingStatus onRefreshPricing={onRefreshPricing} openRouterPricingError={openRouterPricingError} />
     </header>
     {preview?.preview && <p className="usage-preview-banner" role="note">Development preview — synthetic usage, not your data.</p>}
-    <UsageCalendarCard source={source} calendarDetail={allTime} revision={revision} today={today} range={range}
-      providerLabel={calendarProviderLabel} modelLabel={calendarModelLabel} />
+    {!noDatedDetail && <UsageCalendarCard source={source} calendarDetail={allTime} revision={revision} today={today} range={range}
+      providerLabel={calendarProviderLabel} modelLabel={calendarModelLabel} />}
+    {/* M12: everything below follows the range picker; the calendar above does not. */}
+    <h5 className="usage-range-heading">Selected range <span>· {rangeLabel}</span></h5>
     <div className="usage-toolbar">
       <RangePicker preset={preset} onPreset={setPreset} custom={custom} onCustom={setCustom} today={today} />
-      <div ref={tabs} className="usage-tabs" role="tablist" aria-label="Usage views">
+      <div ref={tabs} className="usage-tabs" role="tablist" aria-label="Usage report views">
         {VIEWS.map((item) => <button key={item.id} type="button" role="tab" id={`${baseId}-tab-${item.id}`} aria-selected={view === item.id}
           aria-controls={`${baseId}-panel`} tabIndex={view === item.id ? 0 : -1} className={view === item.id ? "selected" : ""}
           onClick={() => setView(item.id)} onKeyDown={tabKeyDown}>{item.label}</button>)}
@@ -966,7 +985,7 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
     <div role="tabpanel" id={`${baseId}-panel`} aria-labelledby={`${baseId}-tab-${view}`} className="usage-panel">
       {empty
         ? <div className="usage-dashboard-empty"><strong>{range ? "No usage in this range" : "Your usage story starts here"}</strong><p>{range ? "Try a wider range, or All time." : "Send a message to begin tracking. Only usage the provider reports to this app can appear here."}</p></div>
-        : view === "overview" ? <Overview detail={detail} range={range} periodRange={periodRange} grain={grain} onGrain={setGrain} />
+        : view === "overview" ? <Overview detail={detail} range={range} periodRange={periodRange} grain={grain} onGrain={setGrain} datedNote={noDatedNote} />
           : view === "models" ? <ModelsView detail={detail} range={range} periodRange={periodRange} grain={grain} onGrain={setGrain} expanded={expanded} onExpand={setExpanded} />
             : <CompareView detail={detail} allTimeModels={allTimeModels} rangeLabel={rangeLabel} periodRange={periodRange} grain={grain} onGrain={setGrain} selection={selection} onSelection={setSelection} />}
     </div>
@@ -974,8 +993,8 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
     {!empty && <UsageEvidenceDetails detail={detail} helperCoverage={preview ? undefined : usageTotals()} />}
 
     <p className="usage-receipts" aria-label="OpenRouter reported charges" role="group">
-      <span>OpenRouter reported charges<small>{reported.requests ? `${plural(reported.requests, "captured request")} · all time · not added to estimates` : "No cost receipts captured yet"}</small></span>
-      <strong>{reported.requests ? formatEstimatedCost(reported.cost) : "—"}</strong>
+      <span>OpenRouter reported charges<small>{reported.requests ? `${plural(reported.requests, "captured request")} · all time · not added to estimates` : "From OpenRouter cost receipts · not added to estimates"}</small></span>
+      {reported.requests ? <strong>{formatEstimatedCost(reported.cost)}</strong> : <strong className="usage-receipts-none">No charges yet</strong>}
     </p>
   </section>;
 }

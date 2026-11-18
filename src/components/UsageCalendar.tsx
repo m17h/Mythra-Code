@@ -518,10 +518,19 @@ export function UsageCalendarCard({ source, revision, calendarDetail, today, ran
   const rangeNote = range ? "Faded days are outside the selected range." : null;
   const noteId = `${baseId}-scope`;
 
+  // M05: with no dated days at all, a year of empty squares would be the
+  // biggest thing on the page and push the totals down. Say it in one line.
+  if (!detailAhead && !calendar.activeDays) {
+    return <section className="usage-dashboard-card usage-heat usage-heat-empty" aria-labelledby={`${baseId}-heading`}>
+      <h5 id={`${baseId}-heading`}>All activity</h5>
+      <p className="usage-heat-summary">No dated days in the last 12 months yet. The calendar fills in from your next message.</p>
+    </section>;
+  }
+
   return <section ref={sectionRef} className="usage-dashboard-card usage-heat" aria-labelledby={`${baseId}-heading`} onFocus={onFocus} onBlur={onBlur}>
     <div className="usage-heat-head">
       <div>
-        <h5 id={`${baseId}-heading`}>Token activity</h5>
+        <h5 id={`${baseId}-heading`}>All activity</h5>
         <p className="usage-heat-summary">{detailAhead ? "Dated detail is hidden until it agrees with saved totals."
           : calendar.activeDays ? `${compact(calendar.totalTokens)} tokens on ${number(calendar.activeDays)} ${calendar.activeDays === 1 ? "day" : "days"} · last 12 months`
             : "No dated tokens recorded in the last 12 months"}</p>
@@ -533,7 +542,9 @@ export function UsageCalendarCard({ source, revision, calendarDetail, today, ran
         <span className="usage-heat-legend-item"><i className="usage-heat-swatch" data-state="unavailable" />Not tracked</span>
       </div>
     </div>
-    <p id={noteId} className="usage-heat-scope">
+    {/* The counting rule is read out with the grid; on screen it would be
+        one more paragraph of footnote. */}
+    <p id={noteId} className="sr-only">
       Dated local records only: a prompt’s tokens count on the local day its first usage was recorded. Earlier undated usage isn’t placed on any day.
       {rangeNote && ` ${rangeNote}`}
     </p>

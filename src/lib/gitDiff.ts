@@ -33,6 +33,13 @@ export interface ReviewDiff {
   untrackedPaths: string[];
   /** True when the untracked list was capped, so the count is a floor. */
   untrackedTruncated?: boolean;
+  /** True when the diff text itself was capped: some files or lines are missing. */
+  truncated?: boolean;
+  /**
+   * Set when this read failed. `text` then holds the failure message, never a
+   * diff, and nothing about the changes is known (not "no differences").
+   */
+  error?: string;
 }
 
 export const EMPTY_REVIEW_DIFF: ReviewDiff = {

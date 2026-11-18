@@ -1,6 +1,6 @@
 import { defaultChildAgentModel, defaultChildAgentModelIssue, defaultChildAgentModelNotice, modelOptionsFor, REASONING_OPTIONS, type ChildAgentModelCatalogs } from "./subAgentModelOptions";
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowRightLeft, Check, Info, LoaderCircle, Lock, MessageCircleQuestion, Minus, Plus, Settings2, Square, SquareArrowOutUpRight, Trash2, UsersRound, X } from "lucide-react";
+import { AlertTriangle, ArrowRightLeft, Check, ChevronDown, ChevronRight, Info, LoaderCircle, Lock, MessageCircleQuestion, Minus, Plus, Settings2, Square, SquareArrowOutUpRight, Trash2, UsersRound, X } from "lucide-react";
 import { ProviderLogo } from "./BrandLogos";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import type { ReasoningEffort } from "./ModelPowerControl";
@@ -41,6 +41,8 @@ import { compactionPriceBoundary, compactionPricingEntry, describeCompactionPric
 import { subscribeUsage } from "../lib/usageLedger";
 import { useRosterFlip } from "../hooks/useRosterFlip";
 import type { ChildAgentPreset, ChildAgentTarget, NativeSubagentOptions, ProjectSubagentSettings, Provider } from "../types";
+import { Switch } from "./Switch";
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
 import "./SubAgentCommandCenter.css";
 
 /**
@@ -174,15 +176,59 @@ export type { ChildAgentModelOption as SubAgentModelOption } from "./subAgentMod
 /** Stable identity so a locked thread's empty roster never re-triggers memos. */
 const NO_TARGETS: ChildAgentTarget[] = [];
 const PANEL_EXIT_MS = 180;
-/** The roster grid's own key, so `sa-add` can travel with the tiles. */
-const ADD_TILE_FLIP_KEY = "__add__";
+
+/** "Add ▾": one menu of providers instead of a row of chips (D7). */
+function AddSubAgentMenu({ providers, issueFor, onAdd }: {
+  providers: readonly Provider[];
+  /** Why a provider can't be added now (sign-in, missing model), or "". */
+  issueFor: (provider: Provider) => { blocking: string; note: string };
+  onAdd: (provider: Provider) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const keys = useMenuKeyboard({ open, setOpen, menuRef, triggerRef, initial: "first" });
+  // The list opens in flow inside a scrolling popover: bring it into view.
+  useEffect(() => { if (open) menuRef.current?.scrollIntoView({ block: "nearest" }); }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("pointerdown", onPointer, true);
+    return () => document.removeEventListener("pointerdown", onPointer, true);
+  }, [open]);
+  // data-app-select-open: the command center leaves this Escape to the menu.
+  return <div className={`sa-add-menu${open ? " open" : ""}`} ref={rootRef} data-app-select-open={open ? "true" : undefined}>
+    <button ref={triggerRef} type="button" className="sa-add-trigger" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
+      onClick={() => setOpen((value) => !value)} onPointerDown={keys.onTriggerPointerDown} onKeyDown={keys.onTriggerKeyDown}>
+      <Plus size={12} aria-hidden="true" /><span>Add</span><ChevronDown size={12} aria-hidden="true" />
+    </button>
+    {open && <div ref={menuRef} id={menuId} className="sa-add-popup" role="menu" aria-label="Add a sub-agent" onKeyDown={(event) => {
+      // Escape closes this menu only: not the command center, not the run.
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); }
+      keys.onMenuKeyDown(event);
+    }}>
+      {providers.map((provider) => {
+        const { blocking, note } = issueFor(provider);
+        const detail = blocking || note;
+        return <button key={provider} type="button" role="menuitem" tabIndex={-1} className={blocking ? "unavailable" : undefined}
+          aria-disabled={blocking ? true : undefined} title={detail || undefined}
+          onClick={() => keys.select(() => onAdd(provider))}>
+          <ProviderLogo provider={provider} size={13} />
+          <span><strong>{providerDisplayName(provider)}</strong>{detail && <small>{detail}</small>}</span>
+        </button>;
+      })}
+    </div>}
+  </div>;
+}
 const DEFAULT_NATIVE_MAX_CONCURRENT = 6;
 /** Layout px between the trigger and the panel; matches `calc(100% + 8px)`. */
 const PANEL_GAP = 8;
 /** Visual px the panel keeps clear of the viewport edge. */
 const PANEL_VIEWPORT_MARGIN = 8;
 /** Layout px; the panel never grows past this even with room to spare. */
-const PANEL_MAX_HEIGHT = 560;
+const PANEL_MAX_HEIGHT = 480;
 /** Below this much room above the trigger, a roomier space below wins. */
 const PANEL_MIN_COMFORTABLE_HEIGHT = 160;
 
@@ -210,7 +256,7 @@ function nativeProviderFor(provider: Provider | undefined): NativeProvider | nul
 }
 
 function nativeRuntimeName(provider: NativeProvider): string {
-  return provider === "openai" ? "Codex" : "Claude Code";
+  return provider === "openai" ? "Codex CLI" : "Claude Code";
 }
 
 function clampNativeLimit(value: number | undefined): number {
@@ -329,7 +375,7 @@ function compactionChoices(saved: number | undefined, entry: FrontierCompactionP
   const windows = modelCompactionWindows(entry);
   const priceBoundary = compactionPriceBoundary(entry);
   const options: AppSelectOption[] = [
-    { value: "", label: "Provider default", detail: "The runtime's own threshold" },
+    { value: "", label: "Provider default", detail: "The provider decides when to compact" },
     ...windows.map((tokens) => ({
       value: String(tokens),
       label: describeTokenWindow(tokens),
@@ -394,7 +440,7 @@ function nativeReasoningOptions(
     {
       value: "",
       label: "Provider default",
-      detail: explicitModel ? `${modelLabel}'s own default level` : "Parent's level unless Codex config sets one",
+      detail: explicitModel ? `${modelLabel}'s own default level` : "Parent's level unless your Codex CLI config sets one",
     },
     ...REASONING_OPTIONS.map((option) => (supported?.includes(option.value as ReasoningEffort)
       ? option
@@ -472,6 +518,8 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
   const [replaceWorkerId, setReplaceWorkerId] = useState<string | null>(null);
   const [workerAction, setWorkerAction] = useState<{ workerId: string; kind: "stop" | "replace" | "open" | "accept" } | null>(null);
   const [presetName, setPresetName] = useState("");
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const presetsId = useId();
   const [workerActionError, setWorkerActionError] = useState<string | null>(null);
   const [compactInfoOpen, setCompactInfoOpen] = useState(false);
   const [workerDetailsOpen, setWorkerDetailsOpen] = useState<string | null>(null);
@@ -531,7 +579,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
   const nativeProvider = nativeProviderFor(props.provider);
   const nativeName = nativeProvider ? nativeRuntimeName(nativeProvider) : null;
   const unsupportedProviderReason = props.provider && !nativeProvider
-    ? `${providerDisplayName(props.provider)} has no native sub-agents. Native mode needs a Codex or Claude Code thread.`
+    ? `${providerDisplayName(props.provider)} has no native sub-agents. Native mode needs an OpenAI (Codex CLI) or Claude Code thread.`
     : null;
   /** Everything that would stop the next native turn, saved options included. */
   const nativeUnavailable = props.nativeUnavailableReason?.trim() || unsupportedProviderReason;
@@ -558,18 +606,10 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
   // child window, so a saved Codex value is only ever offered for removal.
   const savedChildCompact = props.nativeOptions?.claude?.autoCompactTokens;
   const savedCodexChildCompact = props.nativeOptions?.codex?.autoCompactTokens;
-  const parentCompactShown = !isChild && Boolean(props.onAutoCompactTokensChange);
-  const parentCompactUnsupportedBy = compactionUnsupportedBy(props.provider);
   const parentModel = props.nativeDefaultModel?.trim() ?? "";
   const pricingFor = (provider: Provider | undefined, model: string) => compactionPricingEntry(provider, model, compactionPricing,
     provider && props.modelCatalogs?.[provider]?.find((entry) => entry.id === model)?.resolvedModel);
-  const parentPricing = pricingFor(props.provider, parentModel);
   const childPricing = pricingFor(nativeProvider ?? undefined, savedNativeModel);
-  const parentCompactChoices = useMemo(
-    () => compactionChoices(props.autoCompactTokens, parentPricing, parentCompactUnsupportedBy && `Not available for ${parentCompactUnsupportedBy}`),
-    [parentCompactUnsupportedBy, parentPricing, props.autoCompactTokens],
-  );
-  const parentCompactIssue = compactionIssue(props.autoCompactTokens, parentCompactUnsupportedBy);
   const childCompactChoices = useMemo(() => compactionChoices(savedChildCompact, childPricing), [savedChildCompact, childPricing]);
   const childCompactIssue = compactionIssue(savedChildCompact);
   // The same rule the runtime admits native turns by: a child window needs
@@ -611,10 +651,6 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
   const clearCodexChildCompact = () => {
     if (runLocked || !props.onNativeOptionsChange) return;
     props.onNativeOptionsChange(withNativeOptions(props.nativeOptions, "codex", { autoCompactTokens: undefined }));
-  };
-  const setParentCompact = (value: string) => {
-    if (runLocked) return;
-    props.onAutoCompactTokensChange?.(value ? Number(value) : undefined);
   };
   const setNativeModel = (model: string) => {
     // A saved level the new model reports it cannot take is cleared in the same
@@ -693,14 +729,19 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
     // only narrows to the viewport or slides left as far as needed to keep the
     // same margin from the right edge. Both values depend on the viewport and
     // trigger alone, never on the panel's previous offset.
-    const edge = window.innerWidth - PANEL_VIEWPORT_MARGIN;
-    const maxWidth = Math.max(0, Math.floor((edge - PANEL_VIEWPORT_MARGIN) / zoom));
+    // It stays inside the composer: its right edge never passes the
+    // composer's right edge (nor the window's margin), so it reads as part of
+    // the box it opened from instead of overhanging the transcript.
+    const composer = anchor.closest<HTMLElement>(".composer")?.getBoundingClientRect();
+    const edge = Math.min(window.innerWidth - PANEL_VIEWPORT_MARGIN, composer ? composer.right : Number.POSITIVE_INFINITY);
+    const start = Math.max(PANEL_VIEWPORT_MARGIN, composer ? composer.left : 0);
+    const maxWidth = Math.max(0, Math.floor((edge - start) / zoom));
     panel.style.setProperty("--sa-panel-max-width", `${maxWidth}px`);
     // offsetWidth is rounded and ignores the opening transform; one extra
     // pixel covers a fractional used width.
     const width = Math.min(panel.offsetWidth + 1, maxWidth);
     const offset = Math.max(
-      Math.ceil((PANEL_VIEWPORT_MARGIN - rect.left) / zoom),
+      Math.ceil((start - rect.left) / zoom),
       Math.min(0, Math.floor((edge - rect.left) / zoom - width)),
     );
     panel.style.setProperty("--sa-panel-offset-x", `${offset}px`);
@@ -1055,6 +1096,10 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
     : confirmedActive > 0
       ? `Sub-agents ${confirmedActive}/${maxConcurrent}${unknownNote}`
       : `Sub-agents: ${maxConcurrent}${rosterReady ? " ↗" : ""}${unknownNote}`;
+  const lockedNow = !editable || runLocked;
+  const lockReason = isChild
+    ? "A sub-agent can't start sub-agents of its own"
+    : "Locked while this run or a sub-agent is working";
   const nativeLimitEditable = native && !runLocked && Boolean(props.onNativeMaxConcurrentChange);
   const setNativeMax = (next: number) => props.onNativeMaxConcurrentChange?.(clampNativeLimit(next));
 
@@ -1063,19 +1108,22 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
       <button
         ref={triggerRef}
         type="button"
-        className={`toolbar-button agents-button ${delegationOn ? "enabled" : ""} ${confirmedActive > 0 ? "live" : ""}`}
+        className={`toolbar-button agents-button ${delegationOn ? "enabled" : ""} ${confirmedActive > 0 ? "live" : ""}${native && delegationOn && nativeUnavailable && confirmedActive === 0 ? " native-unavailable" : ""}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
+        aria-label={`${native && delegationOn ? "Sub-agents: " : ""}${triggerLabel}${showPending ? ` · ${pendingDescription}` : ""}`}
         title={isChild
           ? "This conversation is a sub-agent, so it cannot start sub-agents of its own."
           : captured && crewActive
             ? "This thread's sub-agents are locked while its parent or a sub-agent is working."
             : runLocked
               ? "Sub-agent mode and limits are locked while this thread or a sub-agent is working."
+            : native && delegationOn && nativeUnavailable
+              ? `Native sub-agents can’t start. ${/[.!?]$/.test(nativeUnavailable) ? nativeUnavailable : `${nativeUnavailable}.`} Open to change the mode or what it needs.`
             : captured
-              ? "Edit this thread's sub-agents for its next message."
-            : "Manage sub-agents for this thread"}
+              ? `${delegationOn ? "Sub-agents are on" : "Sub-agents are off"} for this thread. Open to edit them for its next message.`
+            : `${delegationOn ? "Sub-agents are on" : "Sub-agents are off"} for this thread. Open to manage them.`}
         onClick={() => (open ? dismiss() : show())}
       >
         {/* No viewBox on purpose: the rect is measured in real pixels, so the
@@ -1091,12 +1139,14 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
           {native && delegationOn && nativeProvider
             ? <span className="sa-trigger-provider" aria-hidden="true"><ProviderLogo provider={nativeProvider} size={13} /></span>
             : <UsersRound size={14} aria-hidden="true" />}
-          {native && delegationOn && <span className="sr-only">Sub-agents: </span>}
           {triggerLabel}
           {showPending && <span className="sa-trigger-attention" title={pendingDescription}>
             {pendingLabel}<span className="sr-only"> · {pendingDescription}</span>
           </span>}
-          {(!editable || runLocked) && <Lock size={11} className="sa-trigger-lock" aria-hidden="true" />}
+          {lockedNow && <span className="sa-trigger-locked" title={lockReason}>
+            <Lock size={11} className="sa-trigger-lock" aria-hidden="true" />
+            <span className="sr-only">, {lockReason.toLowerCase()}</span>
+          </span>}
           {props.projectOverride && <em className="project-override-mark">project</em>}
         </span>
       </button>
@@ -1213,7 +1263,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                   </span>
                   <span className="sa-engine-copy">
                     <strong>{nativeName ? `Native ${nativeName}` : "Provider native"}</strong>
-                    <small>{nativeName ? `${nativeName} picks its agents` : "Codex or Claude Code"}</small>
+                    <small>{nativeName ? `${nativeName} picks its agents` : "Codex CLI or Claude Code"}</small>
                   </span>
                 </label>
               </fieldset>
@@ -1259,44 +1309,6 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
               )}
             </div>
 
-            {parentCompactShown && (
-              // This conversation's own window: independent of the switch above
-              // and of which system delegates, so only running work locks it.
-              <fieldset
-                className="sa-compaction"
-                disabled={runLocked}
-                aria-describedby={runLocked ? lockNoteId : undefined}
-              >
-                <legend className="sr-only">This conversation's compaction</legend>
-                <div className="sa-native-field">
-                  <span className="sa-row-copy">
-                    <strong>Conversation compaction</strong>
-                    <small>
-                      {parentCompactUnsupportedBy
-                        ? `${parentCompactUnsupportedBy} doesn't expose a compaction setting, so it uses its own.`
-                        : "This conversation's own context window, from the next turn."}
-                    </small>
-                  </span>
-                  <AppSelectMenu
-                    portal
-                    ariaLabel="Conversation compaction"
-                    value={compactionValue(props.autoCompactTokens)}
-                    options={parentCompactChoices}
-                    onChange={setParentCompact}
-                  />
-                </div>
-                {parentCompactIssue && (
-                  <p className="sa-native-warn sa-compaction-issue">
-                    <AlertTriangle size={11} aria-hidden="true" />
-                    <span>{parentCompactIssue}</span>
-                  </p>
-                )}
-                <p className="sa-native-note sa-compaction-note">
-                  Automatic compaction, not a hard token or spending cap. Model limits still apply.
-                </p>
-                {!parentCompactUnsupportedBy && <p className="sa-native-note">{describeCompactionPriceBoundary(parentPricing)}</p>}
-              </fieldset>
-            )}
 
             {native ? (
               <div className={`sa-native ${dimmed ? "muted" : ""}`}>
@@ -1384,7 +1396,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                             <small>
                               {savedNativeModel
                                 ? `Used when the parent names no level; a level it names wins. Provider default uses ${codexModelLabel}'s own default.`
-                                : "Used when the parent names no level; a level it names wins. Provider default inherits the parent's level unless your Codex config sets one."}
+                                : "Used when the parent names no level; a level it names wins. Provider default inherits the parent's level unless your Codex CLI config sets one."}
                             </small>
                           </span>
                           <AppSelectMenu
@@ -1423,7 +1435,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                         <div className="sa-native-field">
                           <span className="sa-row-copy">
                             <strong>Child compaction</strong>
-                            <small>Codex currently shares the parent compaction setting with native workers. Use Mythra Code for independent worker windows.</small>
+                            <small>The Codex CLI currently shares the parent compaction setting with native workers. Use Mythra Code for independent worker windows.</small>
                           </span>
                           <span className="sa-readout sa-compaction-readout">
                             {`Parent: ${compactionLabel(props.autoCompactTokens)}`}
@@ -1445,7 +1457,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                       </p>
                     )}
 
-                    {nativeProvider === "openai" && childPricing && <p className="sa-native-note">{describeCompactionPriceBoundary(childPricing)} Native Codex workers still inherit the parent's compaction setting.</p>}
+                    {nativeProvider === "openai" && childPricing && <p className="sa-native-note">{describeCompactionPriceBoundary(childPricing)} Native Codex CLI workers still inherit the parent's compaction setting.</p>}
 
                     {nativeProvider === "claude" && childCompactIssue && (
                       <p className="sa-native-warn">
@@ -1525,20 +1537,15 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
             <div className={`sa-row ${dimmed ? "muted" : ""}`}>
               <span className="sa-row-copy">
                 <strong>Max running at once</strong>
-                <small>
-                  {editable && !runLocked
-                    ? crewSize > 0
-                      ? `Total sub-agents that may run at once (1–${crewCeiling}) across ${enabledCount} enabled sub-agent${enabledCount === 1 ? "" : "s"}. Each configured sub-agent is one worker that runs one task at a time. Add another entry for another worker on the same model.`
-                      : `How many sub-agents may run at once (1–${MAX_SUBAGENT_CONCURRENCY}).`
-                    : isChild
-                      ? "A sub-agent works alone."
-                      : "Locked until the parent and every sub-agent are idle."}
-                </small>
+                {/* The allowed range is the stepper's title and aria-valuemin/max,
+                    not a second visible number under the label. */}
+                {(!editable || runLocked) && <small>{isChild ? "A sub-agent works alone." : "Locked until the parent and every sub-agent are idle."}</small>}
               </span>
               {!editable || runLocked ? (
                 <span className="sa-readout">{maxConcurrent}</span>
               ) : (
-                <div className="number-stepper" aria-label="Maximum concurrent sub-agents">
+                <div className="number-stepper" role="group" aria-label="Maximum concurrent sub-agents"
+                  title={crewSize > 0 ? `1 to ${crewCeiling}: at most one per enabled sub-agent (${enabledCount} enabled)` : `1 to ${MAX_SUBAGENT_CONCURRENCY}`}>
                   <button
                     type="button"
                     aria-label="Fewer concurrent sub-agents"
@@ -1546,7 +1553,18 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                     disabled={!policy.enabled || policy.maxConcurrent <= 1}
                     onClick={() => onChange({ ...policy, maxConcurrent: Math.max(1, policy.maxConcurrent - 1) })}
                   ><Minus size={12} /></button>
-                  <strong key={policy.maxConcurrent} className="sa-flash">{policy.maxConcurrent}</strong>
+                  <strong key={policy.maxConcurrent} className="sa-flash" role="spinbutton" tabIndex={policy.enabled ? 0 : -1}
+                    aria-label="Max running at once" aria-valuenow={policy.maxConcurrent} aria-valuemin={1} aria-valuemax={crewCeiling}
+                    aria-disabled={!policy.enabled || undefined}
+                    onKeyDown={(event) => {
+                      if (!policy.enabled) return;
+                      const next = event.key === "ArrowUp" || event.key === "ArrowRight" ? policy.maxConcurrent + 1
+                        : event.key === "ArrowDown" || event.key === "ArrowLeft" ? policy.maxConcurrent - 1
+                        : event.key === "Home" ? 1 : event.key === "End" ? crewCeiling : null;
+                      if (next === null) return;
+                      event.preventDefault();
+                      onChange({ ...policy, maxConcurrent: Math.min(crewCeiling, Math.max(1, next)) });
+                    }}>{policy.maxConcurrent}</strong>
                   <button
                     type="button"
                     aria-label="More concurrent sub-agents"
@@ -1558,57 +1576,71 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
             </div>
 
             {editable && (
-              <div className="sa-preset-row">
-                <span>
-                  <strong>Sub-agent preset</strong>
-                  <small>{props.presets?.length ? "Replace these sub-agents with a saved preset." : "Create reusable presets in Sub-agent settings."}</small>
-                </span>
-                {props.presets?.length ? (
-                  <div className="sa-preset-actions">
-                    <AppSelectMenu
-                      ariaLabel="Sub-agent preset"
-                      value={selectedPresetId}
-                      placeholder="Choose preset"
-                      options={props.presets.map((preset) => ({
-                        value: preset.id,
-                        label: preset.name,
-                        detail: `${preset.policy.childAgents.targets.length} configured · ${preset.policy.maxConcurrent} at a time`,
-                        icon: <UsersRound size={11} />,
-                      }))}
-                      onChange={setSelectedPresetId}
-                    />
-                    <button type="button" className="sa-apply-preset" disabled={!selectedPresetId} onClick={applyPreset}>Apply</button>
-                  </div>
-                ) : (
-                  <button type="button" className="sa-manage-presets" onClick={() => { close(); props.onOpenSettings(); }}>Create preset</button>
-                )}
-              </div>
-            )}
-
-            {editable && props.onSavePreset && (
-              <div className="sa-preset-row">
-                <input aria-label="New sub-agent preset name" placeholder="Preset name" maxLength={60} value={presetName} onChange={(event) => setPresetName(event.target.value)} />
-                <button type="button" className="sa-manage-presets" disabled={!presetName.trim() || (props.presets?.length ?? 0) >= MAX_CHILD_AGENT_PRESETS} onClick={() => {
-                  props.onSavePreset?.(presetName.trim(), policy);
-                  setPresetName("");
-                }}>Save as preset</button>
-              </div>
-            )}
-
-            <div className={`sa-crew ${dimmed ? "muted" : ""}`}>
-              {editable && targets.length > 0 && (
-                <div className="sa-crew-toolbar">
-                  <span>{targets.length} configured · {enabledCount === 0 ? "None switched on" : `${readyCount} ready`}</span>
-                  <button
-                    type="button"
-                    className="sa-clear-all"
-                    onClick={() => {
-                      setExpandedId(null);
-                      setTargets([]);
-                    }}
-                  ><Trash2 size={11} /> Clear all</button>
+              // Presets are a disclosure (G5): the quick popover stays about
+              // this thread, and saving or applying a crew is one click away.
+              <div className={`sa-presets ${presetsOpen ? "open" : ""}`}>
+                <button type="button" className="sa-presets-toggle" aria-expanded={presetsOpen} aria-controls={presetsId} onClick={() => setPresetsOpen((value) => !value)}>
+                  <ChevronRight size={12} aria-hidden="true" />
+                  <span>Presets</span>
+                  <small>{props.presets?.length ? `${props.presets.length} saved` : "None saved yet"}</small>
+                </button>
+                <div id={presetsId} className="sa-presets-body" hidden={!presetsOpen}>
+                  {props.presets?.length ? (
+                    <div className="sa-preset-row">
+                      <span>
+                        <strong>Apply a preset</strong>
+                        <small>Replaces the sub-agents above</small>
+                      </span>
+                      <div className="sa-preset-actions">
+                        <AppSelectMenu
+                          ariaLabel="Sub-agent preset"
+                          value={selectedPresetId}
+                          placeholder="Choose preset"
+                          options={props.presets.map((preset) => ({
+                            value: preset.id,
+                            label: preset.name,
+                            detail: `${preset.policy.childAgents.targets.length} configured · ${preset.policy.maxConcurrent} at a time`,
+                            icon: <UsersRound size={11} />,
+                          }))}
+                          onChange={setSelectedPresetId}
+                        />
+                        <button type="button" className="sa-apply-preset" disabled={!selectedPresetId} onClick={applyPreset}>Apply</button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {props.onSavePreset && (
+                    <div className="sa-preset-row sa-preset-save">
+                      <input aria-label="New sub-agent preset name" placeholder="Save this setup as a preset…" maxLength={60} value={presetName} onChange={(event) => setPresetName(event.target.value)} />
+                      <button type="button" className="sa-manage-presets" disabled={!presetName.trim() || (props.presets?.length ?? 0) >= MAX_CHILD_AGENT_PRESETS} onClick={() => {
+                        props.onSavePreset?.(presetName.trim(), policy);
+                        setPresetName("");
+                      }}>Save</button>
+                    </div>
+                  )}
+                  <button type="button" className="sa-presets-manage" onClick={() => { close(); props.onOpenSettings(); }}>Manage presets in Settings</button>
                 </div>
-              )}
+              </div>
+            )}
+            <div className={`sa-crew ${dimmed ? "muted" : ""}`}>
+              {/* Crew editing under its own heading, with one "Add ▾" menu. */}
+              <div className="sa-crew-toolbar">
+                <h3 className="sa-section-heading">Your sub-agents</h3>
+                {targets.length > 0 && <span>{targets.length} configured · {enabledCount === 0 ? "None switched on" : `${readyCount} ready`}</span>}
+                {editable && targets.length > 0 && <button
+                  type="button"
+                  className="sa-clear-all"
+                  onClick={() => {
+                    setExpandedId(null);
+                    setTargets([]);
+                  }}
+                ><Trash2 size={11} /> Clear all</button>}
+                {editable && targets.length < MAX_CHILD_AGENT_TARGETS && <AddSubAgentMenu providers={CHILD_AGENT_PROVIDERS}
+                  issueFor={(provider) => ({
+                    blocking: providerSignInIssue(provider, readiness) || defaultChildAgentModelIssue(provider, props.modelCatalogs) || "",
+                    note: defaultChildAgentModelNotice(provider, props.modelCatalogs) || "",
+                  })}
+                  onAdd={addTarget} />}
+              </div>
               <div className="sa-crew-grid" ref={crewFlip.gridRef} role="list" aria-label="Configured sub-agents">
                 {targets.map((target) => {
                   const issue = childAgentTargetIssue(target, readiness);
@@ -1650,18 +1682,14 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                           </span>
                         </button>
                         {editable && (
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={target.enabled}
-                            aria-label={`Enable ${target.label || target.id}`}
-                            className={`sa-tile-switch ${target.enabled ? "on" : ""}`}
-                            aria-disabled={Boolean(signInIssue) || undefined}
-                            onClick={() => {
-                              if (signInIssue) { onUnavailable?.(signInIssue); return; }
-                              updateTarget(target.id, { enabled: !target.enabled });
-                            }}
-                          ><span /></button>
+                          <Switch
+                            size="sm"
+                            checked={target.enabled}
+                            label={`Enable ${target.label || target.id}`}
+                            unavailable={Boolean(signInIssue)}
+                            onUnavailable={() => { if (signInIssue) onUnavailable?.(signInIssue); }}
+                            onChange={(next) => updateTarget(target.id, { enabled: next })}
+                          />
                         )}
                         {editable && signInIssue && (
                           <button type="button" className="icon-button tiny subtle sa-unavailable-remove" aria-label={`Remove ${target.id}`} onClick={() => { setExpandedId(null); setTargets(targets.filter((entry) => entry.id !== target.id)); }}><X size={11} /></button>
@@ -1691,7 +1719,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                                 disabled: provider !== target.provider && Boolean(providerSignInIssue(provider, readiness) || defaultChildAgentModelIssue(provider, props.modelCatalogs)),
                                 label: providerDisplayName(provider),
                                 detail: provider !== target.provider && (defaultChildAgentModelIssue(provider, props.modelCatalogs) || defaultChildAgentModelNotice(provider, props.modelCatalogs)) || (provider === "openai"
-                                  ? "Codex · subscription or API key"
+                                  ? "ChatGPT plan or API key"
                                   : provider === "claude"
                                     ? "Claude Code · subscription or API key"
                                     : provider === "cursor"
@@ -1815,27 +1843,6 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                   );
                 })}
 
-                {editable && targets.length < MAX_CHILD_AGENT_TARGETS && (
-                  <div role="listitem" data-flip-key={ADD_TILE_FLIP_KEY} className="sa-add">
-                    <span>Add a sub-agent</span>
-                    <div className="sa-add-row">
-                      {CHILD_AGENT_PROVIDERS.map((provider) => (
-                        <button
-                          type="button"
-                          key={provider}
-                          aria-label={`Add ${providerDisplayName(provider)} sub-agent`}
-                          title={providerSignInIssue(provider, readiness) || defaultChildAgentModelIssue(provider, props.modelCatalogs) || defaultChildAgentModelNotice(provider, props.modelCatalogs) || `Add ${providerDisplayName(provider)}`}
-                          className={providerSignInIssue(provider, readiness) || defaultChildAgentModelIssue(provider, props.modelCatalogs) ? "unavailable" : undefined}
-                          aria-disabled={Boolean(providerSignInIssue(provider, readiness) || defaultChildAgentModelIssue(provider, props.modelCatalogs)) || undefined}
-                          onClick={() => addTarget(provider)}
-                        >
-                          <ProviderLogo provider={provider} size={13} />
-                          <Plus size={10} aria-hidden="true" />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
 
               {targets.length === 0 && (
@@ -1844,27 +1851,30 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                     ? "A sub-agent cannot start sub-agents of its own."
                     : captured
                       ? "No sub-agents are configured for this task."
-                      : "No sub-agents yet. Add one to let the model delegate across providers."}
+                      : "Choose Add to give the model a sub-agent it can hand work to."}
                 </p>
               )}
             </div>
             </>
             )}
+            {/* This conversation's own auto-compaction lives in Tools →
+                Usage, next to "Compact context" (G5): this popover is only
+                about sub-agents. */}
           </div>
 
           <div className="sa-activity">
             {showPending && <p className="sa-attention-note">{pendingDescription}</p>}
             {windowNote && <p className="sa-attention-note">{windowNote}</p>}
             <div className="sa-activity-head">
-              <strong>Live sub-agents</strong>
+              <h3 className="sa-section-heading">Live sub-agents</h3>
               <span className="sa-counts" role="status">
                 <span key={describeSubAgentActivity(counts)} className="sa-flash">{describeSubAgentActivity(counts)}</span>
               </span>
             </div>
             {statusUnknown && <p className="sa-worker-error" role="status">{unknownWithoutConversation
-              ? "Status is unconfirmed. Claude Code agents share the parent runtime; inspect the parent’s activity and use its Stop control if a cutoff is needed. Open other sub-agent conversations when available."
+              ? "Status is unconfirmed. Claude Code agents run inside the parent task, so check its activity and use its Stop button if they need to stop. Open other sub-agent conversations when available."
               : "Status is unconfirmed. Open the sub-agent conversation to inspect its current work, or use Stop to request a confirmed cutoff before changing this setup."}</p>}
-            {(pendingCounts.questions ?? 0) > 0 && <p className="sa-attention-note">To request a reply, send guidance in this parent conversation. Use Steer when available, or Send to queue or start its next turn.</p>}
+            {(pendingCounts.questions ?? 0) > 0 && <p className="sa-attention-note">To request a reply, send guidance in this parent conversation. Use Send now while it runs, or Queue next to wait for its next turn.</p>}
             {workers.length > 0 ? (
               <ul className="sa-worker-list">
                 {workers.map((worker, index) => {
@@ -2082,19 +2092,21 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                   );
                 })}
               </ul>
-            ) : (
+            ) : native || !editable ? (
+              // The heading already says "No sub-agents yet"; only add a line
+              // when it tells the reader something new.
               <p className="sa-empty">
                 {native
                   ? `Agents appear here when ${nativeName ?? "the provider"} starts them.`
-                  : editable ? "Sub-agents appear here the moment the model delegates." : "No sub-agents have run in this thread yet."}
+                  : "No sub-agents have run in this thread yet."}
               </p>
-            )}
+            ) : null}
             {workerActionError && <p className="sa-worker-error" role="alert"><AlertTriangle size={11} /> {workerActionError}</p>}
           </div>
 
           <footer className="sa-footer">
             <button type="button" className="sa-advanced" onClick={() => { close(); props.onOpenSettings(); }}>
-              <Settings2 size={12} /> Advanced sub-agent settings
+              <Settings2 size={12} aria-hidden="true" /> Sub-agent defaults in Settings
             </button>
           </footer>
         </div>

@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, ChevronDown, Gauge } from "lucide-react";
-import { ModelCatalogHeader } from "./ModelCatalogHeader";
+import { withShortcut } from "../lib/shortcuts";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { ChevronDown, Gauge, Search, X } from "lucide-react";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
-import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
+import { ModelCatalogHeader } from "./ModelCatalogHeader";
+import type { ModelFavoriteProps } from "./ModelFavoriteStar";
+import { ModelCatalogRow } from "./ModelCatalogRow";
 import type { ReasoningEffort } from "./ModelPowerControl";
 import { ClaudeProviderLogo } from "./BrandLogos";
 import { visibleClaudeModels, type ClaudeModel } from "../lib/claude";
@@ -77,32 +80,40 @@ export function ClaudeModelControl({
   onSignInRequired?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listId = useId();
   const live = models.length > 0;
   const sourceModels = live ? models : CLAUDE_FALLBACK_MODELS;
   const catalog = visibleClaudeModels(sourceModels);
+  const searchable = catalog.length > 6;
+  const normalizedQuery = searchable ? query.trim().toLowerCase() : "";
   const ordered = useMemo(
-    () => sortByFavorites(catalog, favorites, (entry) => entry.id),
-    [catalog, favorites],
+    () => sortByFavorites(catalog.filter((entry) => !normalizedQuery
+      || `${entry.displayName} ${entry.id} ${entry.description ?? ""} ${entry.resolvedModel ?? ""}`.toLowerCase().includes(normalizedQuery)), favorites, (entry) => entry.id),
+    [catalog, favorites, normalizedQuery],
   );
+  useEffect(() => { if (!open) setQuery(""); }, [open]);
   const starredVisible = favoriteCount(ordered, favorites, (entry) => entry.id);
   // A saved model that the live catalog no longer offers stays visible and
   // selected instead of the menu silently pointing somewhere else.
-  const selected = ordered.find((entry) => entry.id === model)
+  const catalogMatch = catalog.find((entry) => entry.id === model) ?? sourceModels.find((entry) => entry.id === model);
+  const selected = catalogMatch
     // Supersession can intentionally hide the old row while it remains the
     // saved selection. Preserve the live catalog's friendly name in the
     // closed trigger instead of exposing its raw CLI id.
-    ?? sourceModels.find((entry) => entry.id === model)
-    ?? (model ? { id: model, displayName: model, description: "Saved model", resolvedModel: model, disabled: false, supportedEfforts: [] } : ordered[0]);
+    ?? (model ? { id: model, displayName: model, description: "Saved model", resolvedModel: model, disabled: false, supportedEfforts: [] } : catalog[0]);
   // Saved concrete IDs may not match the CLI's aliases, including before its
   // catalog arrives. Keep the trigger terse without changing the selected ID
   // or hiding version/context details in the expanded menu.
   const family = [model, selected?.resolvedModel, selected?.displayName]
     .map((value) => value?.match(/^(?:claude(?:[-_ .]\d+)*[-_ ])?(fable|opus|sonnet|haiku)(?![a-z])/i)?.[1])
     .find(Boolean);
-  const buttonLabel = family
-    ? family.charAt(0).toUpperCase() + family.slice(1).toLowerCase()
-    : selected?.displayName ?? "Choose a model";
+  // The catalog's own display name everywhere (G7); the family alone only
+  // stands in for a raw saved id the catalog doesn't name.
+  const buttonLabel = catalogMatch?.displayName
+    ?? (family ? `Claude ${family.charAt(0).toUpperCase()}${family.slice(1).toLowerCase()}` : selected?.displayName ?? "Choose a model");
   const normalizedEffort = effort === "ultra" ? "max" : effort;
   const effortIndex = Math.max(
     0,
@@ -115,24 +126,17 @@ export function ClaudeModelControl({
     const close = (event: Event) => {
       if (closesModelMenu(event, rootRef.current)) setOpen(false);
     };
-    // Capture phase + stopPropagation: Escape closes only this menu and never
-    // reaches the app-level handler that stops the running turn.
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        setOpen(false);
-        rootRef.current?.querySelector<HTMLButtonElement>(".openrouter-trigger")?.focus();
-      }
-    };
     document.addEventListener("pointerdown", close);
     document.addEventListener("click", close);
-    document.addEventListener("keydown", escape, true);
     return () => {
       document.removeEventListener("pointerdown", close);
       document.removeEventListener("click", close);
-      document.removeEventListener("keydown", escape, true);
     };
   }, [open]);
+
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuKeys = useMenuKeyboard({ open, setOpen, menuRef, triggerRef, searchRef: searchable ? searchRef : undefined, answersModelShortcut: true, canOpen: () => signedIn !== false });
 
   return (
     <div
@@ -143,18 +147,25 @@ export function ClaudeModelControl({
       {providerControl}
       <div className={`openrouter-picker ${open ? "open" : ""} ${signedIn === false ? "unavailable" : ""}`}>
         <button
+          ref={triggerRef}
           type="button"
           className="openrouter-trigger"
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label={`Claude model: ${buttonLabel}`}
+          title={withShortcut(`Model: ${selected?.displayName ?? buttonLabel}`, "modelPicker")}
+          onPointerDown={menuKeys.onTriggerPointerDown}
+          onKeyDown={(event) => {
+            if (signedIn === false && (event.key === "ArrowDown" || event.key === "ArrowUp")) { event.preventDefault(); onSignInRequired?.(); return; }
+            menuKeys.onTriggerKeyDown(event);
+          }}
           aria-disabled={signedIn === false || undefined}
           onClick={() => {
             if (signedIn === false) { onSignInRequired?.(); return; }
             setOpen((value) => !value);
           }}
         >
-          <span className="openrouter-logo claude-logo">
+          <span className="openrouter-logo claude-logo" aria-hidden="true">
             <ClaudeProviderLogo size={16} />
           </span>
           <span className="openrouter-trigger-copy">
@@ -163,54 +174,53 @@ export function ClaudeModelControl({
           </span>
           <ChevronDown size={15} />
         </button>
-        <div className="openrouter-menu claude-model-menu">
-          <ModelCatalogHeader provider="Claude" heading={`${catalog.length} Claude model${catalog.length === 1 ? "" : "s"}`} description={live
-              ? signedIn === false ? "Generic CLI catalog — sign in for account models" : "Live catalog from your Claude Code CLI"
-              : "Built-in list — CLI catalog unavailable"} loading={loading} onRefresh={onRefresh} />
+        <div className="openrouter-menu claude-model-menu" inert={!open || undefined} onKeyDown={menuKeys.onMenuKeyDown}>
+          <ModelCatalogHeader provider="Claude" heading="Claude models" description={live
+              ? signedIn === false ? "Sign in for your plan's models" : "From Claude Code"
+              : "Built-in list"} loading={loading} onRefresh={onRefresh} />
+          {searchable && <div className="openrouter-search-row model-menu-search">
+            <Search size={14} aria-hidden="true" />
+            <input ref={searchRef} aria-label="Filter Claude models" aria-controls={listId} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter models…" />
+            {query && <button type="button" onClick={() => { setQuery(""); searchRef.current?.focus(); }} aria-label="Clear model filter"><X size={13} /></button>}
+          </div>}
           <div
+            ref={menuRef}
+            id={listId}
             className="openrouter-options"
             role="menu"
-            aria-label="Claude model selector"
+            aria-label="Claude model"
           >
             {ordered.map((entry, index) => {
               const updateRequired = entry.unavailableReason === "update-required";
-              return (
-              <div className="model-row" key={entry.id} role="none">
-                <button
-                  type="button"
-                  role={updateRequired ? "menuitem" : "menuitemradio"}
-                  aria-checked={updateRequired ? undefined : entry.id === selected?.id}
-                  aria-current={updateRequired && entry.id === selected?.id ? "true" : undefined}
-                  aria-label={`${entry.displayName}${updateRequired ? " (Claude Code update required)" : entry.disabled ? " (unavailable on your plan)" : ""}`}
-                  aria-disabled={signedIn === false || (entry.disabled && !updateRequired) || undefined}
-                  className={`${entry.id === selected?.id ? "selected " : ""}${updateRequired ? "update-required " : ""}${starredVisible > 0 && index === starredVisible - 1 ? "favorite-group-end" : ""}`.trim()}
-                  disabled={signedIn !== false && entry.disabled && !updateRequired}
-                  title={updateRequired ? `Update Claude Code${entry.requiredVersion ? ` to ${entry.requiredVersion} or newer` : ""}` : entry.disabled ? "Your Claude plan cannot run this model" : entry.resolvedModel}
-                  onClick={() => {
-                    if (signedIn === false) { onSignInRequired?.(); return; }
-                    if (entry.disabled) {
-                      onUnavailableModel?.(entry);
-                      setOpen(false);
-                      return;
-                    }
-                    onModel(entry.id);
+              return <ModelCatalogRow
+                key={entry.id}
+                id={entry.id}
+                name={entry.displayName}
+                detail={entry.description || entry.resolvedModel}
+                art={<span className="openrouter-provider-mark claude-logo"><ClaudeProviderLogo size={16} /></span>}
+                meta={updateRequired ? "Update required" : undefined}
+                role={updateRequired ? "menuitem" : "menuitemradio"}
+                selected={entry.id === selected?.id}
+                groupEnd={starredVisible > 0 && index === starredVisible - 1}
+                ariaLabel={`${entry.displayName}${updateRequired ? " (Claude Code update required)" : entry.disabled ? " (unavailable on your plan)" : ""}`}
+                ariaDisabled={signedIn === false || (entry.disabled && !updateRequired)}
+                className={`claude-logo-row${updateRequired ? " update-required" : ""}`}
+                disabled={signedIn !== false && entry.disabled && !updateRequired}
+                title={updateRequired ? `Update Claude Code${entry.requiredVersion ? ` to ${entry.requiredVersion} or newer` : ""}` : entry.disabled ? "Your Claude plan cannot run this model" : `${entry.displayName} · ${entry.resolvedModel}`}
+                favorite={!entry.disabled && onToggleFavorite ? favorites.includes(entry.id) : undefined}
+                onToggleFavorite={onToggleFavorite}
+                onSelect={() => {
+                  if (signedIn === false) { onSignInRequired?.(); return; }
+                  if (entry.disabled) {
+                    onUnavailableModel?.(entry);
                     setOpen(false);
-                  }}
-                >
-                  <span className="openrouter-provider-mark claude-logo">
-                    <ClaudeProviderLogo size={16} />
-                  </span>
-                  <span>
-                    <strong>{entry.displayName}</strong>
-                    <small>{entry.description || entry.resolvedModel}</small>
-                  </span>
-                  <span className="openrouter-model-meta">{updateRequired ? "Update required" : entry.resolvedModel}</span>
-                  {entry.id === selected?.id && <Check size={13} />}
-                </button>
-                {!entry.disabled && onToggleFavorite && <ModelFavoriteStar model={entry.id} label={entry.displayName} favorite={favorites.includes(entry.id)} onToggle={onToggleFavorite} />}
-              </div>
-              );
+                    return;
+                  }
+                  menuKeys.select(() => onModel(entry.id));
+                }}
+              />;
             })}
+            {searchable && !ordered.length && <p className="model-menu-no-match" role="status">No models match “{query.trim()}”.</p>}
           </div>
           {signedIn !== false && (error || !live) && (
             <div className="openrouter-catalog-warning" role={open ? "status" : undefined}>
@@ -238,7 +248,7 @@ export function ClaudeModelControl({
           valueText={EFFORTS[effortIndex].label}
           onIndex={(next) => onEffort(EFFORTS[next].value)}
         />
-        <div className="openrouter-reasoning-labels">
+        <div className="openrouter-reasoning-labels" aria-hidden="true">
           {EFFORTS.map((entry, index) => (
             <span
               key={entry.value}

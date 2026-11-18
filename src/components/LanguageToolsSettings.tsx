@@ -1,5 +1,7 @@
+import { SettingInfo, Switch } from "./SettingsBits";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Check, Download, LoaderCircle, RefreshCw } from "lucide-react";
+import { Check, Download, ExternalLink, LoaderCircle, RefreshCw } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { safeErrorText } from "../lib/errors";
 import {
   installLanguageTool,
@@ -15,12 +17,12 @@ import {
 import "./LanguageToolsSettings.css";
 
 const STATE_LABELS: Record<LanguageToolState, string> = {
-  installed: "Verified",
-  available: "Not yet verified",
+  installed: "Ready",
+  available: "Not checked yet",
   missing: "Not installed",
   installing: "Installing…",
-  error: "Setup failed",
-  unavailable: "Prerequisite needed",
+  error: "Couldn’t set up",
+  unavailable: "Needs a prerequisite",
 };
 
 function rustPrerequisiteCommand(tool: LanguageToolStatus | undefined): string | undefined {
@@ -204,55 +206,70 @@ export function LanguageToolsSettings() {
     }
   };
 
-  return <section className="set-group language-tools-settings" aria-label="Language tools" aria-describedby={descriptionId}>
+  return <section className="set-group language-tools-settings" id="tools-language" aria-label="Language tools" aria-describedby={descriptionId}>
     <div className="set-group-head">
-      <h4>Language tools</h4>
-      <span className="set-group-note">saved immediately</span>
+      <h4 tabIndex={-1}>Language tools</h4>
     </div>
-    <div id={descriptionId} className="language-tools-description">
-      <p>Installs are shared by all projects on this computer. Existing tools, including tools installed by a model, are reused.</p>
-      <p>Installed, enabled language servers let tool-capable models look up definitions, references, symbol information, and file symbols. Claude Code also receives native code-intelligence integration.</p>
-      <p>Framework and native-language tools require Full access because project configuration can execute code. Basic TypeScript, Python, HTML/CSS/JSON, and YAML lookups also work in Ask and Read-only modes.</p>
-      <p>Setup downloads local tools and uses disk space. It does not call a model or spend API tokens.</p>
-    </div>
+    <p id={descriptionId}>Language servers that let models look up definitions, references and symbols. <SettingInfo label="About language tools">Installs are shared by all projects on this computer, and existing tools (including ones a model installed) are reused. Claude Code also gets native code-intelligence integration. Framework and native-language tools need Full access because project configuration can run code; basic TypeScript, Python, HTML/CSS/JSON and YAML lookups also work in Ask to act and Read only modes. Setup downloads local tools and uses disk space. It doesn&rsquo;t call a model or spend API tokens.</SettingInfo></p>
     <div className="set-card" aria-busy={pending !== null}>
       <div className="set-row">
-        <div className="set-copy"><strong>Automatic setup for new project threads</strong><small>Install enabled tools needed by a new project's languages. Turn off to install tools individually. Disabled tools are excluded.</small><small>Automatic and model-requested installation requires Full access. In Ask or Read-only mode, use Install here.</small></div>
-        <div className="set-control"><button type="button" role="switch" aria-label="Automatic setup for new project threads" aria-checked={snapshot?.autoInstall ?? true} className={`toggle-switch ${snapshot?.autoInstall !== false ? "on" : ""}`} disabled={!snapshot || pending !== null} onClick={() => void run("automatic", () => setLanguageToolsAutoInstall(!snapshot!.autoInstall), (next) => ({ message: `Automatic setup ${next.autoInstall ? "enabled" : "disabled"}.` }))}><span /></button></div>
+        <div className="set-copy"><strong>Automatic setup for new project threads</strong><small>Installs the enabled tools a new project&rsquo;s languages need. Needs Full access; in Ask to act or Read only mode, use Install here.</small></div>
+        <div className="set-control"><Switch checked={snapshot?.autoInstall ?? true} label="Automatic setup for new project threads" disabled={!snapshot || pending !== null} onChange={() => void run("automatic", () => setLanguageToolsAutoInstall(!snapshot!.autoInstall), (next) => ({ message: `Automatic setup ${next.autoInstall ? "enabled" : "disabled"}.` }))} /></div>
       </div>
+      {/* M07: name the switch column once, so "on but not installed" reads
+          as intended (the switch decides whether an installed tool is used). */}
+      {snapshot?.tools.length ? <div className="language-tools-columns" aria-hidden="true"><span>Tool</span><span>Use when installed</span></div> : null}
       {snapshot?.tools.map((tool) => {
         const installing = tool.state === "installing" || pending === `install:${tool.id}`;
         const hasInstallation = tool.state === "installed" || tool.state === "available";
         const installCommand = rustPrerequisiteCommand(tool);
         const checkingTool = checking && (hasInstallation || Boolean(installCommand)) && tool.enabled && !installing;
+        const stateLabel = installing ? "Installing…" : !tool.enabled ? "Disabled" : checkingTool ? "Checking…" : tool.state === "available" && tool.health === "stale" ? "Not checked yet" : tool.state === "error" && tool.health === "error" ? "Couldn’t verify" : STATE_LABELS[tool.state];
+        // Rust's prerequisite is outside Mythra Code: point at the official
+        // installer instead of showing an Install button that can't work.
+        const prerequisiteGuide = tool.state === "unavailable" && tool.id === "rust" ? "https://rustup.rs" : undefined;
+        // A prerequisite the runtime names ("Needs rustup on this computer")
+        // replaces the generic "Needs a prerequisite" line rather than repeating it.
+        const namedPrerequisite = Boolean(prerequisiteGuide && tool.detail?.trim() && tool.enabled && !installing && !checkingTool);
+        // M13: a ready tool says so once (the ✓ Installed mark on the right),
+        // not "Ready" on the left as well.
+        const showState = !(tool.state === "installed" && tool.enabled && !installing && !checkingTool) && !namedPrerequisite;
+        // Skip lines that would only repeat the line above ("Python / Python").
+        const languages = tool.languages.join(" · ");
+        const showLanguages = languages && languages.toLowerCase() !== tool.name.toLowerCase();
+        const showDetail = tool.detail && tool.detail.trim().toLowerCase() !== String(stateLabel).toLowerCase();
         return <div key={tool.id} className="set-row language-tools-row">
           <div className="set-copy">
             <strong>{tool.name}</strong>
-            <small>{tool.languages.join(" · ")}</small>
-            <span className="language-tools-state" data-state={tool.state} role={tool.state === "error" ? "alert" : undefined}>
+            {showLanguages && <small>{languages}</small>}
+            {showState && <span className="language-tools-state" data-state={tool.state} role={tool.state === "error" ? "alert" : undefined}>
               {installing || checkingTool ? <LoaderCircle size={13} className="language-tools-spinner" aria-hidden="true" /> : null}
-              {installing ? "Installing…" : !tool.enabled ? "Disabled" : checkingTool ? "Checking…" : tool.state === "available" && tool.health === "stale" ? "Verification expired" : tool.state === "error" && tool.health === "error" ? "Verification failed" : STATE_LABELS[tool.state]}
-            </span>
-            {tool.detail && <small className="language-tools-detail">{tool.detail}</small>}
+              {stateLabel}
+            </span>}
+            {showDetail && <small className="language-tools-detail">{tool.detail}</small>}
             {installCommand && <code className="language-tools-install-command">{installCommand}</code>}
           </div>
           <div className="set-control language-tools-controls">
-            <label className="language-tools-enabled"><input type="checkbox" aria-label={`Enable ${tool.name}`} checked={tool.enabled} disabled={pending !== null || installing} onChange={(event) => {
-              const enabled = event.currentTarget.checked;
-              void run(`enabled:${tool.id}`, () => setLanguageToolEnabled(tool.id, enabled), (next) => ({ message: `${tool.name} ${next.tools.find((entry) => entry.id === tool.id)?.enabled ? "enabled" : "disabled"}.` }));
-            }} /> Enabled</label>
             {installCommand && !installing ? <button type="button" className="secondary-button" aria-label={`Refresh ${tool.name} verification`} disabled={refreshing || pending !== null} onClick={() => void refresh(true)}>
               <RefreshCw size={13} aria-hidden="true" />{checkingTool ? "Refreshing…" : "Refresh"}
             </button> : hasInstallation && !installing ? <span className="language-tools-installed" role="img" aria-label={`${tool.name} installed`}>
               <Check size={15} aria-hidden="true" /> Installed
-            </span> : <button type="button" className="secondary-button" aria-label={`${tool.state === "error" ? "Retry installing" : "Install"} ${tool.name}`} disabled={pending !== null || installing || tool.state === "unavailable"} onClick={() => void run(`install:${tool.id}`, () => installLanguageTool(tool.id), (next) => {
+            </span> : prerequisiteGuide && !installing ? <button type="button" className="secondary-button" onClick={() => void openUrl(prerequisiteGuide)} title="Opens rustup.rs, the official Rust installer, in your browser">
+              <ExternalLink size={13} aria-hidden="true" />Get rustup
+            </button> : tool.state === "unavailable" && !installing ? null : <button type="button" className="secondary-button" aria-label={`${tool.state === "error" ? "Retry installing" : "Install"} ${tool.name}`} disabled={pending !== null || installing} onClick={() => void run(`install:${tool.id}`, () => installLanguageTool(tool.id), (next) => {
               const updated = next.tools.find((entry) => entry.id === tool.id);
               if (rustPrerequisiteCommand(updated)) return null;
               return {
-                message: updated?.state === "installed" ? `${tool.name} is installed.` : `${tool.name}: ${updated?.detail || `setup is ${updated?.state ?? "pending"}.`}`,
+                message: updated?.state === "installed" ? `${tool.name} is installed.` : `${tool.name}: ${updated?.detail || "setup hasn’t finished yet."}`,
                 failed: updated?.state !== "installed",
               };
             })}><Download size={13} aria-hidden="true" />{installing ? "Installing…" : tool.state === "error" ? "Retry install" : "Install"}</button>}
+            {/* The switch sits last so every row's switch lines up with the
+                "Automatic setup" switch above, whatever the action beside it. */}
+            <Switch checked={tool.enabled} label={`Enable ${tool.name}`} disabled={pending !== null || installing} title={tool.enabled ? "Used when installed" : "Not used"} onChange={() => {
+              const enabled = !tool.enabled;
+              void run(`enabled:${tool.id}`, () => setLanguageToolEnabled(tool.id, enabled), (next) => ({ message: `${tool.name} ${next.tools.find((entry) => entry.id === tool.id)?.enabled ? "enabled" : "disabled"}.` }));
+            }} />
           </div>
         </div>;
       })}

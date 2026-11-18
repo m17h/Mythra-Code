@@ -29,7 +29,7 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
   const open = mode !== "closed";
   const { ref: panelRef, present } = usePopoverFade(open);
   const apiBilling = usage.label === "OpenAI API key" || usage.label === "Anthropic API key";
-  const heading = apiBilling ? usage.label : `${provider === "claude" ? "Claude Code" : "Codex"} usage`;
+  const heading = apiBilling ? usage.label : `${provider === "claude" ? "Claude Code" : "OpenAI"} usage`;
   const windows = usage.windows ?? [];
   const selected = selectedUsageWindow(windows, selectedLabel);
   const [now, setNow] = useState(Date.now);
@@ -37,8 +37,9 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
   const freshness = provider === "claude"
     ? readingAge.replace(/^(?:Last updated|Updated)/, "Read from Claude Code")
     : readingAge;
-  const displayedReadStatus = provider === "claude" && readStatus === "Updated"
-    ? freshness ? "" : "Read from Claude Code"
+  // A bare "Updated" adds nothing next to the reading's own age line.
+  const displayedReadStatus = readStatus === "Updated"
+    ? freshness ? "" : provider === "claude" ? "Read from Claude Code" : readStatus
     : readStatus;
   // Both the countdown and the reading age are minute-resolution, so the clock
   // only runs when one of them is actually on screen.
@@ -100,7 +101,7 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
 
   useEffect(() => {
     if (mode === "pinned") {
-      (panelRef.current?.querySelector<HTMLInputElement>("input:checked")
+      (panelRef.current?.querySelector<HTMLButtonElement>(".usage-popover-segments > button.selected")
         ?? panelRef.current?.querySelector<HTMLButtonElement>("button"))?.focus();
     }
   }, [mode, panelRef]);
@@ -124,25 +125,24 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
       }}
     >
       <button ref={triggerRef} className={`topbar-usage-chip ${provider}`} type="button"
-        aria-label={`${usage.label}: ${header.text}. Open usage details`}
+        aria-label={`Quota: ${usage.label}, ${header.text}. Open quota details`}
         aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined}
         onClick={() => { clearTimer(); if (mode === "pinned") close(true); else setMode("pinned"); }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") { event.preventDefault(); clearTimer(); setMode("pinned"); }
         }}
       >
-        <Gauge size={13} aria-hidden="true" /><span>{header.text}</span><ChevronDown size={12} aria-hidden="true" />
+        <Gauge size={13} aria-hidden="true" /><UsageChipText text={header.text} /><ChevronDown size={12} aria-hidden="true" />
       </button>
-      {present && <div ref={panelRef} id={id} className="usage-popover" style={{ opacity: 0 }} role="dialog" aria-hidden={!open || undefined} inert={!open || undefined} aria-label={apiBilling ? `${usage.label} billing details` : `${provider === "claude" ? "Claude" : "Codex"} usage details`}>
+      {present && <div ref={panelRef} id={id} className="usage-popover" style={{ opacity: 0 }} role="dialog" aria-hidden={!open || undefined} inert={!open || undefined} aria-label={apiBilling ? `${usage.label} billing details` : `${provider === "claude" ? "Claude Code" : "OpenAI"} usage details`}>
         <div className="usage-popover-heading">
           <div><strong>{heading}</strong><small>{apiBilling ? "API billing · pay per token" : usage.planLabel || "Subscription limits"}</small></div>
           <button type="button" className="icon-button" aria-label="Close usage details" onClick={() => close(true)}><X size={15} /></button>
         </div>
-        {windows.length ? <fieldset className="usage-popover-windows">
-          <legend>Show in top bar</legend>
-          {windows.map((window, index) => <label key={`${window.label}-${index}`} className={`usage-popover-window ${window === selected ? "selected" : ""}`}>
-            <input type="radio" name={`${id}-window`} checked={window === selected} aria-label={`Show ${window.label} in top bar`}
-              onChange={() => { clearTimer(); setMode("pinned"); onSelect(window.label); }} />
+        {/* O16: the meters are plain information; which one the top bar shows
+            is a separate, small choice in the footer. */}
+        {windows.length ? <ul className="usage-popover-windows" aria-label="Limits">
+          {windows.map((window, index) => <li key={`${window.label}-${index}`} className="usage-popover-window">
             <span className="usage-popover-window-body">
               <span className="usage-popover-window-heading"><strong>{window.label}</strong><b>{window.percentLabel}</b></span>
               <span className="usage-popover-track" role="progressbar" aria-label={`${window.label} quota`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.percent} aria-valuetext={window.percentLabel}>
@@ -150,18 +150,56 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
               </span>
               <small><Clock3 size={12} aria-hidden="true" />{usageResetText(window, now)}</small>
             </span>
-          </label>)}
-        </fieldset> : <p className="usage-popover-empty">{usage.summary}</p>}
+          </li>)}
+        </ul> : <p className="usage-popover-empty">{usage.summary}</p>}
         {displayedReadStatus && <p className="usage-popover-note" role="status">{displayedReadStatus}</p>}
         {freshness && <p className="usage-popover-note">{freshness}</p>}
         {provider === "claude" && freshness && <p className="usage-popover-note">Claude Code may return a cached reading.</p>}
         <p className="usage-popover-note">{apiBilling
           ? `Remaining API credits are unavailable in Mythra Code. Check ${provider === "claude" ? "the Claude Console" : "the OpenAI dashboard"} for billing details.`
           : "Provider-reported limits, shared across devices."}</p>
-        <button type="button" className="usage-popover-details" onClick={() => { close(); if (header.needsConnection) onConnect(); else onDetails(); }}>
-          {header.needsConnection ? "Models & accounts" : "More usage details"}
-        </button>
+        <div className="usage-popover-footer">
+          <button type="button" className="usage-popover-details" onClick={() => { close(); if (header.needsConnection) onConnect(); else onDetails(); }}>
+            {header.needsConnection ? "Models & accounts" : "More usage details"}
+          </button>
+          {windows.length > 1 && <div className="usage-popover-show">
+            <span id={`${id}-show`}>Top bar shows</span>
+            <div className="usage-popover-segments" role="radiogroup" aria-labelledby={`${id}-show`}
+              onKeyDown={(event) => {
+                if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+                event.preventDefault();
+                const current = Math.max(0, windows.indexOf(selected ?? windows[0]));
+                const next = event.key === "Home" ? 0 : event.key === "End" ? windows.length - 1
+                  : (current + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) + windows.length) % windows.length;
+                clearTimer(); setMode("pinned"); onSelect(windows[next].label);
+                requestAnimationFrame(() => panelRef.current?.querySelectorAll<HTMLButtonElement>(".usage-popover-segments > button")[next]?.focus());
+              }}>
+              {windows.map((window, index) => <button key={`${window.label}-${index}`} type="button" role="radio"
+                aria-checked={window === selected} tabIndex={window === selected ? 0 : -1}
+                className={window === selected ? "selected" : ""}
+                aria-label={`Show ${window.label} in top bar`}
+                onClick={() => { clearTimer(); setMode("pinned"); onSelect(window.label); }}>{window.label}</button>)}
+            </div>
+          </div>}
+        </div>
       </div>}
     </div>
   );
+}
+
+/**
+ * "5h · 62% left" in parts, so a tight top bar can drop the window name. The
+ * figure and its "left"/"used" word always stay together; when even that does
+ * not fit, the whole chip moves into the … menu (M03, round 6). The full text
+ * remains in the chip's accessible name.
+ */
+export function UsageChipText({ text }: { text: string }) {
+  const split = text.indexOf(" · ");
+  const windowName = split > 0 ? text.slice(0, split) : "";
+  const value = split > 0 ? text.slice(split + 3) : text;
+  const figure = /^(\S+%)(\s.+)?$/.exec(value);
+  return <span className="usage-chip-text">
+    {windowName && <span className="usage-chip-window">{windowName} · </span>}
+    {figure ? <><span className="usage-chip-value">{figure[1]}</span>{figure[2] && <span className="usage-chip-suffix">{figure[2]}</span>}</> : <span className="usage-chip-value">{value}</span>}
+  </span>;
 }

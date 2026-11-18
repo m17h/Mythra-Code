@@ -1,13 +1,13 @@
 import { AgentQuestionForm, type FormQuestion } from "./AgentQuestionForm";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ExternalLink, MessageSquare, ShieldAlert } from "lucide-react";
+import { ChevronDown, ExternalLink, MessageSquare, ShieldAlert, TriangleAlert, ChevronRight } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { JsonObject } from "../lib/codex";
+import { approvalChoices, approvalFacts, riskSummary, type ApprovalChoice, type ApprovalPlan } from "../lib/approvalChoices";
+import { containTab, holdInertOutside, pushModalLayer } from "../hooks/useModalFocus";
 import { friendlyError } from "../lib/errors";
 import type { PendingApproval } from "../types";
-
-type Decision = "accept" | "acceptForSession" | "decline";
 
 export const APPROVAL_GRACE_MS = 250;
 
@@ -53,54 +53,116 @@ function ApprovalResponseError({ error }: { error: string }) {
   return error ? <div className="approval-response-error" role="alert">{error} You can try again.</div> : null;
 }
 
-function ApprovalButtons({ onDecision, allowSession = true, autoFocusDeny = true, disabled = false, denyLabel = "Deny", acceptLabel = "Allow once", dangerDeny = true }: { onDecision: (value: Decision) => void; allowSession?: boolean; autoFocusDeny?: boolean; disabled?: boolean; denyLabel?: string; acceptLabel?: string; dangerDeny?: boolean }) {
-  const denyRef = useRef<HTMLButtonElement>(null);
-  // Deny is the safe default focus target, but only once the activation grace
-  // has passed — a disabled button cannot take focus, and focusing it earlier
-  // is exactly the focus steal that let mid-flight typing answer the request.
-  useEffect(() => {
-    if (disabled || !autoFocusDeny) return;
-    const active = document.activeElement;
-    if (active === null || active === document.body || active.getAttribute("role") === "alertdialog") denyRef.current?.focus();
-  }, [autoFocusDeny, disabled]);
-  return <div className="approval-actions"><button ref={denyRef} className={`secondary-button${dangerDeny ? " danger" : ""}`} disabled={disabled} onClick={() => onDecision("decline")}>{denyLabel}</button>{allowSession && <button className="secondary-button" disabled={disabled} onClick={() => onDecision("acceptForSession")}>Allow for session</button>}<button className="primary-button" disabled={disabled} onClick={() => onDecision("accept")}>{acceptLabel}</button></div>;
+function ApprovalFacts({ approval, id }: { approval: PendingApproval; id?: string }) {
+  const facts = approvalFacts(approval);
+  if (!facts.length) return null;
+  return <dl className="approval-facts" id={id}>
+    {facts.map((fact) => <div key={fact.label}><dt>{fact.label}</dt><dd className={fact.mono ? "mono" : undefined}>{fact.value}</dd></div>)}
+  </dl>;
 }
 
-/** Maps a button decision onto the wire format each approval method expects. */
-export function approvalResponse(approval: PendingApproval, decision: Decision): JsonObject {
-  if (approval.method === "cursor/request_permission") {
-    const options = Array.isArray(approval.params.options) ? approval.params.options as JsonObject[] : [];
-    const desired = decision === "decline"
-      ? ["reject_once", "reject_always"]
-      : decision === "acceptForSession"
-        ? ["allow_always", "allow_once"]
-        : ["allow_once", "allow_always"];
-    const selected = desired.map((kind) => options.find((option) => option.kind === kind)).find(Boolean) ?? options[0];
-    const optionId = selected?.optionId;
-    return optionId === undefined
-      ? { outcome: { outcome: "cancelled" } }
-      : { outcome: { outcome: "selected", optionId } };
-  }
-  if (approval.method === "claude/can_use_tool") {
-    if (decision === "decline") {
-      return { behavior: "deny", message: "The user denied this action." };
-    }
-    return {
-      behavior: "allow",
-      ...(approval.params.input === undefined ? {} : { updatedInput: approval.params.input }),
-      updatedPermissions: decision === "acceptForSession" ? approval.params.permission_suggestions : undefined,
-    };
-  }
-  if (approval.method === "item/permissions/requestApproval") {
-    const requested = (approval.params.permissions ?? {}) as JsonObject;
-    return {
-      permissions: decision === "decline" ? { network: { enabled: false }, fileSystem: { read: [], write: [], entries: [] } } : requested,
-      scope: decision === "acceptForSession" ? "session" : "turn",
-    };
-  }
-  const legacy = approval.method === "execCommandApproval" || approval.method === "applyPatchApproval";
-  return { decision: legacy ? decision === "accept" ? "approved" : decision === "acceptForSession" ? "approved_for_session" : "denied" : decision };
+/** A compound or destructive command says so above the answers. */
+function ApprovalRisk({ plan, id }: { plan: ApprovalPlan; id?: string }) {
+  const text = riskSummary(plan.risk);
+  return text ? <p className="approval-risk" id={id}><TriangleAlert size={13} aria-hidden="true" /><span>{text}</span></p> : null;
 }
+
+/** Exact scope of one wider grant: what it covers, how long, where it's saved. */
+/**
+ * One wider choice (Sol M05): the exact scope leads as a compact block (what
+ * runs now, what later runs it allows, what it doesn't cover, how long it
+ * lasts, where it is saved), then the explanation as a quieter note, then the
+ * exact rule behind a disclosure. Nothing is removed; only the reading order
+ * changes, so the facts come before the prose that restates them.
+ */
+function GrantScope({ choice, id }: { choice: ApprovalChoice; id: string }) {
+  const hasScope = Boolean(choice.scope && choice.scope.length > 0);
+  return <div className="approval-grant-body" id={id}>
+    {hasScope && <dl className="approval-scope">
+      {choice.scope!.map((row, index) => <div key={`${row.label}-${index}`} className={row.excluded ? "excluded" : undefined}>
+        <dt>{row.label}</dt><dd className={row.mono ? "mono" : undefined}>{row.value}</dd>
+      </div>)}
+    </dl>}
+    {choice.detail && <p className={`approval-grant-detail${hasScope ? " secondary" : ""}`}>{choice.detail}</p>}
+    {choice.exact && <details className="approval-exact">
+      <summary className="lm-summary"><ChevronRight size={12} aria-hidden="true" className="lm-chevron" />{choice.id === "execpolicy" ? "Exact rule the Codex CLI saves" : choice.id === "session" ? "Exact access requested" : "Exact rule Claude saves"}</summary>
+      <pre>{choice.exact}</pre>
+    </details>}
+  </div>;
+}
+
+function ApprovalButtons({ plan, onChoose, disabled = false, riskId }: { plan: ApprovalPlan; onChoose: (choice: ApprovalChoice) => void; disabled?: boolean; riskId?: string }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const moreId = useId();
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const grantRefs = useRef(new Map<string, HTMLButtonElement>());
+  const deny = plan.choices.find((choice) => choice.kind === "deny");
+  const once = plan.choices.find((choice) => choice.kind === "once");
+  const more = plan.choices.filter((choice) => choice.kind === "broader" || choice.kind === "denyBroader");
+  // A risky command gets no filled "grant" button: Deny and Allow once weigh the same.
+  const equal = Boolean(plan.risk);
+  useEffect(() => { if (confirming) cancelRef.current?.focus(); }, [confirming]);
+  const cancelConfirm = () => {
+    const id = confirming;
+    setConfirming(null);
+    if (id) window.requestAnimationFrame(() => grantRefs.current.get(id)?.focus());
+  };
+  // ←/→ move between the answers (a toolbar), so a keyboard user who tabbed
+  // in on Deny can reach Allow without passing other controls.
+  return <div className="approval-answer" onKeyDown={(event) => {
+    if (event.key !== "Escape") return;
+    // Escape steps back (confirmation, then More choices); it never answers.
+    if (confirming) { event.preventDefault(); event.stopPropagation(); cancelConfirm(); }
+    else if (moreOpen) { event.preventDefault(); event.stopPropagation(); setMoreOpen(false); toggleRef.current?.focus(); }
+  }}>
+    <ApprovalRisk plan={plan} id={riskId} />
+    <div className="approval-actions" role="toolbar" aria-label="Answer" onKeyDown={(event) => {
+      if (event.key !== "ArrowRight" && event.key !== "ArrowLeft" && event.key !== "Home" && event.key !== "End") return;
+      const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+      const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+      if (!buttons.length || index < 0) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+        : Math.min(buttons.length - 1, Math.max(0, index + (event.key === "ArrowRight" ? 1 : -1)));
+      buttons[next].focus();
+    }}>
+      {deny && <button type="button" className={`secondary-button approval-deny${deny.id === "decline" && deny.label !== "Deny" ? " neutral" : ""}`} disabled={disabled} onClick={() => onChoose(deny)}>{deny.label}</button>}
+      {once && <button type="button" className={`${equal ? "secondary-button" : "primary-button"} approval-allow${equal ? " equal" : ""}`} disabled={disabled} onClick={() => onChoose(once)}>{once.label}</button>}
+      {more.length > 0 && <button ref={toggleRef} type="button" className="approval-more-toggle" disabled={disabled} aria-expanded={moreOpen} aria-controls={moreId}
+        onClick={() => { setMoreOpen((value) => !value); setConfirming(null); }}>
+        <span>{moreOpen ? "Fewer choices" : "More choices"}</span><ChevronDown size={12} aria-hidden="true" />
+      </button>}
+    </div>
+    {more.length > 0 && <ul className="approval-more" id={moreId} aria-label="Wider choices" hidden={!moreOpen}>
+      {more.map((choice) => {
+        const bodyId = `${moreId}-${choice.id}`;
+        const isConfirming = confirming === choice.id;
+        return <li key={choice.id} className={`approval-grant${choice.kind === "denyBroader" ? " deny" : ""}${isConfirming ? " confirming" : ""}`}>
+          <GrantScope choice={choice} id={bodyId} />
+          {isConfirming ? <div className="approval-confirm" role="group" aria-label={`Confirm: ${choice.label}`} aria-describedby={`${bodyId}-confirm`}>
+            <p id={`${bodyId}-confirm`}><TriangleAlert size={13} aria-hidden="true" /><span>{choice.confirm}</span></p>
+            <div className="approval-confirm-actions">
+              <button ref={cancelRef} type="button" className="secondary-button" onClick={cancelConfirm}>Cancel</button>
+              <button type="button" className="secondary-button approval-grant-button confirm" disabled={disabled} onClick={() => onChoose(choice)}>{choice.confirmLabel ?? choice.label}</button>
+            </div>
+          </div> : <div className="approval-grant-actions">
+            <button ref={(node) => { if (node) grantRefs.current.set(choice.id, node); else grantRefs.current.delete(choice.id); }} type="button"
+              className={`secondary-button approval-grant-button${choice.kind === "denyBroader" ? " deny" : ""}`} disabled={disabled} aria-describedby={bodyId}
+              onClick={() => { if (choice.confirm) setConfirming(choice.id); else onChoose(choice); }}>
+              {choice.label}{choice.confirm ? "…" : ""}
+            </button>
+          </div>}
+        </li>;
+      })}
+    </ul>}
+    {plan.note && <p className="approval-note">{plan.note}</p>}
+  </div>;
+}
+
+/** Window event that asks the visible approval card (or dialog) to take focus. */
+export const FOCUS_APPROVAL_EVENT = "mythra:focus-approval";
 
 export function approvalSummary(approval: PendingApproval): { title: string; reason: string; command: string } {
   if (approval.method === "openkiwi/subagents/change") {
@@ -120,9 +182,11 @@ export function approvalSummary(approval: PendingApproval): { title: string; rea
   }
   const isFile = approval.method.includes("fileChange") || approval.method.includes("applyPatch");
   const permissions = approval.method === "item/permissions/requestApproval";
+  const isCommand = approval.method === "item/commandExecution/requestApproval" || approval.method === "execCommandApproval";
   const commandValue = approval.params.command;
   return {
-    title: isFile ? "Allow file changes?" : permissions ? "Grant additional permissions?" : "Allow this action?",
+    title: isFile ? "Allow these file changes?" : permissions ? "Grant extra access?" : isCommand ? "Run this command?"
+      : approval.method === "cursor/request_permission" ? "Allow this Cursor action?" : "Allow this action?",
     reason: String(approval.params.reason ?? "The agent is requesting permission to continue."),
     command: Array.isArray(commandValue) ? commandValue.join(" ") : String(commandValue ?? ""),
   };
@@ -130,27 +194,38 @@ export function approvalSummary(approval: PendingApproval): { title: string; rea
 
 /**
  * Approval rendered inline in the conversation for the thread the user is
- * looking at — no app-global modal takeover. Buttons do not steal focus.
+ * looking at — no app-global modal takeover. Buttons do not steal focus;
+ * the card only takes focus when asked to (FOCUS_APPROVAL_EVENT), and then
+ * the card itself, never an answer, so a stray Enter grants nothing.
  */
 export function InlineApprovalCard({ approval, onRespond }: { approval: PendingApproval; onRespond: (value: JsonObject) => void | Promise<void> }) {
   const { title, reason, command } = approvalSummary(approval);
+  const plan = useMemo(() => approvalChoices(approval), [approval]);
   // Latch only — the inline card never steals focus, so no activation grace.
   const { locked, error, decide } = useDecisionLock(false);
+  const describedId = useId();
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const focusCard = () => {
+      const card = cardRef.current;
+      if (!card || document.querySelector("[data-approval-modal]")) return;
+      card.scrollIntoView({ block: "center", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      card.focus({ preventScroll: true });
+    };
+    window.addEventListener(FOCUS_APPROVAL_EVENT, focusCard);
+    return () => window.removeEventListener(FOCUS_APPROVAL_EVENT, focusCard);
+  }, []);
+  const hasFacts = approvalFacts(approval).length > 0;
+  const described = [`${describedId}-reason`, command && `${describedId}-command`, hasFacts && `${describedId}-facts`, plan.risk && `${describedId}-risk`].filter(Boolean).join(" ");
   return (
-    <div className="inline-approval" role="group" aria-label={title}>
-      <div className="inline-approval-head"><ShieldAlert size={14} /><strong>{title}</strong></div>
-      <p>{reason}</p>
-      {command && <pre className="approval-command">{command}</pre>}
+    <div ref={cardRef} className="inline-approval" role="group" aria-label={title} aria-describedby={described} tabIndex={-1} data-inline-approval="">
+      <span className="sr-only" role="status">Waiting for your approval</span>
+      <div className="inline-approval-head"><span className="approval-shield" aria-hidden="true"><ShieldAlert size={14} /></span><strong>{title}</strong></div>
+      <p id={`${describedId}-reason`}>{reason}</p>
+      {command && <pre className="approval-command" id={`${describedId}-command`}>{command}</pre>}
+      <ApprovalFacts approval={approval} id={`${describedId}-facts`} />
       <ApprovalResponseError error={error} />
-      <ApprovalButtons
-        autoFocusDeny={false}
-        disabled={locked}
-        allowSession={approval.method !== "openkiwi/subagents/change"}
-        denyLabel={approval.method === "openkiwi/subagents/change" ? "Keep current settings" : "Deny"}
-        acceptLabel={approval.method === "openkiwi/subagents/change" ? "Apply to project" : "Allow once"}
-        dangerDeny={approval.method !== "openkiwi/subagents/change"}
-        onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))}
-      />
+      <ApprovalButtons disabled={locked} plan={plan} riskId={`${describedId}-risk`} onChoose={(choice) => decide(() => onRespond(choice.response))} />
     </div>
   );
 }
@@ -159,9 +234,12 @@ interface ApprovalContext { threadLabel?: string; pendingCount?: number }
 
 function StandardApproval({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void | Promise<void> } & ApprovalContext) {
   const { title, reason, command } = approvalSummary(approval);
+  const plan = useMemo(() => approvalChoices(approval), [approval]);
   const { locked, error, decide } = useDecisionLock();
-  const projectSubagents = approval.method === "openkiwi/subagents/change";
-  return <Modal title={title} description={reason} threadLabel={threadLabel} pendingCount={pendingCount}>{command && <pre className="approval-command">{command}</pre>}<ApprovalResponseError error={error} /><ApprovalButtons disabled={locked} allowSession={!projectSubagents} denyLabel={projectSubagents ? "Keep current settings" : "Deny"} acceptLabel={projectSubagents ? "Apply to project" : "Allow once"} dangerDeny={!projectSubagents} onDecision={(decision) => decide(() => onRespond(approvalResponse(approval, decision)))} /></Modal>;
+  const id = useId();
+  const hasFacts = approvalFacts(approval).length > 0;
+  const describedBy = [command && `${id}-command`, hasFacts && `${id}-facts`, plan.risk && `${id}-risk`].filter(Boolean).join(" ");
+  return <Modal title={title} description={reason} threadLabel={threadLabel} pendingCount={pendingCount} describedBy={describedBy}>{command && <pre className="approval-command" id={`${id}-command`}>{command}</pre>}<ApprovalFacts approval={approval} id={`${id}-facts`} /><ApprovalResponseError error={error} /><ApprovalButtons disabled={locked} plan={plan} riskId={`${id}-risk`} onChoose={(choice) => decide(() => onRespond(choice.response))} /></Modal>;
 }
 
 function UserInputRequest({ approval, onRespond, threadLabel, pendingCount }: { approval: PendingApproval; onRespond: (value: JsonObject) => void | Promise<void> } & ApprovalContext) {
@@ -207,43 +285,48 @@ function McpRequest({ approval, onRespond, threadLabel, pendingCount }: { approv
   return <Modal title={`${String(approval.params.serverName ?? "MCP")} needs your input`} description={message} threadLabel={threadLabel} pendingCount={pendingCount}>{url && <button className="elicitation-url" onClick={() => void openUrl(url)}><ExternalLink size={13} /> Open secure request</button>}{mode !== "url" && <div className="request-fields">{fields.map(([key, field]) => <label key={key}><span>{field.title || key}{schema.required?.includes(key) ? " *" : ""}</span>{field.description && <small>{field.description}</small>}{field.type === "boolean" ? <select value={String(content[key] ?? false)} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value === "true" }))}><option value="false">No</option><option value="true">Yes</option></select> : field.enum ? <select value={String(content[key] ?? "")} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value }))}>{field.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}</select> : <input type={field.type === "number" || field.type === "integer" ? "number" : "text"} value={String(content[key] ?? "")} onChange={(event) => setContent((current) => ({ ...current, [key]: event.target.value }))} />}</label>)}</div>}<ApprovalResponseError error={error} /><div className="approval-actions"><button className="secondary-button danger" disabled={locked} onClick={() => decide(() => onRespond({ action: "decline", content: null, _meta: null }))}>Decline</button><button className="primary-button" disabled={locked} onClick={() => decide(() => onRespond({ action: "accept", content: mode === "url" ? null : submittedContent(), _meta: null }))}>{mode === "url" ? "I’m done" : "Submit"}</button></div></Modal>;
 }
 
-function Modal({ title, description, threadLabel, pendingCount, questionDialog = false, children }: { title: string; description: string; threadLabel?: string; pendingCount?: number; questionDialog?: boolean; children: ReactNode }) {
+function Modal({ title, description, threadLabel, pendingCount, questionDialog = false, describedBy = "", children }: { title: string; description: string; threadLabel?: string; pendingCount?: number; questionDialog?: boolean; describedBy?: string; children: ReactNode }) {
+  const backdropRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
-  // Keep Tab cycling inside the modal — the app behind it stays reachable
-  // otherwise, because nothing else is inert while an approval is pending.
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const id = useId();
   useEffect(() => {
+    const backdrop = backdropRef.current;
     const modal = modalRef.current;
-    if (!modal) return;
+    if (!backdrop || !modal) return;
+    // Whatever had focus when the request arrived (usually the draft) gets it back.
+    const opener = document.activeElement instanceof HTMLElement && !modal.contains(document.activeElement) ? document.activeElement : null;
+    // The covered app is inert: no Tab, click or screen-reader focus reaches it.
+    // Shared with every other modal surface: reference-counted, so an
+    // approval over Settings or the palette never un-inerts what they cover.
+    const restoreInert = holdInertOutside(backdrop);
+    const removeLayer = pushModalLayer(modal);
+    // Focus the request itself (a form's first field, else the heading), never an answer.
+    if (!modal.contains(document.activeElement)) (modal.querySelector<HTMLElement>("input, select, textarea") ?? headingRef.current ?? modal).focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return;
-      const focusable = modal.querySelectorAll<HTMLElement>("button, input, select, textarea, [tabindex]:not([tabindex='-1'])");
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      } else if (!modal.contains(document.activeElement)) {
-        event.preventDefault();
-        first.focus();
-      }
+      if (event.key === "Tab") containTab(modal, event);
+      // Escape never answers and never reaches the app (stop run, close the
+      // Tools); the card's own handler steps back out of More choices.
+      else if (event.key === "Escape") event.preventDefault();
     };
     document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      removeLayer();
+      restoreInert();
+      const active = document.activeElement;
+      if (active && active !== document.body && document.contains(active)) return;
+      const target = opener && document.contains(opener) && !opener.closest("[inert]") ? opener
+        : document.querySelector<HTMLElement>(".composer textarea");
+      target?.focus({ preventScroll: true });
+    };
   }, []);
-  // Move keyboard focus behind the aria-modal boundary on mount: the first
-  // form field when the request has one, otherwise the dialog itself. Action
-  // buttons are still disabled at this point (activation grace), so the modal
-  // cannot rely on them as the initial target.
   useEffect(() => {
-    const modal = modalRef.current;
-    if (!modal || modal.contains(document.activeElement)) return;
-    (modal.querySelector<HTMLElement>("input, select, textarea") ?? modal).focus();
+    const focusModal = () => { const modal = modalRef.current; if (modal && !modal.contains(document.activeElement)) (headingRef.current ?? modal).focus(); };
+    window.addEventListener(FOCUS_APPROVAL_EVENT, focusModal);
+    return () => window.removeEventListener(FOCUS_APPROVAL_EVENT, focusModal);
   }, []);
-  return <div className="modal-backdrop approval-backdrop"><div ref={modalRef} className={`approval-modal${questionDialog ? " approval-question-modal" : ""}`} data-approval-modal="" role="alertdialog" aria-modal="true" aria-label={title} tabIndex={-1}><div className="approval-heading"><h2>{title}</h2><div className="approval-shield"><ShieldAlert size={22} /></div></div><p>{description}</p>{threadLabel && <div className="approval-thread-line"><MessageSquare size={12} /> Requested by <strong>{threadLabel}</strong></div>}{children}{pendingCount != null && pendingCount > 0 && <div className="approval-queue-note">{pendingCount} more approval{pendingCount === 1 ? "" : "s"} waiting</div>}</div></div>;
+  return <div ref={backdropRef} className="modal-backdrop approval-backdrop"><div ref={modalRef} className={`approval-modal${questionDialog ? " approval-question-modal" : ""}`} data-approval-modal="" role="alertdialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={[`${id}-description`, describedBy].filter(Boolean).join(" ")} tabIndex={-1}><div className="approval-heading"><div className="approval-shield"><ShieldAlert size={22} aria-hidden="true" /></div><h2 ref={headingRef} id={`${id}-title`} tabIndex={-1}>{title}</h2></div><p id={`${id}-description`}>{description}</p>{threadLabel && <div className="approval-thread-line"><MessageSquare size={12} aria-hidden="true" /> Requested by <strong>{threadLabel}</strong></div>}{children}{pendingCount != null && pendingCount > 0 && <div className="approval-queue-note">{pendingCount} more approval{pendingCount === 1 ? "" : "s"} waiting</div>}</div></div>;
 }
 
 export function ApprovalCenter({ approval, threadLabel, pendingCount, onRespond }: { approval: PendingApproval; threadLabel?: string; pendingCount?: number; onRespond: (value: JsonObject) => void | Promise<void> }) {

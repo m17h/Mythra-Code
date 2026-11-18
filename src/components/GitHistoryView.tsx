@@ -1,5 +1,6 @@
-import { CircleAlert, GitCommitHorizontal, History, LoaderCircle, RefreshCw } from "lucide-react";
-import { readTime, relativeAge } from "../lib/gitChanges";
+import { GitCommitHorizontal, History, LoaderCircle, RefreshCw } from "lucide-react";
+import { relativeAge } from "../lib/gitChanges";
+import { FriendlyGitError, GitUpdatedAt } from "./GitChangesView";
 import type { useProjectGitHistory } from "../hooks/useProjectGitHistory";
 import type { StudioTab } from "../lib/studioTabs";
 
@@ -23,14 +24,13 @@ export function GitHistoryView(props: {
   const pinnedHead = moved ? history.headOid?.slice(0, 7) : null;
   const listLabel = moved ? pinnedHead ? `Commits at ${pinnedHead}` : "Previously read commits"
     : props.branch ? `Commits on ${props.branch}` : "Commits";
-  const freshness = readTime(history.loadedAt);
   return (
     <div className="git-history">
       <div className="git-view-toolbar">
         <div className="git-view-summary">
           <span><strong>Commits</strong>{moved ? pinnedHead ? <> at <code title={history.headOid ?? undefined}>{pinnedHead}</code></> : " previously read"
             : props.branch ? <> on <code title={props.branch}>{props.branch}</code></> : ""}</span>
-          {freshness && <small>read {freshness}</small>}
+          {history.loaded && <GitUpdatedAt at={history.loadedAt} />}
         </div>
         {history.available && !props.absent && (
           <button type="button" className="icon-button tiny" onClick={history.reload} disabled={history.loading} aria-busy={history.loading} aria-label="Reload commit history" title="Read commit history again from the current commit">
@@ -52,13 +52,7 @@ export function GitHistoryView(props: {
               <button type="button" className="thread-pr-inline-button" onClick={history.reload} disabled={history.loading} aria-busy={history.loading}>Show latest</button>
             </div>
           )}
-          {history.error && (
-            <div className="git-local-note bad" role="alert">
-              <CircleAlert size={13} aria-hidden="true" />
-              <span>{history.error}</span>
-              <button type="button" className="thread-pr-inline-button" onClick={history.retry}>Try again</button>
-            </div>
-          )}
+          {history.error && <FriendlyGitError raw={history.error} onRetry={history.retry} />}
           {!history.loaded && history.loading && (
             <p className="git-changes-empty" role="status"><LoaderCircle className="spin" size={12} aria-hidden="true" /> Reading commits…</p>
           )}
@@ -69,10 +63,10 @@ export function GitHistoryView(props: {
             <ol className="git-history-list" aria-label={listLabel}>
               {history.entries.map((entry) => (
                 <li key={entry.oid}>
-                  <code className="git-history-oid" title={entry.oid}>{entry.shortOid}</code>
+                  {/* The subject leads; the hash is a detail at the end of the meta line. */}
                   <div>
                     <strong title={entry.subject}>{entry.subject || "(no message)"}</strong>
-                    <small>{entry.authorName}{relativeAge(entry.authoredAt) ? ` · ${relativeAge(entry.authoredAt)}` : ""}</small>
+                    <small>{entry.authorName}{relativeAge(entry.authoredAt) ? ` · ${relativeAge(entry.authoredAt)}` : ""} · <code className="git-history-oid" title={entry.oid}>{entry.shortOid}</code></small>
                   </div>
                 </li>
               ))}
@@ -87,19 +81,12 @@ export function GitHistoryView(props: {
         </>
       )}
 
-      <div className="git-history-tools">
-        <History size={13} aria-hidden="true" />
-        <p>
-          This is your Git commit history. AI run snapshots live in <b>Checkpoints</b>, and isolated branches in <b>Worktrees</b>.
-          Neither one rewrites these commits.
+      {props.onOpenTool && (
+        <p className="git-history-tools">
+          <History size={12} aria-hidden="true" />
+          <span>AI run snapshots are in <button type="button" className="thread-pr-inline-button" onClick={() => props.onOpenTool?.("checkpoints")}>Checkpoints</button>; isolated branches in <button type="button" className="thread-pr-inline-button" onClick={() => props.onOpenTool?.("worktrees")}>Worktree</button>.</span>
         </p>
-        {props.onOpenTool && (
-          <span className="git-history-links">
-            <button type="button" className="thread-pr-inline-button" onClick={() => props.onOpenTool?.("checkpoints")}>Open Checkpoints</button>
-            <button type="button" className="thread-pr-inline-button" onClick={() => props.onOpenTool?.("worktrees")}>Open Worktrees</button>
-          </span>
-        )}
-      </div>
+      )}
     </div>
   );
 }

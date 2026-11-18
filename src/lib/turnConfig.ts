@@ -139,7 +139,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<P
   const nativeOptionsError = nativeDelegation ? nativeSubagentOptionsError(run.provider, run.nativeSubagentOptions) : null;
   if (nativeOptionsError) throw new Error(nativeOptionsError);
   const nativeOptions = nativeDelegation ? sanitizeNativeSubagentOptions(run.nativeSubagentOptions)?.codex : undefined;
-  if (nativeOptions?.autoCompactTokens !== undefined) throw new Error("Codex currently shares the parent compaction setting with native workers. Reset child compaction to inherited, or use Mythra Code for independent worker windows.");
+  if (nativeOptions?.autoCompactTokens !== undefined) throw new Error("The Codex CLI currently shares the parent compaction setting with native workers. Reset child compaction to inherited, or use Mythra Code for independent worker windows.");
   const mythraDelegation = Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent"));
   const mythraSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
   const collaborationV2 = !nativeDelegation && mythraDelegation && Boolean(options.childAgentBridge?.toolNames.includes("send_agent_message")

@@ -12,7 +12,7 @@ const buffer: LoggedError[] = [];
 /**
  * Every user-visible error is kept in a small in-memory ring buffer and
  * mirrored into the persistent audit log, so "it broke earlier" reports can
- * be answered from Settings → Diagnostics or the diagnostics export.
+ * be answered from Settings → Advanced → Diagnostics or the diagnostics export.
  */
 export function recordError(message: string): void {
   try {

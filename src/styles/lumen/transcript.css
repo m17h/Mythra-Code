@@ -22,10 +22,10 @@
   background: var(--lm-fill);
   box-shadow: none;
 }
-.app-shell[data-theme][data-color-scheme] .message-avatar.provider-claude { color: #fff; background: #d97757; box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .message-avatar.provider-claude { color: var(--brand-on-claude); background: var(--brand-claude); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .message-avatar.provider-openai { color: var(--text); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); }
 .app-shell[data-theme][data-color-scheme] .message-avatar.provider-openai .openai-logo-option { fill: currentColor; }
-.app-shell[data-theme][data-color-scheme] .message-avatar.provider-cursor { color: #26251e; background: #edecec; box-shadow: inset 0 0 0 1px var(--line); }
+.app-shell[data-theme][data-color-scheme] .message-avatar.provider-cursor { color: var(--brand-on-cursor); background: var(--brand-cursor); box-shadow: inset 0 0 0 1px var(--line); }
 .app-shell[data-theme][data-color-scheme] .message-avatar.provider-lmstudio { background: transparent; box-shadow: none; }
 
 .app-shell[data-theme][data-color-scheme] .message-body { color: var(--lm-reading-ink, var(--text)); font-size: var(--fs-body); line-height: 1.65; }
@@ -50,7 +50,7 @@
   border: 0;
   border-radius: 14px 14px 4px 14px;
   color: var(--text);
-  background-color: var(--panel-2);
+  background-color: var(--bubble);
   background-image: none;
   box-shadow: none;
 }
@@ -117,7 +117,7 @@
 .app-shell[data-theme][data-color-scheme] .rich-markdown h1::before,
 .app-shell[data-theme][data-color-scheme] .rich-markdown h2::before { content: none; }
 .app-shell[data-theme][data-color-scheme] .rich-markdown strong { color: var(--text); font-weight: 650; }
-.app-shell[data-theme][data-color-scheme] .rich-markdown a { color: var(--green); text-decoration-color: var(--green-line); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.app-shell[data-theme][data-color-scheme] .rich-markdown a { color: var(--accent); text-decoration-color: var(--accent-line); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .app-shell[data-theme][data-color-scheme] .rich-markdown blockquote { padding: 2px 0 2px 14px; border-left: 3px solid var(--line-strong); color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .rich-markdown li::marker { color: var(--muted-2); }
 .app-shell[data-theme][data-color-scheme] .rich-markdown table { overflow: hidden; border-collapse: separate; border-spacing: 0; border: 1px solid var(--line); border-radius: var(--r-lg); }
@@ -145,7 +145,6 @@
 .app-shell[data-theme][data-color-scheme] .code-block { margin: 12px 0; border-radius: var(--r-lg); }
 .app-shell[data-theme][data-color-scheme] .code-block::before { content: none; }
 .app-shell[data-theme][data-color-scheme] .code-block pre {
-  padding: 36px 16px 13px;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   color: var(--lm-code-ink);
@@ -162,7 +161,7 @@
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   color: var(--muted);
-  background: var(--panel-2);
+  background: var(--bubble);
   font-size: 11px;
   font-weight: 500;
 }
@@ -200,10 +199,6 @@
 .app-shell[data-theme][data-color-scheme] .flow-timeline .subagent-relay-card,
 .app-shell[data-theme][data-color-scheme] .flow-timeline .subagent-relay-manifest,
 .app-shell[data-theme][data-color-scheme] .flow-timeline .inline-approval { margin-left: 40px; }
-.app-shell[data-theme][data-color-scheme] .completed-work-list .subagent-relay-card,
-.app-shell[data-theme][data-color-scheme] .completed-work-list .subagent-relay-manifest,
-.app-shell[data-theme][data-color-scheme] .completed-work-list .activity-row { margin-left: 0; }
-.app-shell[data-theme][data-color-scheme] .completed-work-list .activity-row::before { display: none; }
 
 .app-shell[data-theme][data-color-scheme] .activity-row {
   padding: 7px 10px 7px 8px;
@@ -213,11 +208,14 @@
 }
 .app-shell[data-theme][data-color-scheme] .activity-row:hover { border-color: var(--line); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .activity-icon { width: 22px; height: 22px; border-radius: var(--r-sm); color: var(--muted); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .activity-icon.file { color: var(--green); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .activity-icon.file { color: var(--accent); background: var(--accent-soft); }
 .app-shell[data-theme][data-color-scheme] .activity-icon.agent { color: var(--info); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .activity-icon.command { color: var(--muted); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .activity-copy > span,
-.app-shell[data-theme][data-color-scheme] .activity-toggle span { color: var(--ink-2); font-family: var(--font-mono); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .activity-toggle span { color: var(--ink-2); font-family: var(--font-sans); font-size: 12px; }
+/* Only a command line is code; other activity titles are sentences. */
+.app-shell[data-theme][data-color-scheme] .command-activity .activity-copy > span,
+.app-shell[data-theme][data-color-scheme] .command-activity .activity-toggle span { font-family: var(--font-mono); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .activity-toggle { color: var(--ink-2); }
 .app-shell[data-theme][data-color-scheme] .activity-copy pre,
 .app-shell[data-theme][data-color-scheme] .command-list-item pre { border: 1px solid var(--line-quiet); border-radius: var(--r-md); color: var(--lm-code-ink); background: var(--lm-code-bg); }
@@ -239,17 +237,15 @@
 .app-shell[data-theme][data-color-scheme] .reasoning-disclosure.expanded .reasoning-toggle { color: var(--text); border-color: transparent; }
 .app-shell[data-theme][data-color-scheme] .reasoning-live-dot { width: 6px; height: 6px; background: var(--lm-fill); }
 .app-shell[data-theme][data-color-scheme] .reasoning-text,
-.app-shell[data-theme][data-color-scheme] .command-list,
-.app-shell[data-theme][data-color-scheme] .completed-work-list { margin-left: 12px; padding-left: 14px; border-left: 1px solid var(--line-strong); }
+.app-shell[data-theme][data-color-scheme] .command-list { margin-left: 12px; padding-left: 14px; border-left: 1px solid var(--line-strong); }
 .app-shell[data-theme][data-color-scheme] .reasoning-text { color: var(--muted); font-size: 12.5px; line-height: 1.6; }
-.app-shell[data-theme][data-color-scheme] .command-list-item,
-.app-shell[data-theme][data-color-scheme] .completed-work-update { border-color: var(--line-quiet); border-radius: var(--r-md); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .command-list-item { border-color: var(--line-quiet); border-radius: var(--r-md); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .command-list-title code { color: var(--ink-2); }
 
 /* Sub-agent relay cards keep their provider rail and motion as plain cards. */
 .app-shell[data-theme][data-color-scheme] .subagent-relay-card { border-color: var(--line-quiet); border-radius: var(--r-md); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .subagent-relay-card:hover { border-color: var(--line); background: var(--panel); }
-.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-failed { border-color: rgba(240, 136, 132, .4); background-image: linear-gradient(rgba(240, 136, 132, .06), rgba(240, 136, 132, .06)); }
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-failed { border-color: var(--red-line); background-image: linear-gradient(var(--red-soft), var(--red-soft)); }
 .app-shell[data-theme][data-color-scheme] .subagent-relay-avatar { border-radius: var(--r-md); }
 .app-shell[data-theme][data-color-scheme] .subagent-relay-manifest { border-color: var(--line); border-radius: var(--r-lg); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .subagent-relay-manifest > header { border-bottom-color: var(--line-quiet); }
@@ -260,15 +256,168 @@
 .app-shell[data-theme][data-color-scheme] .feedback-tray-heading em { border-radius: var(--r-chip); }
 
 /* Inline approvals: a card with a warm edge on the spine. */
+/* Needs-you card: the theme's own warning hairline on a plain panel (status
+   colour as an edge and an icon, never a wash), so it reads in every theme. */
 .app-shell[data-theme][data-color-scheme] .inline-approval {
   padding: 12px;
-  border: 1px solid rgba(232, 171, 104, .45);
+  border: 1px solid var(--orange-line);
   border-radius: var(--r-lg);
   background: var(--panel);
-  background-image: linear-gradient(rgba(232, 171, 104, .06), rgba(232, 171, 104, .06));
+  background-image: none;
   box-shadow: none;
 }
+.app-shell[data-theme][data-color-scheme] .inline-approval:focus { outline: none; }
+.app-shell[data-theme][data-color-scheme] .inline-approval:focus-visible { box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .approval-command { border-radius: var(--r-md); color: var(--lm-code-ink); background: var(--lm-code-bg); }
+.app-shell[data-theme][data-color-scheme] .inline-approval .approval-command { margin-bottom: 8px; }
+
+/* What the request will touch: a quiet label/value list under the command. */
+/* Opus R6 D9: the label column is as wide as its longest label ("Folder",
+   "Write access"), so the path starts right after it instead of across a
+   wide gap; rows still align with each other. */
+.app-shell[data-theme][data-color-scheme] .approval-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: 4px 12px; margin: 0 0 12px; padding: 0; }
+.app-shell[data-theme][data-color-scheme] .approval-facts > div { display: contents; }
+.app-shell[data-theme][data-color-scheme] .approval-facts dt { margin: 0; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .approval-facts dd { min-width: 0; margin: 0; overflow: hidden; color: var(--ink-2); font-size: 12px; line-height: 18px; white-space: pre-line; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .approval-facts dd.mono { font-family: var(--font-mono); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .approval-modal .approval-facts { margin-top: -4px; text-align: left; }
+
+/* Deny and Allow once lead; anything broader waits behind "More choices". */
+.app-shell[data-theme][data-color-scheme] .approval-actions { align-items: center; }
+.app-shell[data-theme][data-color-scheme] .approval-more-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  margin-left: auto;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .approval-more-toggle:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .approval-more-toggle[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.app-shell[data-theme][data-color-scheme] .approval-more { display: grid; gap: 6px; margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line-quiet); list-style: none; }
+.app-shell[data-theme][data-color-scheme] .approval-more[hidden] { display: none; }
+.app-shell[data-theme][data-color-scheme] .approval-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+/* The dialog reads like the inline card: answers on the left in Tab order,
+   "More choices" pushed to the right edge. McpRequest's Decline/Submit row
+   (no toggle) keeps the dialog's usual right alignment. */
+.app-shell[data-theme][data-color-scheme] .approval-modal .approval-answer .approval-actions { justify-content: flex-start; }
+
+/* Answers. The grant is a neutral inverse fill (never the theme accent, which
+   can be as warm as Deny in some themes); Deny is a red outline. For a
+   compound or destructive command neither is filled: they weigh the same. */
+.app-shell[data-theme][data-color-scheme] .approval-actions .primary-button.approval-allow {
+  border: 1px solid var(--approval-allow-bg);
+  color: var(--approval-allow-ink);
+  background: var(--approval-allow-bg);
+  box-shadow: none;
+  filter: none;
+}
+.app-shell[data-theme][data-color-scheme] .approval-actions .primary-button.approval-allow:hover:not(:disabled) { border-color: var(--approval-allow-hover); background: var(--approval-allow-hover); filter: none; }
+.app-shell[data-theme][data-color-scheme] .approval-actions .secondary-button.approval-allow.equal,
+.app-shell[data-theme][data-color-scheme] .approval-actions .secondary-button.approval-deny.neutral { border: 1px solid var(--line-strong); color: var(--text); background: transparent; filter: none; }
+.app-shell[data-theme][data-color-scheme] .approval-actions .secondary-button.approval-allow.equal:hover:not(:disabled),
+.app-shell[data-theme][data-color-scheme] .approval-actions .secondary-button.approval-deny.neutral:hover:not(:disabled) { border-color: var(--muted); background: var(--lm-hover); filter: none; }
+.app-shell[data-theme][data-color-scheme] .approval-actions .secondary-button.approval-deny { border: 1px solid var(--red-line); color: var(--red); background: transparent; filter: none; }
+.app-shell[data-theme][data-color-scheme] .approval-actions .secondary-button.approval-deny:hover:not(:disabled) { border-color: var(--red); color: var(--red); background: var(--red-soft); filter: none; }
+.app-shell[data-theme][data-color-scheme] .approval-actions button:disabled { opacity: .5; cursor: default; }
+
+/* A compound or destructive command is named above the answers: the warning
+   ink as an icon and a hairline, never a wash. */
+.app-shell[data-theme][data-color-scheme] .approval-risk {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--orange-line);
+  border-radius: var(--r-md);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 18px;
+}
+.app-shell[data-theme][data-color-scheme] .approval-risk > svg,
+.app-shell[data-theme][data-color-scheme] .approval-confirm p > svg { flex: none; margin-top: 2.5px; color: var(--orange); }
+
+/* Wider grants: each shows exactly what it covers, how long and where it is
+   saved, untruncated, with its own button under the facts. */
+.app-shell[data-theme][data-color-scheme] .approval-more { gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .approval-grant {
+  display: grid;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.app-shell[data-theme][data-color-scheme] .approval-grant-body { display: grid; gap: 7px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .approval-grant-detail { margin: 0; color: var(--text); font-size: 12.5px; line-height: 18px; }
+.app-shell[data-theme][data-color-scheme] .approval-grant-detail.secondary { color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .approval-scope { display: grid; gap: 3px; margin: 0; padding: 0; }
+.app-shell[data-theme][data-color-scheme] .approval-scope > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; gap: 10px; }
+.app-shell[data-theme][data-color-scheme] .approval-scope dt { margin: 0; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .approval-scope dd { min-width: 0; margin: 0; color: var(--text); font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .approval-scope dd.mono { font-family: var(--font-mono); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .approval-scope .excluded dt,
+.app-shell[data-theme][data-color-scheme] .approval-scope .excluded dd { color: var(--orange); }
+.app-shell[data-theme][data-color-scheme] .approval-exact summary {
+  width: fit-content;
+  border-radius: var(--r-xs);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .approval-exact summary:hover { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .approval-exact pre {
+  max-height: 240px;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: var(--r-md);
+  color: var(--lm-code-ink);
+  background: var(--lm-code-bg);
+  font: 11.5px/1.5 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.app-shell[data-theme][data-color-scheme] .approval-grant-actions,
+.app-shell[data-theme][data-color-scheme] .approval-confirm-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .approval-grant .secondary-button {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: transparent;
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  filter: none;
+}
+.app-shell[data-theme][data-color-scheme] .approval-grant .secondary-button:hover:not(:disabled) { border-color: var(--muted); background: var(--lm-hover); filter: none; }
+.app-shell[data-theme][data-color-scheme] .approval-grant .secondary-button.deny { border-color: var(--red-line); color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .approval-grant .secondary-button.deny:hover:not(:disabled) { border-color: var(--red); background: var(--red-soft); }
+.app-shell[data-theme][data-color-scheme] .approval-grant .secondary-button.confirm { border-color: var(--approval-allow-bg); color: var(--approval-allow-ink); background: var(--approval-allow-bg); }
+.app-shell[data-theme][data-color-scheme] .approval-grant .secondary-button.confirm:hover:not(:disabled) { border-color: var(--approval-allow-hover); background: var(--approval-allow-hover); }
+.app-shell[data-theme][data-color-scheme] .approval-grant .secondary-button:disabled { opacity: .5; cursor: default; }
+.app-shell[data-theme][data-color-scheme] .approval-confirm {
+  display: grid;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--orange-line);
+  border-radius: var(--r-md);
+}
+.app-shell[data-theme][data-color-scheme] .approval-confirm p { display: flex; gap: 7px; margin: 0; color: var(--text); font-size: 12.5px; line-height: 18px; }
+.app-shell[data-theme][data-color-scheme] .approval-modal .approval-heading h2:focus { outline: none; }
+/* The title takes focus on open so screen readers start at the request (and
+   no Allow button is focused); it is not a control, so it draws no ring. The
+   next Tab reaches Deny with the normal ring. */
+.app-shell[data-theme][data-color-scheme] .approval-modal .approval-heading h2:focus-visible { outline: none; box-shadow: none; }
 
 /* ---- Timeline controls ---- */
 .app-shell[data-theme][data-color-scheme] .timeline-history-control button,
@@ -322,3 +471,206 @@
   .app-shell[data-theme][data-color-scheme] .timeline-scroll-latest { animation: lm-pop-i var(--lm-d-2) var(--lm-ease-out) backwards; }
   .app-shell[data-theme][data-color-scheme] .timeline-loading::after { animation: lm-shimmer 1.4s linear infinite; }
 }
+
+/* ---- Conversation polish (2026-11-17) ---- */
+/* Code blocks: a slim header names the language and holds Copy, so the code
+   starts at the top of its block instead of under an empty strip. Without a
+   known language there is no header and Copy floats in the corner on hover. */
+.app-shell[data-theme][data-color-scheme] .code-block pre { padding: 12px 16px 13px; }
+.app-shell[data-theme][data-color-scheme] .code-block-header {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  padding: 0 84px 0 14px;
+  border: 1px solid var(--line);
+  border-bottom-color: var(--line-quiet);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: var(--lm-code-bg);
+}
+.app-shell[data-theme][data-color-scheme] .code-block-language {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.app-shell[data-theme][data-color-scheme] .code-block.has-header pre {
+  border-top: 0;
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+}
+.app-shell[data-theme][data-color-scheme] .code-block .code-copy { top: 5px; right: 6px; }
+.app-shell[data-theme][data-color-scheme] .code-block.has-header .code-copy { opacity: 1; border-color: transparent; background: transparent; }
+.app-shell[data-theme][data-color-scheme] .code-block.has-header .code-copy:hover { border-color: transparent; background: var(--lm-hover); }
+
+/* Inline file paths: the copy button appears on hover or keyboard focus,
+   instead of an icon after every path in a list. Touch screens keep it. */
+.app-shell[data-theme][data-color-scheme] .rich-markdown .inline-path { position: relative; }
+.app-shell[data-theme][data-color-scheme] .rich-markdown .inline-path-copy {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  z-index: 1;
+  margin: 0;
+  padding: 3px;
+  border-radius: var(--r-chip);
+  color: var(--muted);
+  background: var(--bg);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+.app-shell[data-theme][data-color-scheme] .rich-markdown .inline-path:hover .inline-path-copy { opacity: 1; pointer-events: auto; }
+.app-shell[data-theme][data-color-scheme] .rich-markdown .inline-path-copy:focus-visible { opacity: 1; pointer-events: auto; }
+.app-shell[data-theme][data-color-scheme] .rich-markdown .inline-path-copy:hover { color: var(--text); background: var(--lm-press); }
+@media (hover: none) {
+  .app-shell[data-theme][data-color-scheme] .rich-markdown .inline-path-copy { position: static; opacity: 1; pointer-events: auto; transform: none; background: transparent; }
+}
+
+/* Sub-agent relay cards: one calm live mark. The travelling comet, its
+   bloom, the avatar's charging glow, the orb's ping rings and the
+   manifest's breathing header are gone; the status dot pulses gently. */
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-starting::before,
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-working::before { opacity: .68; }
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-starting::after,
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-working::after,
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-starting .subagent-relay-avatar::before,
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-working .subagent-relay-avatar::before,
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-starting .subagent-relay-status > i::after,
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-working .subagent-relay-status > i::after { content: none; display: none; animation: none; filter: none; box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-starting .subagent-relay-status > i,
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-working .subagent-relay-status > i,
+.app-shell[data-theme][data-color-scheme] .subagent-relay-manifest.live > header > svg { animation: none; }
+.app-shell[data-theme][data-color-scheme] .subagent-relay-identity > span { font-size: 11px; letter-spacing: 0; text-transform: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-starting .subagent-relay-status > i,
+  .app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-working .subagent-relay-status > i { animation: lm-live-pulse 1.8s ease-in-out infinite; }
+  .app-shell[data-theme][data-color-scheme] .rich-markdown .inline-path-copy { transition: opacity var(--lm-d-1) ease, background-color var(--lm-d-1) ease; }
+  @keyframes lm-live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+}
+
+/* Live activity line: the verb, then the step in progress in code type
+   ("Running  npx playwright test tests/e2e"). */
+.app-shell[data-theme][data-color-scheme] .activity-status-detail {
+  min-width: 0;
+  margin-left: 7px;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 400;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.app-shell[data-theme][data-color-scheme] .activity-status.live .activity-status-pill { max-width: min(100%, 620px); }
+
+/* Assistant reply actions sit under the reply, left-aligned with its text
+   (ChatGPT/Claude placement), as a quiet row rather than a floating toolbar
+   between the activity line and the prose. They still reveal on hover and
+   keyboard focus; their row keeps its height so nothing jumps. */
+.app-shell[data-theme][data-color-scheme] .message.assistant .message-actions {
+  position: static;
+  width: max-content;
+  margin: 6px 0 -6px -8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .message.assistant .message-actions { transform: none; }
+}
+/* The streaming caret holds still when motion is reduced. */
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-theme][data-color-scheme] .stream-caret { animation: none; opacity: 1; }
+}
+
+/* ---- Run summary, opened in place from "Work completed" (B07) ----
+   Latest command and changed files under the status line; "Full activity"
+   still opens the searchable dialog. Same left edge as the status line. */
+.app-shell[data-theme][data-color-scheme] .activity-status.discloses .activity-status-pill[aria-expanded="true"] .activity-status-chevron { transform: rotate(90deg); }
+.app-shell[data-theme][data-color-scheme] .work-digest {
+  display: grid;
+  gap: 12px;
+  max-width: 560px;
+  margin: 6px 0 0 42px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .work-digest-section { display: grid; gap: 6px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .work-digest-section > h4 { display: flex; align-items: baseline; margin: 0; color: var(--muted); font-size: 11px; font-weight: 500; letter-spacing: 0; }
+.app-shell[data-theme][data-color-scheme] .work-digest-section > h4 > span { margin-left: 4px; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .work-digest-command { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .work-digest-command > code { min-width: 0; overflow: hidden; color: var(--ink-2); font-family: var(--font-mono); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .work-digest-command.failed > svg { color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .work-digest-chip { flex: none; padding: 0 6px; border-radius: var(--r-chip); color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); font-size: 11px; line-height: 18px; }
+.app-shell[data-theme][data-color-scheme] .work-digest-output { margin: 0; padding: 8px 10px; overflow: auto; border-radius: var(--r-md); color: var(--lm-code-ink); background: var(--lm-code-bg); font: 11.5px/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .work-digest-files { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.app-shell[data-theme][data-color-scheme] .work-digest-files button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .work-digest-files button:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .work-digest-files button > svg { flex: none; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .work-digest-file-name { flex: none; max-width: 60%; overflow: hidden; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .work-digest-file-dir { min-width: 0; overflow: hidden; color: var(--muted); font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
+/* Each row says what it opens on hover and keyboard focus. */
+.app-shell[data-theme][data-color-scheme] .work-digest-files-hint { margin-left: auto; padding-left: 12px; color: var(--muted); font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.app-shell[data-theme][data-color-scheme] .work-digest-file-action { display: none; flex: none; margin-left: auto; padding-left: 8px; color: var(--muted); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .work-digest-files button:hover > .work-digest-file-action,
+.app-shell[data-theme][data-color-scheme] .work-digest-files button:focus-visible > .work-digest-file-action { display: inline; }
+.app-shell[data-theme][data-color-scheme] .work-digest-full {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .work-digest-full:hover { color: var(--text); border-color: var(--line-strong); background: var(--lm-hover); }
+@container chat-main (max-width: 640px) {
+  .app-shell[data-theme][data-color-scheme] .work-digest { margin-left: 0; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .work-digest { animation: lm-pop var(--lm-d-2) var(--lm-ease-out) backwards; transform-origin: top left; }
+}
+
+/* ---- Code blocks: token colours from the shared tokenizer (theme --syntax-*) ---- */
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-keyword { color: var(--syntax-keyword); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-string { color: var(--syntax-string); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-comment,
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-meta { color: var(--syntax-comment); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-comment { font-style: italic; }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-number,
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-constant { color: var(--syntax-number); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-function { color: var(--syntax-function); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-type { color: var(--syntax-type); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-tag { color: var(--syntax-tag); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-attr { color: var(--syntax-attr); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-property { color: var(--syntax-property); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-punct { color: var(--syntax-punct); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-operator { color: var(--syntax-operator); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-heading { color: var(--syntax-heading); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-inserted { color: var(--diff-add-ink); }
+.app-shell[data-theme][data-color-scheme] .code-block pre .syn-deleted { color: var(--diff-del-ink); }

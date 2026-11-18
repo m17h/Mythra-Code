@@ -162,7 +162,7 @@ async function readContext(access: ProjectPullRequestAccess, scope: string) {
     if (!context || typeof context.branch !== "string") throw new Error("Mythra Code could not read this checkout's pull request context.");
     if (!access.repository || context.repository.toLowerCase() !== access.repository.toLowerCase()) {
       projectPullRequestStore.update(scope, { context: null, branchPullRequest: null, contextAt: null });
-      throw new Error("This project's GitHub repository changed. Refresh the workspace before continuing.");
+      throw new Error("This project's GitHub repository changed. Refresh pull requests before continuing.");
     }
     projectPullRequestStore.update(scope, (saved) => ({
       context,

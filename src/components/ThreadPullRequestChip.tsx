@@ -32,7 +32,8 @@ function stateOf(pullRequest: PullRequest): { key: string; label: string; icon: 
  * Three appearances, because three situations are genuinely different:
  *   linked + pull request  — this thread's pull request, accent-coloured
  *   pull request only      — a candidate found on this branch, dashed outline
- *   neither                — a plain "GitHub" affordance that opens the panel
+ *   neither                — a plain "Pull requests" affordance that opens the panel
+ *                            (folded into the thread "…" menu when the bar is tight)
  */
 function ThreadPullRequestChipInner({ repository, pullRequest, linked, onClick }: ThreadPullRequestChipProps) {
   const repositoryLabel = (pullRequest?.repository || repository || "").trim();
@@ -44,7 +45,7 @@ function ThreadPullRequestChipInner({ repository, pullRequest, linked, onClick }
     return (
       <button type="button" className="thread-pr-chip empty" onClick={onClick} title={description} aria-label={description}>
         <GitPullRequest size={13} aria-hidden="true" />
-        <span>GitHub</span>
+        <span>Pull requests</span>
       </button>
     );
   }
@@ -66,7 +67,7 @@ function ThreadPullRequestChipInner({ repository, pullRequest, linked, onClick }
       data-linked={linked ? "true" : "false"}
     >
       <Icon size={13} aria-hidden="true" />
-      <span>#{pullRequest.number}</span>
+      <span><span className="thread-pr-prefix">PR </span>#{pullRequest.number}</span>
       {!linked && <em aria-hidden="true">found</em>}
     </button>
   );

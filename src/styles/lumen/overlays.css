@@ -9,7 +9,7 @@
      fill; the selected choice shows an accent check, not a tinted row.
    - Captions are 11px semibold sentence case; shortcut hints are plain text.
    - Sheets and dialogs: 14px radius, 20px semibold titles, right-aligned
-     30px buttons, a plain --lm-scrim (no blur).
+     30px buttons, the shared --scrim (see "Scrims" below).
    Scope: .app-shell[data-theme][data-color-scheme] (see tokens.css).
    Component sheets owned by these surfaces (InfoPopover.css, UsagePopover.css,
    TimedPrompts.css, Feedback.css, OnboardingModal.css ...) carry their own
@@ -58,7 +58,7 @@
 .app-shell[data-theme][data-color-scheme] .row-menu-list button { gap: 8px; padding: 0 8px; }
 .app-shell[data-theme][data-color-scheme] .row-menu-list button svg,
 .app-shell[data-theme][data-color-scheme] .app-action-list > button > svg { color: var(--muted); }
-.app-shell[data-theme][data-color-scheme] .app-action-list > button { grid-template-columns: 16px minmax(0, 1fr); gap: 8px; padding: 5px 8px; }
+.app-shell[data-theme][data-color-scheme] .app-action-list > button { gap: 8px; padding: 5px 8px; }
 .app-shell[data-theme][data-color-scheme] .app-action-list > button strong { font-size: var(--fs-ui); font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .app-action-list > button small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.35; }
 .app-shell[data-theme][data-color-scheme] .app-select-options > button,
@@ -72,18 +72,65 @@
 .app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star):hover:not(:disabled) { color: var(--text); background: var(--lm-press); }
 /* Keyboard focus moves the highlight instead of drawing a ring. Each
    :focus-visible stays in a rule of its own (see tokens.css). */
-.app-shell[data-theme][data-color-scheme] .row-menu-list button:focus-visible { outline: none; background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .app-action-list > button:focus-visible { outline: none; background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .row-menu-list button:focus-visible { outline: none; }
+.app-shell[data-theme][data-color-scheme] .app-action-list > button:focus-visible { outline: none; }
 /* The chosen value is marked by its accent check, not by a filled row. */
 .app-shell[data-theme][data-color-scheme] .app-select-options > button.selected,
 .app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star).selected { color: var(--text); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .app-select-options > button.selected:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star).selected:hover:not(:disabled) { background: var(--lm-press); }
 /* Focus must also mark the selected value reached by arrow-key navigation. */
-.app-shell[data-theme][data-color-scheme] .app-select-options > button:focus-visible { outline: none; color: var(--text); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star):focus-visible { outline: none; color: var(--text); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .app-select-options > button:focus-visible { outline: none; color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star):focus-visible { outline: none; color: var(--text); }
 .app-shell[data-theme][data-color-scheme] .app-select-options > button > svg,
-.app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star) > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star) > svg { color: var(--accent); }
+
+/* Action menus with one-line rows (the thread "…" menu): every row is 28px,
+   values trail in muted ink, shortcuts sit at the end, groups get hairlines. */
+.app-shell[data-theme][data-color-scheme] .app-action-list > button { grid-template-columns: 16px minmax(0, 1fr) auto; }
+.app-shell[data-theme][data-color-scheme] .app-action-list.single-line { min-width: 232px; }
+.app-shell[data-theme][data-color-scheme] .app-action-list.single-line > button { min-height: 28px; padding: 0 8px; }
+.app-shell[data-theme][data-color-scheme] .app-action-list.single-line > button strong { font-weight: 400; }
+.app-shell[data-theme][data-color-scheme] .app-action-trail { display: inline-flex; align-items: center; gap: 8px; margin-left: 12px; }
+.app-shell[data-theme][data-color-scheme] .app-action-trail em { color: var(--muted); font-size: 12px; font-style: normal; }
+.app-shell[data-theme][data-color-scheme] .app-action-trail kbd { padding: 0; border: 0; color: var(--muted); background: transparent; font: 400 11.5px var(--font-sans); letter-spacing: .02em; }
+.app-shell[data-theme][data-color-scheme] .app-action-list > button.separated { position: relative; margin-top: 9px; }
+.app-shell[data-theme][data-color-scheme] .app-action-list > button.separated::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 8px;
+  right: 8px;
+  height: 1px;
+  background: var(--line-quiet);
+  pointer-events: none;
+}
+
+/* Unavailable items stay focusable (the reason is in their tooltip) but read as off. */
+.app-shell[data-theme][data-color-scheme] .row-menu-list button[aria-disabled="true"],
+.app-shell[data-theme][data-color-scheme] .row-menu-list button[aria-disabled="true"] svg { color: var(--muted-2); cursor: default; }
+.app-shell[data-theme][data-color-scheme] .row-menu-list button[aria-disabled="true"]:hover { background: transparent; }
+.app-shell[data-theme][data-color-scheme] .row-menu-list button.separated { position: relative; margin-top: 9px; }
+.app-shell[data-theme][data-color-scheme] .row-menu-list button.separated::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 8px;
+  right: 8px;
+  height: 1px;
+  background: var(--line-quiet);
+  pointer-events: none;
+}
+.app-shell[data-theme][data-color-scheme] .row-menu-list button > span { flex: 1 1 auto; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .row-menu-list button > kbd {
+  margin-left: 16px;
+  padding: 0;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  font: 400 11.5px var(--font-sans);
+  letter-spacing: .02em;
+}
 
 /* Destructive items: red ink; a faint red fill only under the pointer. */
 .app-shell[data-theme][data-color-scheme] .row-menu-list button.danger,
@@ -91,11 +138,7 @@
 .app-shell[data-theme][data-color-scheme] .app-action-list > button.danger-action,
 .app-shell[data-theme][data-color-scheme] .app-action-list > button.danger-action > svg { color: var(--red); }
 .app-shell[data-theme][data-color-scheme] .row-menu-list button.danger:hover,
-.app-shell[data-theme][data-color-scheme] .app-action-list > button.danger-action:hover:not(:disabled) { color: var(--red); background: rgba(240, 120, 120, .12); }
-@supports (color: color-mix(in srgb, red, blue)) {
-  .app-shell[data-theme][data-color-scheme] .row-menu-list button.danger:hover,
-  .app-shell[data-theme][data-color-scheme] .app-action-list > button.danger-action:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 12%, transparent); }
-}
+.app-shell[data-theme][data-color-scheme] .app-action-list > button.danger-action:hover:not(:disabled) { color: var(--red); background: var(--red-soft); }
 
 /* Group captions: quiet sentence case. */
 .app-shell[data-theme][data-color-scheme] .model-group-label,
@@ -129,7 +172,7 @@
 .app-shell[data-theme][data-color-scheme] .cursor-model-search { grid-template-columns: 18px minmax(0, 1fr) 26px; padding: 0 2px 0 9px; }
 .app-shell[data-theme][data-color-scheme] .app-select-search:focus-within,
 .app-shell[data-theme][data-color-scheme] .openrouter-search-row:focus-within,
-.app-shell[data-theme][data-color-scheme] .cursor-model-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .cursor-model-search:focus-within { border-color: var(--accent-line); box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .app-select-search input,
 .app-shell[data-theme][data-color-scheme] .openrouter-search-row input,
 .app-shell[data-theme][data-color-scheme] .cursor-model-search input { font-size: var(--fs-ui); }
@@ -175,8 +218,7 @@
 .app-shell[data-theme][data-color-scheme] .model-menu-option strong,
 .app-shell[data-theme][data-color-scheme] .openrouter-options strong { color: var(--text); font-size: var(--fs-ui); font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .model-menu-option small,
-.app-shell[data-theme][data-color-scheme] .openrouter-options small,
-.app-shell[data-theme][data-color-scheme] .openrouter-model-meta { color: var(--muted-2); font-size: var(--fs-meta); }
+.app-shell[data-theme][data-color-scheme] .openrouter-options small { color: var(--muted-2); font-size: var(--fs-meta); }
 .app-shell[data-theme][data-color-scheme] .model-menu-option:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .openrouter-options > button:hover,
 .app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star):hover { color: var(--text); background: var(--lm-press); box-shadow: none; }
@@ -188,15 +230,14 @@
 .app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star).selected:hover { background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .model-menu-option > svg,
 .app-shell[data-theme][data-color-scheme] .openrouter-options > button > svg,
-.app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star) > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star) > svg { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .openrouter-options > button.custom-model-option { color: var(--text); background: transparent; }
 /* Keep keyboard focus above both selected rows and the custom-model action. */
-.app-shell[data-theme][data-color-scheme] .model-menu-option:focus-visible { outline: none; background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .openrouter-options > button:focus-visible { outline: none; background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .model-menu-option:focus-visible { outline: none; }
+.app-shell[data-theme][data-color-scheme] .openrouter-options > button:focus-visible { outline: none; }
 .app-shell[data-theme][data-color-scheme] .openrouter-options > button.custom-model-option:focus-visible { outline: none; background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star):focus-visible { outline: none; background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .openrouter-catalog-warning { border-radius: var(--r-md); color: var(--orange); background: rgba(232, 171, 104, .1); font-size: var(--fs-meta); }
-.app-shell[data-theme][data-color-scheme] .openrouter-empty strong { color: var(--ink-2); font-size: var(--fs-ui); }
+.app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star):focus-visible { outline: none; }
+.app-shell[data-theme][data-color-scheme] .openrouter-catalog-warning { border-radius: var(--r-md); color: var(--orange); background: var(--orange-soft); font-size: var(--fs-meta); }
 
 /* ---- Spelling menu (composer context menu) ---- */
 .app-shell[data-theme][data-color-scheme] .spelling-menu-heading { padding: 4px 8px 2px; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; }
@@ -207,9 +248,9 @@
 /* ---- Project instructions and Run command popovers ---- */
 .app-shell[data-theme][data-color-scheme] .project-prompt-popover { padding: 14px; }
 .app-shell[data-theme][data-color-scheme] .project-prompt-heading { grid-template-columns: 28px minmax(0, 1fr); gap: 10px; padding: 0 0 12px; }
-.app-shell[data-theme][data-color-scheme] .project-prompt-icon { border-radius: var(--r-md); color: var(--green); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-icon { border-radius: var(--r-md); color: var(--accent); background: var(--accent-soft); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-heading strong { font-size: var(--fs-ui); font-weight: 600; }
-.app-shell[data-theme][data-color-scheme] .project-prompt-heading small { color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-heading small { color: var(--muted); font-size: 12px; line-height: 1.4; white-space: normal; overflow: visible; text-overflow: clip; }
 /* Mode choices are choice cards: neutral, the chosen one edged in accent. */
 .app-shell[data-theme][data-color-scheme] .project-prompt-modes { gap: 8px; }
 .app-shell[data-theme][data-color-scheme] .project-prompt-modes > button {
@@ -221,7 +262,7 @@
   background: transparent;
 }
 .app-shell[data-theme][data-color-scheme] .project-prompt-modes > button:hover { border-color: var(--line-strong); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .project-prompt-modes > button.selected { border-color: var(--green); background: transparent; box-shadow: 0 0 0 1px var(--green); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes > button.selected { border-color: var(--accent); background: transparent; box-shadow: 0 0 0 1px var(--accent); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-modes strong { font-size: var(--fs-ui); font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .project-prompt-modes small { color: var(--muted-2); font-size: var(--fs-meta); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-editor { gap: 6px; margin-top: 12px; color: var(--muted); font-size: 12px; font-weight: 500; }
@@ -234,16 +275,11 @@
 }
 .app-shell[data-theme][data-color-scheme] .project-run-popover .project-prompt-editor input { height: 30px; padding: 0 9px; font-size: var(--fs-ui); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-editor textarea:focus,
-.app-shell[data-theme][data-color-scheme] .project-run-popover .project-prompt-editor input:focus { border-color: var(--green-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .project-run-popover .project-prompt-editor input:focus { border-color: var(--accent-line); box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-editor small { color: var(--muted-2); font-size: var(--fs-meta); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle { padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r-lg); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle:hover,
 .app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled { border-color: var(--line); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch { box-shadow: none; }
-.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch i { background: #fff; }
-.app-shell[data-theme][data-color-scheme] .project-prompt-location-note,
-.app-shell[data-theme][data-color-scheme] .project-run-hint { border-color: var(--line); border-radius: var(--r-lg); background: transparent; }
-.app-shell[data-theme][data-color-scheme] .project-prompt-location-note > svg { border-radius: var(--r-md); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-global-link { margin-top: 8px; padding: 4px 0; color: var(--muted); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .project-prompt-global-link:hover { color: var(--text); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-actions { gap: 8px; margin-top: 12px; padding-top: 12px; border-top-color: var(--line-quiet); }
@@ -252,6 +288,45 @@
 .app-shell[data-theme][data-color-scheme] .run-discovery-settings,
 .app-shell[data-theme][data-color-scheme] .run-discovery-result { border-color: var(--line); border-radius: var(--r-lg); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .run-discovery > small { color: var(--muted-2); font-size: var(--fs-meta); }
+
+/* D25: the Project instructions popover reads as a compact dialog: a plain
+   heading, a two-row radio list (check on the chosen row, details in the
+   tooltip), the editor only when a project prompt is chosen, and one footer
+   with the App prompt link on the left. */
+.app-shell[data-theme][data-color-scheme] .project-prompt-heading.compact { display: block; padding: 0 2px 10px; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-heading.compact > div { display: flex; flex-direction: column; gap: 2px; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes.compact { display: flex; flex-direction: column; gap: 1px; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes.compact > button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: transparent;
+  box-shadow: none;
+}
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes.compact > button:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes.compact > button.selected { background: var(--lm-press); box-shadow: none; }
+/* Name over a one-line description, like every other menu: nothing truncates. */
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes.compact > button { min-height: 44px; padding: 6px 10px; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes.compact > button > span { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes.compact strong { flex: 0 0 auto; font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes.compact small { min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.35; white-space: normal; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes.compact svg { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-actions .project-prompt-global-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 auto 0 0;
+  padding: 0 6px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .project-prompt-actions .project-prompt-global-link:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-actions .primary-button:disabled { opacity: .45; cursor: default; filter: none; }
 
 /* ---- Buttons inside sheets and popovers: 30px, secondary then primary ---- */
 .app-shell[data-theme][data-color-scheme] .project-prompt-actions .primary-button,
@@ -327,22 +402,165 @@
 .app-shell[data-theme][data-color-scheme] .palette-results > button.active,
 .app-shell[data-theme][data-color-scheme] .palette-group > button.active { color: var(--text); background: var(--lm-press); background-image: none; box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .palette-results > button.active > span,
-.app-shell[data-theme][data-color-scheme] .palette-group > button.active > span { color: var(--green); background: transparent; transform: none; }
+.app-shell[data-theme][data-color-scheme] .palette-group > button.active > span { color: var(--accent); background: transparent; transform: none; }
 .app-shell[data-theme][data-color-scheme] .palette-results strong { font-size: var(--fs-ui); font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .palette-results small { color: var(--muted-2); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .palette-empty { color: var(--muted-2); font-size: var(--fs-ui); }
+/* Single-line rows (32px): icon, label, the highlighted row's detail, and a
+   right-aligned key hint. Section headings replace repeated prefixes. */
+.app-shell[data-theme][data-color-scheme] .palette-row {
+  width: 100%;
+  height: 32px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: transparent;
+  cursor: default;
+  user-select: none;
+}
+.app-shell[data-theme][data-color-scheme] .palette-row.active { background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .palette-row.disabled { color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .palette-row-icon { display: grid; place-items: center; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .palette-row.active .palette-row-icon { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .palette-row-text { min-width: 0; display: flex; align-items: baseline; gap: 8px; overflow: hidden; white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .palette-row-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .palette-row-label mark { color: inherit; background: transparent; font-weight: 650; text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+.app-shell[data-theme][data-color-scheme] .palette-row-detail { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .palette-row-keys,
+.app-shell[data-theme][data-color-scheme] .palette-footer kbd,
+.app-shell[data-theme][data-color-scheme] .shortcuts-row kbd {
+  min-width: 0;
+  height: auto;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-chip);
+  color: var(--muted);
+  background: transparent;
+  box-shadow: none;
+  font: 500 11px/16px var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+}
+.app-shell[data-theme][data-color-scheme] .palette-footer kbd { margin-right: 4px; }
+.app-shell[data-theme][data-color-scheme] .palette-row .palette-row-keys { opacity: 1; border-color: transparent; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .palette-row.active .palette-row-keys { color: var(--ink-2); }
+
+/* ---- Keyboard shortcuts sheet ---- */
+.app-shell[data-theme][data-color-scheme] .modal-backdrop.shortcuts-backdrop { place-items: center; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-sheet {
+  width: min(720px, calc(100vw - 48px));
+  max-height: min(720px, calc(100vh - 64px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+  color: var(--text);
+  background: var(--menu-surface);
+  box-shadow: var(--lm-pop-shadow);
+}
+.app-shell[data-theme][data-color-scheme] .shortcuts-sheet-head { display: flex; align-items: center; gap: 12px; padding: 12px 12px 10px 20px; border-bottom: 1px solid var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .shortcuts-sheet-head h2 { flex: 1 1 auto; margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -.005em; white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-sheet-head .icon-button { width: 28px; height: 28px; display: grid; place-items: center; flex: 0 0 auto; }
+/* Filter: the palette's field, sized for a sheet header. */
+.app-shell[data-theme][data-color-scheme] .shortcuts-filter {
+  flex: 0 1 220px;
+  min-width: 120px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: var(--lm-hover);
+}
+.app-shell[data-theme][data-color-scheme] .shortcuts-filter:focus-within { box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .shortcuts-filter input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  color: var(--text);
+  background: transparent;
+  font: 400 var(--fs-ui) var(--font-sans);
+}
+.app-shell[data-theme][data-color-scheme] .shortcuts-filter input::placeholder { color: var(--muted-2); }
+/* Escape clears the filter; the engine's own clear glyph would be a second, accent-tinted control. */
+.app-shell[data-theme][data-color-scheme] .shortcuts-filter input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+/* D8/M14/O5: whole groups are split into two columns of near-equal measured
+   weight (ShortcutsSheet → splitIntoColumns), laid out as a two-track grid;
+   the body scrolls with shadows at whichever edge has more to show. */
+.app-shell[data-theme][data-color-scheme] .shortcuts-sheet-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  column-gap: 28px;
+  min-height: 0;
+  padding: 4px 20px 20px;
+  overflow: auto;
+  outline: none;
+  background:
+    linear-gradient(var(--menu-surface) 30%, transparent) center top / 100% 28px no-repeat local,
+    linear-gradient(transparent, var(--menu-surface) 70%) center bottom / 100% 28px no-repeat local,
+    linear-gradient(var(--lm-scroll-shadow), transparent) center top / 100% 12px no-repeat scroll,
+    linear-gradient(transparent, var(--lm-scroll-shadow)) center bottom / 100% 12px no-repeat scroll;
+  background-color: var(--menu-surface);
+}
+.app-shell[data-theme][data-color-scheme] .shortcuts-column { min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-group { break-inside: avoid; -webkit-column-break-inside: avoid; padding-top: 8px; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-group h3 { margin: 4px 0 4px; color: var(--muted); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-group dl { margin: 0; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-row { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .shortcuts-row:last-child { border-bottom: 0; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-row dt { min-width: 0; display: flex; flex-direction: column; font-size: var(--fs-ui); }
+.app-shell[data-theme][data-color-scheme] .shortcuts-row dt small { margin-top: 1px; color: var(--muted); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-row dd { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin: 0; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-or { color: var(--muted); font-size: 11px; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-empty { grid-column: 1 / -1; margin: 16px 0 4px; color: var(--muted); font-size: var(--fs-ui); }
+/* Narrow or short windows: one list, so nothing is clipped side by side. */
+@media (max-width: 640px), (max-height: 560px) {
+  .app-shell[data-theme][data-color-scheme] .shortcuts-sheet-body { grid-template-columns: minmax(0, 1fr); }
+}
 .app-shell[data-theme][data-color-scheme] .palette-footer { height: 34px; gap: 14px; padding: 0 14px; border-top: 1px solid var(--line-quiet); color: var(--muted-2); font-size: var(--fs-meta); }
 
-/* ---- Scrims: a plain dim, no blur ---- */
+/* ---- Scrims (round 6, I1): one --scrim per theme behind every layer ----
+   Dialogs, sheets and the palette dim the app with --scrim and soften it with
+   the same 6px blur Settings has always used, so the layer owns the screen and
+   text behind it stops competing. Drawers (sidebar peek, Wide review, the
+   narrow Tools sheet) use the same --scrim without blur: what is behind
+   them stays recognisable. Reduced transparency drops the blur, keeping the
+   dim (Settings keeps its Windows "always" override in settings.css). */
+.app-shell[data-theme][data-color-scheme] .modal-backdrop,
 .app-shell[data-theme][data-color-scheme] .modal-backdrop.palette-backdrop,
 .app-shell[data-theme][data-color-scheme] .modal-backdrop.confirm-backdrop,
 .app-shell[data-theme][data-color-scheme] .modal-backdrop.runtime-setup-backdrop,
 .app-shell[data-theme][data-color-scheme] .modal-backdrop.onboarding-backdrop,
+.app-shell[data-theme][data-color-scheme] .modal-backdrop.shortcuts-backdrop,
 .app-shell[data-theme][data-color-scheme] .approval-backdrop,
-.app-shell[data-theme][data-color-scheme] .workflow-dialog-backdrop {
-  background: var(--lm-scrim);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+.app-shell[data-theme][data-color-scheme] .workflow-dialog-backdrop,
+.app-shell[data-theme][data-color-scheme] .skill-editor-backdrop,
+.app-shell[data-theme][data-color-scheme] .skill-remove-backdrop,
+.app-shell[data-theme][data-color-scheme] .remote-folder-backdrop {
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell[data-theme][data-color-scheme] .modal-backdrop,
+  .app-shell[data-theme][data-color-scheme] .approval-backdrop,
+  .app-shell[data-theme][data-color-scheme] .workflow-dialog-backdrop,
+  .app-shell[data-theme][data-color-scheme] .skill-editor-backdrop,
+  .app-shell[data-theme][data-color-scheme] .skill-remove-backdrop,
+  .app-shell[data-theme][data-color-scheme] .remote-folder-backdrop {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 
 /* ---- Dialogs: confirm, approval, runtime setup, sign-in, workflow run ---- */
@@ -368,16 +586,13 @@
   height: 32px;
   border-radius: var(--r-md);
   color: var(--orange);
-  background: rgba(232, 171, 104, .12);
+  background: var(--orange-soft);
   box-shadow: none;
 }
 .app-shell[data-theme][data-color-scheme] .confirm-dialog-icon { margin-bottom: 12px; }
-.app-shell[data-theme][data-color-scheme] .confirm-dialog-icon.danger { color: var(--red); background: rgba(240, 120, 120, .12); box-shadow: none; }
-@supports (color: color-mix(in srgb, red, blue)) {
-  .app-shell[data-theme][data-color-scheme] .confirm-dialog-icon,
-  .app-shell[data-theme][data-color-scheme] .approval-shield { background: color-mix(in srgb, var(--orange) 12%, transparent); }
-  .app-shell[data-theme][data-color-scheme] .confirm-dialog-icon.danger { background: color-mix(in srgb, var(--red) 12%, transparent); }
-}
+/* Opus R6 D9: the inline approval card uses the modal's icon tile, smaller. */
+.app-shell[data-theme][data-color-scheme] .inline-approval-head .approval-shield { display: inline-grid; flex: 0 0 auto; place-items: center; width: 24px; height: 24px; border-radius: var(--r-sm); }
+.app-shell[data-theme][data-color-scheme] .confirm-dialog-icon.danger { color: var(--red); background: var(--red-soft); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .confirm-dialog h2,
 .app-shell[data-theme][data-color-scheme] .approval-modal h2,
 .app-shell[data-theme][data-color-scheme] .runtime-setup-copy h2 {
@@ -392,7 +607,7 @@
 .app-shell[data-theme][data-color-scheme] .approval-modal > p,
 .app-shell[data-theme][data-color-scheme] .runtime-setup-copy p { color: var(--muted); font-size: var(--fs-ui); line-height: 1.5; }
 .app-shell[data-theme][data-color-scheme] .confirm-dialog p.confirm-dialog-footnote { color: var(--muted-2); font-size: var(--fs-meta); }
-.app-shell[data-theme][data-color-scheme] .confirm-dialog-links a { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .confirm-dialog-links a { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .confirm-dialog-actions,
 .app-shell[data-theme][data-color-scheme] .runtime-setup-actions { gap: 8px; margin-top: 20px; }
 .app-shell[data-theme][data-color-scheme] .approval-actions { gap: 8px; }
@@ -404,8 +619,8 @@
   background: var(--lm-press);
   box-shadow: none;
 }
-.app-shell[data-theme][data-color-scheme="light"] .confirm-dialog-actions .primary-button.confirm-danger { border-color: var(--line-strong); background: var(--panel); box-shadow: 0 1px 1px rgba(0, 0, 0, .04); }
-.app-shell[data-theme][data-color-scheme] .confirm-dialog-actions .primary-button.confirm-danger:hover:not(:disabled) { border-color: var(--red); color: var(--red); background: rgba(240, 120, 120, .1); filter: none; }
+.app-shell[data-theme][data-color-scheme="light"] .confirm-dialog-actions .primary-button.confirm-danger { border-color: var(--line-strong); background: var(--panel); box-shadow: var(--lm-control-lift); }
+.app-shell[data-theme][data-color-scheme] .confirm-dialog-actions .primary-button.confirm-danger:hover:not(:disabled) { border-color: var(--red); color: var(--red); background: var(--red-soft); filter: none; }
 
 /* Runtime setup and sign-in: a mark, a title block, option cards. */
 .app-shell[data-theme][data-color-scheme] .runtime-setup-close { top: 12px; right: 12px; width: 28px; height: 28px; border-radius: var(--r-control); color: var(--muted-2); }
@@ -416,7 +631,7 @@
   margin-bottom: 14px;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
-  color: var(--green);
+  color: var(--accent);
   background: var(--panel-2);
   box-shadow: none;
 }
@@ -442,31 +657,27 @@
   margin-left: 6px;
   padding: 1px 6px;
   border-radius: var(--r-chip);
-  color: var(--green);
-  background: var(--green-soft);
+  color: var(--accent);
+  background: var(--accent-soft);
   font-size: var(--fs-meta);
   font-weight: 600;
   letter-spacing: 0;
   text-transform: none;
 }
 .app-shell[data-theme][data-color-scheme] .runtime-note { padding: 8px 10px; border-radius: var(--r-md); color: var(--muted); background: var(--lm-hover); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .runtime-note svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .runtime-note svg { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .auth-required-detail { margin-top: 18px; }
-.app-shell[data-theme][data-color-scheme] .auth-required-detail > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .auth-required-detail > svg { color: var(--accent); }
 
 /* Workflow run dialog. */
 .app-shell[data-theme][data-color-scheme] .workflow-run-dialog .workflow-editor-header { padding-bottom: 10px; border-bottom-color: var(--line-quiet); }
 .app-shell[data-theme][data-color-scheme] .workflow-run-dialog .workflow-editor-header strong { font-size: 15px; font-weight: 650; }
 .app-shell[data-theme][data-color-scheme] .workflow-run-dialog > p { color: var(--muted); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .workflow-run-input input { height: 30px; border-radius: var(--r-control); background: var(--field); }
-.app-shell[data-theme][data-color-scheme] .workflow-run-input input:focus { border-color: var(--green-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .workflow-run-input input:focus { border-color: var(--accent-line); box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .workflow-run-dialog .workflow-editor-actions { gap: 8px; padding-top: 8px; }
 .app-shell[data-theme][data-color-scheme] .workflow-command-warning,
 .app-shell[data-theme][data-color-scheme] .workflow-user-prompt { border-radius: var(--r-lg); }
-
-/* Settings owns its sheet; these two hairlines are kept from the earlier pass. */
-.app-shell[data-theme][data-color-scheme] .modal-header { border-bottom-color: var(--line-quiet); }
-.app-shell[data-theme][data-color-scheme] .modal-footer { border-top-color: var(--line-quiet); background: var(--panel); }
 
 /* ---- Onboarding sheet (the rest lives in OnboardingModal.css) ---- */
 .app-shell[data-theme][data-color-scheme] .onboarding-modal {
@@ -481,8 +692,8 @@
 .app-shell[data-theme][data-color-scheme] .onboarding-modal .ob-head h2[tabindex="-1"]:focus { outline: none; box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .ob-glyph { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel-2); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .ob-stepper button { border-radius: var(--r-control); }
-.app-shell[data-theme][data-color-scheme] .ob-segmented [role="radio"].checked { background: var(--panel-3); box-shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 0 0 .5px rgba(0, 0, 0, .25); }
-.app-shell[data-theme][data-color-scheme="light"] .ob-segmented [role="radio"].checked { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .1), 0 0 0 .5px rgba(0, 0, 0, .1); }
+.app-shell[data-theme][data-color-scheme] .ob-segmented [role="radio"].checked { background: var(--panel-3); box-shadow: var(--lm-seg-shadow-strong); }
+.app-shell[data-theme][data-color-scheme="light"] .ob-segmented [role="radio"].checked { background: var(--lm-seg-surface); box-shadow: var(--lm-seg-shadow-strong); }
 .app-shell[data-theme][data-color-scheme] .ob-step-num,
 .app-shell[data-theme][data-color-scheme] .ob-route-icon,
 .app-shell[data-theme][data-color-scheme] .ob-swatch,
@@ -494,7 +705,17 @@
 /* The OpenAI and Claude marks are drawn in white for brand chips, so light
    themes give every provider logo a dark app-icon tile (as the composer's
    provider chip does); dark themes keep the neutral tile. */
-.app-shell[data-theme][data-color-scheme="light"] .ob-tile-logo { color: #fff; background: #1d1d1f; }
+.app-shell[data-theme][data-color-scheme="light"] .ob-tile-logo { color: var(--brand-on-tile-light); background: var(--brand-tile-light); }
+/* Opus R6 D7: onboarding's provider tiles use the same brand treatment as
+   Settings → Models & accounts (the .provider-logo tiles), in every theme,
+   so a provider looks the same on first run and later. The saved Claude and
+   Cursor logo choices apply here too (styles.css data-*-logo rules). */
+.app-shell[data-theme][data-color-scheme] .ob-tile-logo.openai { color: var(--brand-on-openai); background: var(--brand-openai); }
+.app-shell[data-theme][data-color-scheme] .ob-tile-logo.claude { color: var(--brand-on-claude); background: var(--brand-claude); }
+.app-shell[data-theme][data-color-scheme] .ob-tile-logo.cursor { color: var(--brand-on-cursor); background: var(--brand-cursor); }
+.app-shell[data-theme][data-color-scheme] .ob-tile-logo.openrouter { color: var(--brand-openrouter); background: var(--panel-3); }
+.app-shell[data-theme][data-color-scheme] .ob-tile-logo.lmstudio { background: transparent; }
+.app-shell[data-theme][data-color-scheme="light"] .ob-tile-logo.openrouter { color: var(--brand-openrouter-light); background: var(--lm-press); }
 
 /* ---- Sub-agent command center (the panel itself is styled in composer.css) ---- */
 .app-shell[data-theme][data-color-scheme] .sa-header { padding: 2px 2px 8px; }
@@ -534,7 +755,7 @@
 .app-shell[data-theme][data-color-scheme] .sa-apply-preset:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .sa-manage-presets:hover { color: var(--text); border-color: var(--line-strong); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .sa-clear-all { height: 24px; color: var(--red); background: transparent; border-color: transparent; }
-.app-shell[data-theme][data-color-scheme] .sa-clear-all:hover { color: var(--red); border-color: var(--red); background: rgba(240, 120, 120, .1); }
+.app-shell[data-theme][data-color-scheme] .sa-clear-all:hover { color: var(--red); border-color: var(--red); background: var(--red-soft); }
 .app-shell[data-theme][data-color-scheme] .sa-tile.expanded { border-color: var(--line-strong); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .sa-tile-config { border-top-color: var(--line-quiet); }
 .app-shell[data-theme][data-color-scheme] .sa-add { border-style: dashed; border-color: var(--line-strong); }
@@ -551,7 +772,7 @@
 
 /* ---- Empty and loading states ---- */
 .app-shell[data-theme][data-color-scheme] .tool-empty-line { color: var(--muted-2); font-family: var(--font-sans); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .spin { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .spin { color: var(--accent); }
 
 /* Forced colors suppress shadows and custom fills. Preserve the floating
    boundaries and keyboard position with system-color outlines. */
@@ -578,6 +799,8 @@
   .app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star):focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
   .app-shell[data-theme][data-color-scheme] .palette-results > button.active,
   .app-shell[data-theme][data-color-scheme] .palette-group > button.active { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .palette-row.active { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .shortcuts-sheet { outline: 1px solid CanvasText; }
   .app-shell[data-theme][data-color-scheme] .spelling-menu button[data-highlighted] { outline: 2px solid Highlight; outline-offset: -2px; }
   /* Outrank the legacy doubled-class focus reset on spelling-menu buttons. */
   .app-shell[data-theme][data-color-scheme] .spelling-menu.spelling-menu .spelling-menu-panel button:focus { outline: 2px solid Highlight; outline-offset: -2px; }
@@ -599,6 +822,8 @@
   .app-shell[data-theme][data-color-scheme] .palette-group > button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-1) ease; }
   .app-shell[data-theme][data-color-scheme] .palette-results > button > span,
   .app-shell[data-theme][data-color-scheme] .palette-group > button > span { transition: color var(--lm-d-1) ease; }
+  .app-shell[data-theme][data-color-scheme] .palette-row { transition: background-color var(--lm-d-1) ease; }
+  .app-shell[data-theme][data-color-scheme] .shortcuts-sheet { animation: lm-pop-i var(--lm-d-2) var(--lm-ease-out) backwards; }
   /* Model menus and the runtime sheet rise a few pixels and fade; the legacy
      scale-pop is retired. Their open states are restated at this weight so
      the resting transform never sticks. */
@@ -606,9 +831,47 @@
   .app-shell[data-theme][data-color-scheme] .openrouter-menu { transform: translateY(3px); }
   .app-shell[data-theme][data-color-scheme] .menu-open .model-menu,
   .app-shell[data-theme][data-color-scheme] .openrouter-picker.open .openrouter-menu { transform: none; }
-  .app-shell[data-theme][data-color-scheme] .runtime-setup-modal { transform: translateY(4px); transition: opacity 160ms ease, transform 200ms var(--lm-ease-out); }
+  .app-shell[data-theme][data-color-scheme] .runtime-setup-modal { transform: translateY(4px); transition: opacity var(--lm-d-2) var(--lm-ease-out), transform var(--lm-d-3) var(--lm-ease-out); }
   .app-shell[data-theme][data-color-scheme] .runtime-setup-backdrop.open .runtime-setup-modal { transform: none; }
   .app-shell[data-theme][data-color-scheme] .runtime-setup-backdrop.closed .runtime-setup-modal { transform: translateY(4px); }
   .app-shell[data-theme][data-color-scheme] .project-prompt-modes > button,
   .app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle { transition: border-color var(--lm-d-1) ease, background-color var(--lm-d-1) ease, box-shadow var(--lm-d-1) ease; }
 }
+/* M14: the list is a Tab stop so arrow keys and Page Down scroll it; from
+   the keyboard it shows the same inset ring as other focusable regions. */
+.app-shell[data-theme][data-color-scheme] .shortcuts-sheet-body:focus { outline: none; }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .shortcuts-sheet-body:focus { box-shadow: inset 0 0 0 2px var(--accent-line); }
+
+/* Runtime setup, round 3 (C4): the guide card is a real link button. */
+.app-shell[data-theme][data-color-scheme] button.runtime-option {
+  width: 100%;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] button.runtime-option > svg:last-child { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] button.runtime-option:hover { border-color: var(--line-strong); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] button.runtime-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.app-shell[data-theme][data-color-scheme] button.runtime-option div { display: grid; gap: 2px; min-width: 0; }
+/* ⌥⌘1…0: which digit opens which tab, in rail order. */
+.app-shell[data-theme][data-color-scheme] .shortcuts-row dt small.shortcuts-legend { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 4px; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-legend > span { white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .shortcuts-legend b { color: var(--ink-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ---- Menu focus, round 3 (M07) ----
+   Keyboard focus = fill plus a solid 1px accent edge (--lm-menu-focus-edge),
+   distinct from hover's fill alone. One :focus-visible per rule. */
+.app-shell[data-theme][data-color-scheme] .row-menu-list button:focus-visible { background: var(--lm-menu-focus); box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+.app-shell[data-theme][data-color-scheme] .app-action-list > button:focus-visible { background: var(--lm-menu-focus); box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+.app-shell[data-theme][data-color-scheme] .app-select-options > button:focus-visible { background: var(--lm-menu-focus); box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+.app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star):focus-visible { background: var(--lm-menu-focus); box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+.app-shell[data-theme][data-color-scheme] .model-menu-option:focus-visible { background: var(--lm-menu-focus); box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+.app-shell[data-theme][data-color-scheme] .openrouter-options > button:focus-visible { background: var(--lm-menu-focus); box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+.app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star):focus-visible { background: var(--lm-menu-focus); box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+.app-shell[data-theme][data-color-scheme] .thread-menu .app-action-list > button:focus-visible { background: var(--lm-menu-focus); box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+.app-shell[data-theme][data-color-scheme] [role="menu"] button[role="menuitem"]:focus-visible { box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+.app-shell[data-theme][data-color-scheme] [role="menu"] button[role="menuitemradio"]:focus-visible { box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+.app-shell[data-theme][data-color-scheme] [role="menu"] button[role="menuitemcheckbox"]:focus-visible { box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }

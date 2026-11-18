@@ -2,7 +2,7 @@ import { isWindowsPlatform } from "./platform";
 
 /**
  * The single place that decides how a free-form user command string is handed
- * to the operating system. Every surface that runs one — the Workspace
+ * to the operating system. Every surface that runs one — the Tools panel
  * Terminal, project actions, and workflow command steps — goes through here so
  * a Windows install never receives a `/bin/zsh` argv it cannot execute.
  *

@@ -1,18 +1,12 @@
 .language-tools-settings { container-type: inline-size; }
-.language-tools-description { margin-bottom: 12px; }
-.language-tools-description p { margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
-.language-tools-description p + p { margin-top: 6px; }
 .language-tools-state { display: flex; align-items: center; gap: 6px; font-size: var(--fs-meta); color: var(--muted-2); }
-.language-tools-state[data-state="installed"] { color: var(--green); }
+.language-tools-state[data-state="installed"] { color: var(--success); }
 .language-tools-state[data-state="error"], .language-tools-messages [role="alert"] { color: var(--red); }
 .language-tools-detail { overflow-wrap: anywhere; white-space: pre-wrap; }
 .language-tools-install-command { align-self: flex-start; max-width: 100%; margin-top: 3px; overflow-wrap: anywhere; font-size: var(--fs-meta); -webkit-user-select: all; user-select: all; }
 .language-tools-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
-.language-tools-installed { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; color: #80e5a0; font-size: var(--fs-ui); font-weight: 600; white-space: nowrap; }
-.app-shell[data-color-scheme="light"] .language-tools-installed { color: #227a3e; }
+.language-tools-installed { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; color: var(--success); font-size: var(--fs-meta); font-weight: 550; white-space: nowrap; }
 .language-tools-installed svg { flex: 0 0 auto; }
-.language-tools-enabled { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: var(--fs-meta); }
-.language-tools-enabled input { accent-color: var(--green); }
 .language-tools-footer { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .language-tools-messages { flex: 1; min-width: 180px; overflow-wrap: anywhere; }
 .language-tools-messages p { margin: 0; }
@@ -24,3 +18,6 @@
   .language-tools-row { grid-template-columns: minmax(0, 1fr); }
   .language-tools-row > .language-tools-controls { justify-self: start; }
 }
+
+/* Column names between "Automatic setup" and the tool rows. */
+.language-tools-columns { display: flex; justify-content: space-between; gap: 12px; padding: 6px 14px 4px; border-top: 1px solid var(--line-quiet, var(--line)); color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; }

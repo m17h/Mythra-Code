@@ -23,7 +23,7 @@ import "./ChatFontPicker.css";
  * bundled from Fontsource (SIL Open Font License).
  */
 export const CHAT_FONTS: ReadonlyArray<{ id: BuiltInChatFont; name: string; description: string }> = [
-  { id: "system", name: "Interface default", description: "The same typeface as the rest of Mythra Code" },
+  { id: "system", name: "Interface default", description: "Same as the interface" },
   { id: "humanist", name: "Humanist sans", description: "Open, warm letterforms with a little more air" },
   { id: "serif", name: "Reading serif", description: "Book-like text for long answers" },
   { id: "mono", name: "Monospace", description: "Fixed-width throughout, like a terminal" },
@@ -52,7 +52,7 @@ export function chatFontName(chatFont: ChatFont, library: CustomChatFont[]): str
   return CHAT_FONTS.find((font) => font.id === chatFont)?.name ?? customFontFor(chatFont, library)?.name ?? "Interface default";
 }
 
-/** Settings > Interface: the chat font dropdown and the custom font library. */
+/** Settings > Appearance: the chat font dropdown and the custom font library. */
 export function ChatFontSettings({ value, onChange, active = true }: { value: ChatFont; onChange: (font: ChatFont) => void; active?: boolean }) {
   const library = useCustomFonts();
   useCustomFontFaces(library, active);
@@ -163,7 +163,7 @@ export function ChatFontSettings({ value, onChange, active = true }: { value: Ch
       <div className="set-row">
         <div className="set-copy">
           <strong>Chat font</strong>
-          <small>Conversation text and the composer only. The rest of the interface keeps its own type, and code stays monospaced.</small>
+          <small>Conversation text and the composer. Code stays monospaced.</small>
         </div>
         <div className="set-control">
           <AppSelectMenu
@@ -178,7 +178,7 @@ export function ChatFontSettings({ value, onChange, active = true }: { value: Ch
       <div className="set-row chat-font-library">
         <div className="set-copy">
           <strong>Custom fonts</strong>
-          <small>Add a font file (.ttf, .otf, .woff or .woff2), or use a font already installed on this computer. Library additions and removals are saved immediately; Save applies your font selection.</small>
+          <small>Add a .ttf, .otf, .woff or .woff2 file, or a font installed on this computer.</small>
         </div>
         <div className="set-control chat-font-actions">
           <button ref={fileButtonRef} type="button" className="secondary-button" disabled={!!busy} onClick={() => void addFile()}>

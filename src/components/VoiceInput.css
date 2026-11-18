@@ -1,8 +1,8 @@
 .voice-input-button { width: var(--ctl-md); height: var(--ctl-md); display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
-.voice-input-button:hover:not(:disabled) { color: var(--green); border-color: var(--green-line, color-mix(in srgb, var(--green) 34%, var(--line))); background: color-mix(in srgb, var(--green) 8%, transparent); }
-.voice-input-button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.voice-input-button:hover:not(:disabled) { color: var(--accent); border-color: var(--accent-line, color-mix(in srgb, var(--accent) 34%, var(--line))); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.voice-input-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .voice-input-button:disabled { cursor: default; opacity: .7; }
-.voice-input-button.busy { color: var(--green); }
+.voice-input-button.busy { color: var(--accent); }
 .voice-input-button.recording { position: relative; color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); background: color-mix(in srgb, var(--red) 12%, transparent); }
 .voice-input-button.recording:hover { color: var(--red); border-color: color-mix(in srgb, var(--red) 56%, transparent); background: color-mix(in srgb, var(--red) 18%, transparent); }
 
@@ -19,7 +19,7 @@
 .voice-rec.is-closed { grid-template-rows: 0fr; margin-top: 0; }
 .voice-rec.is-exiting { pointer-events: none; transition-duration: 280ms; transition-timing-function: cubic-bezier(.4, 0, .2, 1); }
 .voice-rec.phase-recording { --rec-tone: var(--red); }
-.voice-rec.phase-finishing, .voice-rec.phase-transcribing { --rec-tone: var(--green); }
+.voice-rec.phase-finishing, .voice-rec.phase-transcribing { --rec-tone: var(--accent); }
 .voice-rec.message.error { --rec-tone: var(--red); }
 .voice-rec-clip { min-height: 0; overflow: hidden; container: voice-rec / inline-size; }
 
@@ -47,7 +47,7 @@
 .voice-rec-titleline { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; min-width: 0; }
 .voice-rec-titleline strong { color: var(--text); font-size: var(--fs-ui, 13px); font-weight: 600; letter-spacing: 0; }
 .voice-rec-copy small { overflow: hidden; color: var(--muted); font-size: var(--fs-meta, 11px); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.voice-rec-badge { padding: 0 6px; border: 0; border-radius: var(--r-chip, 4px); color: var(--green); background: var(--green-soft, color-mix(in srgb, var(--green) 10%, transparent)); font-size: var(--fs-meta, 11px); font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
+.voice-rec-badge { padding: 0 6px; border: 0; border-radius: var(--r-chip, 4px); color: var(--accent); background: var(--accent-soft, color-mix(in srgb, var(--accent) 10%, transparent)); font-size: var(--fs-meta, 11px); font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
 .voice-rec-clock { color: var(--ink-2, var(--muted)); font-size: 12px; font-variant-numeric: tabular-nums; }
 .voice-rec-clock.placeholder { opacity: .45; }
 .voice-rec-message { color: var(--text); line-height: 1.4; overflow-wrap: anywhere; }
@@ -63,9 +63,9 @@
 .voice-rec-button { height: 28px; display: inline-flex; align-items: center; gap: 5px; padding: 0 11px; border: 1px solid var(--line); border-radius: var(--r-control, 6px); color: var(--text); background: var(--lm-press, transparent); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background var(--t-fast) ease, border-color var(--t-fast) ease, color var(--t-fast) ease, filter var(--t-fast) ease; }
 .voice-rec-button:hover { border-color: var(--line-strong); color: var(--text); }
 /* Done: the primary push button, flat accent with accent ink. */
-.voice-rec-button.primary { padding: 0 12px 0 10px; border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--green)); font-weight: 600; }
-.voice-rec-button.primary:hover { border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--green)); filter: brightness(1.06); }
-.voice-rec-button:focus-visible, .voice-rec-dismiss:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.voice-rec-button.primary { padding: 0 12px 0 10px; border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--accent)); font-weight: 600; }
+.voice-rec-button.primary:hover { border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--accent)); filter: brightness(1.06); }
+.voice-rec-button:focus-visible, .voice-rec-dismiss:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .voice-rec-dismiss { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; cursor: pointer; }
 .voice-rec-dismiss:hover { color: var(--text); background: var(--lm-press, color-mix(in srgb, var(--text) 6%, transparent)); }
 

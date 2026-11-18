@@ -17,9 +17,9 @@
    browser keeps arrow-key and disabled semantics for free. */
 .subagent-panel .sa-engine-option input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
 .subagent-panel .sa-engine-option:hover:not(.selected) { color: var(--text); }
-.subagent-panel .sa-engine-option.selected { color: var(--text); background: var(--panel-3); box-shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 0 0 .5px rgba(0, 0, 0, .25); }
-.app-shell[data-color-scheme="light"] .subagent-panel .sa-engine-option.selected { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .1), 0 0 0 .5px rgba(0, 0, 0, .1); }
-.subagent-panel .sa-engine-option:has(input:focus-visible) { outline: 2px solid color-mix(in srgb, var(--green) 62%, transparent); outline-offset: 1px; }
+.subagent-panel .sa-engine-option.selected { color: var(--text); background: var(--panel-3); box-shadow: var(--lm-seg-shadow-strong); }
+.app-shell[data-color-scheme="light"] .subagent-panel .sa-engine-option.selected { background: var(--lm-seg-surface); box-shadow: var(--lm-seg-shadow-strong); }
+.subagent-panel .sa-engine-option:has(input:focus-visible) { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
 .subagent-panel .sa-engine-option.unavailable { opacity: .5; cursor: not-allowed; }
 .subagent-panel .sa-engine:disabled .sa-engine-option { cursor: default; }
 .subagent-panel .sa-engine:disabled .sa-engine-option:not(.selected) { opacity: .5; }
@@ -43,7 +43,7 @@
 .subagent-panel .sa-native.muted { opacity: .55; }
 .subagent-panel .sa-native-intro { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
 .subagent-panel .sa-native-mark { flex: 0 0 auto; width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--ink-2); background: var(--panel-3); }
-.subagent-panel .sa-native-mark.claude { color: #ffffff; background: #d97757; }
+.subagent-panel .sa-native-mark.claude { color: var(--brand-on-claude); background: var(--brand-claude); }
 .subagent-panel .sa-native-note { margin: 0; padding: 0 10px; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; }
 
 /* Per-thread native options: one quiet card, copy on the left and a compact
@@ -68,12 +68,6 @@
 .subagent-panel .sa-native-reset { flex: 0 0 auto; align-self: center; padding: 1px 7px; border: 1px solid color-mix(in srgb, var(--orange) 28%, var(--line)); border-radius: var(--r-sm, 6px); color: inherit; background: transparent; font-size: inherit; cursor: pointer; }
 .subagent-panel .sa-native-reset:hover:not(:disabled) { color: var(--text); border-color: color-mix(in srgb, var(--orange) 46%, var(--line-strong)); }
 .subagent-panel .sa-native-reset:disabled { opacity: .55; cursor: default; }
-
-/* This conversation's own compaction window: the same quiet card as the
-   native options, independent of the delegation switch. */
-.subagent-panel .sa-compaction { container-type: inline-size; display: flex; flex-direction: column; gap: 4px; min-inline-size: 0; margin: 0; padding: 0 0 7px; border: 1px solid var(--line); border-radius: var(--r-md); background: transparent; }
-.subagent-panel .sa-compaction:disabled .app-select-trigger { cursor: default; opacity: .6; }
-.subagent-panel .sa-compaction-issue { margin: 0 8px; }
 .subagent-panel .sa-compaction-readout { justify-self: end; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 /* A worker's reported assignment, progress and result. Each block scrolls

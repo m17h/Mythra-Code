@@ -1635,7 +1635,7 @@ fn scoped_tool_catalog(
             json!({
                 "name": TOOL_LANGUAGE_INSTALL,
                 "title": "Set up a managed language tool",
-                "description": "Install one curated language tool into Mythra Code's private managed environment. Requires full access, automatic setup enabled, and this tool enabled in Settings > Tools & MCP > Language tools. Read-only cannot install. Ask mode requires the user to install manually in Settings; this tool cannot approve itself. Accepts only a curated tool ID, never packages, commands, or paths. Installed enabled servers become available to language_tool_query immediately; Claude's built-in LSP integration updates on the next turn.",
+                "description": "Install one curated language tool into Mythra Code's private managed environment. Requires full access, automatic setup enabled, and this tool enabled in Settings > MCP & language servers > Language tools. Read-only cannot install. Ask mode requires the user to install manually in Settings; this tool cannot approve itself. Accepts only a curated tool ID, never packages, commands, or paths. Installed enabled servers become available to language_tool_query immediately; Claude's built-in LSP integration updates on the next turn.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {"id": {"type": "string", "enum": super::language_tools::LANGUAGE_TOOL_IDS}},
@@ -1749,7 +1749,7 @@ fn bridge_instructions(catalog: &Value, provider: &str) -> String {
         if has(TOOL_LANGUAGE_INSTALL) {
             instructions.push("install_language_tool accepts a curated id and obeys current Settings enablement and automatic setup policy.".into());
         } else {
-            instructions.push("Missing tools can be installed manually in Settings > Tools & MCP > Language tools.".into());
+            instructions.push("Missing tools can be installed manually in Settings > MCP & language servers > Language tools.".into());
         }
     }
     if has(TOOL_PROPOSE_SETTINGS) {
@@ -1783,8 +1783,8 @@ fn bridge_instructions(catalog: &Value, provider: &str) -> String {
 fn validate_language_install_permission(permission: &str) -> Result<(), String> {
     match permission {
         "full" => Ok(()),
-        "read-only" => Err("This thread is read-only and cannot install language tools. You can install them manually in Settings > Tools & MCP > Language tools.".into()),
-        _ => Err("Language-tool installation needs approval. Ask mode cannot approve this managed installation; ask the user to install it in Settings > Tools & MCP > Language tools.".into()),
+        "read-only" => Err("This thread is read-only and cannot install language tools. You can install them manually in Settings > MCP & language servers > Language tools.".into()),
+        _ => Err("Language-tool installation needs approval. Ask mode cannot approve this managed installation; ask the user to install it in Settings > MCP & language servers > Language tools.".into()),
     }
 }
 

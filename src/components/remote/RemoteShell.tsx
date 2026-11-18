@@ -1,14 +1,16 @@
+import { EmptyState } from "../EmptyState";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, sendNotification } from "@tauri-apps/plugin-notification";
-import { AlertTriangle, Archive, ArchiveRestore, Check, ChevronDown, Circle, Clock, CornerUpRight, Copy, Download, Folder, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, PanelLeftOpen, Paperclip, Pencil, Pin, PinOff, Settings, Trash2, X } from "lucide-react";
+import { AlertTriangle, Archive, ArchiveRestore, Check, ChevronDown, Circle, Clock, CornerUpRight, Copy, Download, Folder, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, NotebookPen, PanelLeftOpen, Paperclip, Pencil, Pin, PinOff, Settings, Trash2, X } from "lucide-react";
 import type { Activity, ChatFont, ChatMessage, Provider } from "../../types";
 import { TimelinePresentation } from "../ChatTimeline";
 import { AnimatedMythraLogo } from "../AnimatedMythraLogo";
 import { ConversationSearchBar } from "../ConversationSearchBar";
 import { ProjectPromptControl } from "../ProjectPromptControl";
 import { ProjectRunControl } from "../ProjectRunControl";
+import { AppActionMenu } from "../AppActionMenu";
 import { SubAgentParentGroup } from "../SubAgentParentGroup";
 import { Composer, draftFor, seedComposerDraft, type ComposerHandle } from "../Composer";
 import { ThreadTitle } from "../ThreadTitle";
@@ -265,7 +267,7 @@ function RemoteGuideCard({ guide, onAddProject, onOpenChats, onCheckAgain }: { g
     <p>{guide.body}</p>
     {guide.actions.length > 0 && <div className="remote-guide-actions">
       {guide.actions.includes("addProject") && <button type="button" className="primary-button" onClick={onAddProject}>Add a project</button>}
-      {guide.actions.includes("openChats") && <button type="button" className="secondary-button" onClick={onOpenChats}>Start a normal chat</button>}
+      {guide.actions.includes("openChats") && <button type="button" className="secondary-button" onClick={onOpenChats}>Start a chat</button>}
       {guide.actions.includes("checkAgain") && <button type="button" className="secondary-button" onClick={onCheckAgain}>Check again</button>}
     </div>}
   </div>;
@@ -307,7 +309,7 @@ function RemoteQueuedSteer({ message }: { message: ChatMessage }) {
   if (!remote?.available) return <div className="message-steer-status unconfirmed" role="status" title={`Mythra Code couldn't read this message's status from ${name}.`}>
     <AlertTriangle size={11} aria-hidden="true" />Status unavailable from {name}</div>;
   if (steer?.status === "read") return <div className="message-steer-status read" role="status" title="Claude confirmed reading this message."><Check size={11} aria-hidden="true" />Read by Claude</div>;
-  if (steer?.status === "accepted") return <div className="message-steer-status accepted" role="status" title="Runtime input delivery confirmed."><Check size={11} aria-hidden="true" />Steer delivered to runtime input</div>;
+  if (steer?.status === "accepted") return <div className="message-steer-status accepted" role="status" title="Message delivered to the running task."><Check size={11} aria-hidden="true" />Steer delivered to runtime input</div>;
   if (steer?.status === "unconfirmed") return <div className="message-steer-status unconfirmed" role="status" title="Claude has not confirmed reading this message in its original turn. Inspect the conversation before sending it again.">
     <AlertTriangle size={11} aria-hidden="true" />Steer reading unconfirmed</div>;
   if (steer?.status === "sending") return <div className="message-steer-status sending" role="status"><CornerUpRight size={11} aria-hidden="true" />Sending steer…</div>;
@@ -542,10 +544,15 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
         <button className={kind === "main" ? "active" : ""} onClick={() => setKind("main")} aria-pressed={kind === "main"}>Main <span>{live.length - subAgentCount}</span></button>
         <button className={kind === "subagents" ? "active" : ""} onClick={() => setKind("subagents")} aria-pressed={kind === "subagents"}>Sub-agents <span>{subAgentCount}</span></button>
       </div>}
-      search={workspace && <ThreadSearch value={query} onChange={setQuery} placeholder={`Search ${workspace.isChat ? "chats" : workspace.name}…`}
-        action={<button className="thread-bulk-button" onClick={archiveAll} disabled={shown.length === 0 || !canWork} title={canWork ? `Archive all ${kind === "subagents" ? "sub-agent" : "main"} threads here` : remoteWorkAccessHint(name)}>
-          <Archive size={12} /><span>Archive all</span>
-        </button>} />}
+      menu={workspace && <RowMenu label="Thread list actions" scale={scale} items={() => [
+        { label: `Archive all ${kind === "subagents" ? "sub-agent" : "main"} threads`, icon: <Archive size={13} />,
+          disabledReason: !canWork ? remoteWorkAccessHint(name) : shown.length === 0 ? "There are no threads to archive here" : undefined, onSelect: archiveAll },
+        ...(archived.length > 0 ? [
+          { label: archivedOpen ? "Hide archived" : "Show archived", icon: <ArchiveRestore size={13} />, onSelect: () => setArchivedOpen((open) => !open) },
+          { label: "Delete all archived…", icon: <Trash2 size={13} />, danger: true, disabledReason: canWork ? undefined : remoteWorkAccessHint(name), onSelect: deleteAllArchived },
+        ] : []),
+      ]} />}
+      search={workspace && <ThreadSearch value={query} onChange={setQuery} placeholder={`Search ${workspace.isChat ? "chats" : workspace.name}…`} />}
       list={<>
         {kind === "main" ? shown.map(threadRow) : [...parents].map(([parentId, children]) => {
           const parent = threads.find((thread) => thread.id === parentId);
@@ -570,7 +577,13 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
           </div>
         </>}
         {error && <div className="empty-threads" role="alert">{error}</div>}
-        {!shown.length && !list?.loading && workspace && <div className="empty-threads">{query ? "No matching conversations." : kind === "subagents" ? "No sub-agent threads yet" : workspace.isChat ? "No normal chats yet" : "No threads in this project yet"}</div>}
+        {!shown.length && !list?.loading && workspace && <EmptyState
+          variant="compact"
+          className="sidebar-empty"
+          role={query ? "status" : undefined}
+          title={query ? "No matching conversations" : kind === "subagents" ? "No sub-agent threads yet" : workspace.isChat ? "No chats yet" : "No threads in this project yet"}
+          text={query ? "Try fewer or different words." : undefined}
+        />}
         {list?.cursor && <button type="button" className="thread-bulk-button" disabled={list.loading} onClick={() => loadRemoteThreads(device)}>More threads</button>}
       </>}
       footer={archived.length > 0 && <div className="archived-threads">
@@ -580,9 +593,6 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
             <span>Archived</span>
             <span className="thread-count">{archived.length}</span>
             <ChevronDown className={archivedOpen ? "open" : ""} size={12} />
-          </button>
-          <button className="archived-delete-all" onClick={deleteAllArchived} disabled={!canWork} title={canWork ? `Permanently delete all archived threads on ${name}` : remoteWorkAccessHint(name)}>
-            <Trash2 size={11} /><span>Delete all</span>
           </button>
         </div>
         {archivedOpen && archived.map((thread) => <div key={thread.id} className="thread-row-wrap archived">
@@ -752,6 +762,8 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   const fileInput = useRef<HTMLInputElement>(null);
   const composerRef = useRef<ComposerHandle>(null);
   const [editingProject, setEditingProject] = useState(false);
+  const [promptOpenRequest, setPromptOpenRequest] = useState<{ name: string; nonce: number } | null>(null);
+  const threadMenuRef = useRef<HTMLDivElement>(null);
   const canRun = Boolean(context?.capabilities.terminal);
   const blockedIsolation = context?.execution?.isolationBlocked;
   const isolationReason = blockedIsolation === "repository" ? `Needs a Git repository on ${name}` : blockedIsolation === "root" ? "Open the repository root folder" : blockedIsolation === "commit" ? "Requires at least one Git commit"
@@ -1233,7 +1245,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
       <div className="topbar-left">
         {!sidebarOpen && <button className="icon-button" onClick={onShowSidebar} title="Show sidebar" aria-label="Show sidebar"><PanelLeftOpen size={18} /></button>}
         <div className="project-heading">
-          <span>{workspace?.isChat ? "Normal chat" : workspace?.name ?? name}</span>
+          <span>{workspace?.isChat ? "Chats" : workspace?.name ?? name}</span>
           {/* As here: an isolated thread names its branch and folder, a project with no thread its folder. Always on that machine. */}
           <small title={header ? header.executionPath : undefined}>{name}{compose ? " · New thread"
             : header?.checkout === "worktree" && header.worktreeStatus !== "removed" && thread ? ` · ${header.branch ? `${header.branch} · ` : ""}${header.executionPath}`
@@ -1249,13 +1261,12 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
         {thread?.parentThreadId && <button type="button" className="handoff-chip parent-chip" title={`Open parent conversation: ${parentTitle}`} aria-label={`Open parent conversation: ${parentTitle}`} onClick={() => selectRemoteThread(device, thread.parentThreadId!)}>
           <GitFork size={12} aria-hidden="true" /> <span>Parent: {parentTitle}</span>
         </button>}
-        {workspace && !workspace.isChat && <ProjectPromptControl key={workspaceId} projectName={workspace.name} projectPrompt={context?.projectPrompt} promptMode={context?.projectPromptMode ?? "replace"}
-          appPrompt="" provider={provider} threadStarted={Boolean(threadId)} skills={skills}
-          onSave={(prompt, mode) => {
-            if (!context?.capabilities.manageProjects) { setNotice(accessReason(name, "change project instructions", "Manage projects")); return; }
-            void hostProjectWrite(device, name, workspaceId!, "projects.instructions.set", { prompt: prompt ?? "", mode }).then((outcome) => { if (report(outcome) && workspaceId) void refreshRemoteContext(device, workspaceId, threadId); });
-          }}
-          onAppPromptSettings={() => setEditingProject(true)} />}
+      </div>
+      <div className="topbar-right">
+        <div className="runtime-status" title={`Status on ${name}`}>
+          {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
+          <span>{running ? "Working" : connected ? "Ready" : "Not connected"}</span>
+        </div>
         {workspace && !workspace.isChat && workspaceId && canWork && <RemotePreviews device={device} workspaceId={workspaceId} threadId={threadId} name={name} onNotice={setNotice} />}
         {workspace && !workspace.isChat && <ProjectRunControl key={`run-${workspaceId}`} projectName={workspace.name}
           run={context?.run ? { ...context.run, updatedAt: 0 } : undefined} running={Boolean(runHandle)}
@@ -1272,14 +1283,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
             if (!canRun) { setNotice(accessReason(name, "save this command", "Terminal")); return; }
             void hostProjectWrite(device, name, workspaceId!, "projects.run.set", { command: next?.command ?? "", ...(next?.label ? { label: next.label } : {}), ...(next?.setupCommand ? { setupCommand: next.setupCommand } : {}) }).then((outcome) => { if (report(outcome) && workspaceId) void refreshRemoteContext(device, workspaceId, threadId); });
           }} remoteDiscovery={canRun ? runDiscovery : undefined} discoveryModelNote={`The model saved on ${name}${context?.discovery?.model ? ` · ${context.discovery.model}` : ""}`} />}
-      </div>
-      <div className="topbar-right">
-        {thread && <button className="icon-button topbar-export-button" onClick={() => machineActions()?.exportTranscript()} title="Export conversation as Markdown" aria-label="Export conversation as Markdown"><Download size={15} /></button>}
         {actions}
-        <div className="runtime-status" title={`Status on ${name}`}>
-          {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
-          <span>{running ? "Working" : connected ? "Ready" : "Not connected"}</span>
-        </div>
         {quotaUsage && quotaHeader && (provider === "openai" || provider === "claude") ? <UsagePopover key={provider} provider={provider} usage={quotaUsage} header={{ ...quotaHeader, title: `${quotaHeader.title} · on ${name}` }}
           selectedLabel={headerUsageWindows?.[provider]} onSelect={(label) => onHeaderUsageWindow?.(provider, label)}
           onConnect={() => setNotice(`Sign in on ${name} to see its usage.`)} onDetails={() => onOpenTool("usage")}
@@ -1287,6 +1291,22 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
         : contextPercent !== null && <button className="topbar-usage-chip" type="button" title={`Context used on ${name}`} onClick={() => onOpenTool("usage")}>
           <Gauge size={13} aria-hidden="true" /><span>{contextPercent}%</span>
         </button>}
+        {(thread || (workspace && !workspace.isChat)) && <div className="thread-menu" ref={threadMenuRef}>
+          <AppActionMenu compact label="Thread actions" ariaLabel="Thread and project actions" triggerTitle="Thread and project actions" items={[
+            ...(workspace && !workspace.isChat ? [{ id: "instructions", label: "Project instructions…", icon: <NotebookPen size={14} />, onSelect: () => setPromptOpenRequest((current) => ({ name: workspace.name, nonce: (current?.nonce ?? 0) + 1 })) }] : []),
+            ...(thread ? [
+              { id: "fork", label: "Fork thread", description: "Continue in a new copy of this conversation", icon: <GitFork size={14} />, onSelect: () => machineActions()?.forkThread() },
+              { id: "export", label: "Export conversation", description: "Save as a Markdown file", icon: <Download size={14} />, onSelect: () => machineActions()?.exportTranscript() },
+            ] : []),
+          ]} />
+          {workspace && !workspace.isChat && <ProjectPromptControl key={workspaceId} hideTrigger align="end" openRequest={promptOpenRequest} returnFocusTo={() => threadMenuRef.current?.querySelector<HTMLElement>(".app-action-trigger")} projectName={workspace.name} projectPrompt={context?.projectPrompt} promptMode={context?.projectPromptMode ?? "replace"}
+            appPrompt="" provider={provider} threadStarted={Boolean(threadId)} skills={skills}
+            onSave={(prompt, mode) => {
+              if (!context?.capabilities.manageProjects) { setNotice(accessReason(name, "change project instructions", "Manage projects")); return; }
+              void hostProjectWrite(device, name, workspaceId!, "projects.instructions.set", { prompt: prompt ?? "", mode }).then((outcome) => { if (report(outcome) && workspaceId) void refreshRemoteContext(device, workspaceId, threadId); });
+            }}
+            onAppPromptSettings={() => setEditingProject(true)} />}
+        </div>}
         {studioToggle}
       </div>
     </header>
@@ -1318,7 +1338,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
           </div>}
           {!guideCard && <>
             <AnimatedMythraLogo />
-            <h1>{workspace?.isChat ? "Start a normal chat." : "What should we build?"}</h1>
+            <h1>{workspace?.isChat ? "What should we talk about?" : "What should we build?"}</h1>
             <p>This conversation runs on {name}, with its files and accounts.</p>
           </>}
           <div className="trust-strip">
@@ -1420,8 +1440,8 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
         />
       </ErrorBoundary>
       <div className="composer-caption">
-        Running on {name}. Mythra Code can make mistakes. Review commands and changes before shipping.
-        {contextPercent !== null && <span className={`context-meter ${contextPercent > 80 ? "warn" : ""}`}>{" "}· Context {contextPercent}% used</span>}
+        <span className="composer-disclaimer">Running on {name}. Mythra Code can make mistakes. Review commands and changes before shipping.</span>
+        {contextPercent !== null && <span className={`context-meter ${contextPercent > 80 ? "warn" : ""}`}>Context {contextPercent}% used</span>}
       </div>
     </section>
     {workflowDialog}

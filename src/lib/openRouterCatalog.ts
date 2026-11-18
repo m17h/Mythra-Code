@@ -148,3 +148,45 @@ export async function resolveOpenRouterSlug(slug: string): Promise<OpenRouterSlu
   }
   return { model: { id: trimmed, name: trimmed }, verified: false };
 }
+
+/**
+ * Display names for OpenRouter's vendor slugs (the part before "/"). Slugs
+ * not listed fall back to title case without punctuation.
+ */
+const OPENROUTER_VENDORS: Record<string, { name: string; mark: string }> = {
+  openai: { name: "OpenAI", mark: "OA" },
+  anthropic: { name: "Anthropic", mark: "A" },
+  google: { name: "Google", mark: "G" },
+  "x-ai": { name: "xAI", mark: "xA" },
+  "meta-llama": { name: "Meta", mark: "M" },
+  mistralai: { name: "Mistral", mark: "Mi" },
+  deepseek: { name: "DeepSeek", mark: "DS" },
+  qwen: { name: "Qwen", mark: "Q" },
+  moonshotai: { name: "Moonshot AI", mark: "Mo" },
+  "z-ai": { name: "Z.ai", mark: "Z" },
+  cohere: { name: "Cohere", mark: "Co" },
+  nvidia: { name: "NVIDIA", mark: "NV" },
+  microsoft: { name: "Microsoft", mark: "MS" },
+  amazon: { name: "Amazon", mark: "Am" },
+  perplexity: { name: "Perplexity", mark: "P" },
+  minimax: { name: "MiniMax", mark: "MM" },
+  openrouter: { name: "OpenRouter", mark: "OR" },
+};
+
+/**
+ * The vendor behind an OpenRouter model id ("x-ai/grok-5" → xAI) and a one- or
+ * two-letter monogram for its row (O12). Monograms are letters and digits
+ * only: a slug like "x-ai" never yields "X-".
+ */
+export function openRouterVendor(id: string): { name: string; mark: string } {
+  const slug = (id.split("/")[0] || "openrouter").toLowerCase();
+  const known = OPENROUTER_VENDORS[slug];
+  if (known) return known;
+  const words = slug.split(/[^a-z0-9]+/).filter(Boolean);
+  if (!words.length) return OPENROUTER_VENDORS.openrouter;
+  const name = words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+  const mark = words.length > 1
+    ? `${words[0].charAt(0)}${words[1].charAt(0)}`.toUpperCase()
+    : `${words[0].charAt(0).toUpperCase()}${words[0].charAt(1)}`;
+  return { name, mark };
+}

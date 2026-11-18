@@ -1,6 +1,6 @@
 import "./git-workflow.css";
 import "./thread-pull-requests.css";
-import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   ArrowDownToLine,
   CheckCircle2,
@@ -15,17 +15,21 @@ import {
   GitFork,
   GitPullRequest,
   History,
+  Info,
+  ListTree,
   LoaderCircle,
   Minus,
   Plus,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  Sparkles,
   Upload,
 } from "lucide-react";
+import { createPortal } from "react-dom";
 import { AppActionMenu, type AppActionMenuItem } from "./AppActionMenu";
 import { AppSelectMenu } from "./AppSelectMenu";
-import { GitChangesView, type GitPathAction } from "./GitChangesView";
+import { FriendlyGitError, GitChangesView, type GitPathAction } from "./GitChangesView";
 import { GitHistoryView } from "./GitHistoryView";
 import type { GitHubRepoStatus } from "../lib/github";
 // Shapes owned by the Git workspace module. Imported as types only, so this
@@ -114,6 +118,64 @@ export interface GitPanelProps {
    * to what `githubRepoStatus` reports.
    */
   workflow?: GitWorkflowControls;
+  /**
+   * Which part of Git this instance shows. "changes" is the Tools panel dock's
+   * Changes tab: the commit box and the changed files (as a list, or as the
+   * full diff when `diffView` is given). "repository" is its Git tab: the
+   * checkout (branch, fetch, pull, push), pull requests and history.
+   * Omitted, the panel shows everything behind its own view switcher.
+   */
+  surface?: "changes" | "repository";
+  /** Changes surface only: the full diff review shown under "Diff". */
+  diffView?: ReactNode;
+  /**
+   * Changes surface only: the diff review, given the file selected in Files so
+   * both views stay on the same file. Wins over `diffView`.
+   */
+  renderDiff?: (context: {
+    selectedPath: string | null;
+    onSelectPath: (path: string | null) => void;
+    /** Paths with uncommitted edits right now (the Files list), once read. */
+    livePaths: ReadonlySet<string> | null;
+  }) => ReactNode;
+  /** Changes surface only: a line above the commit bar when the diff shows something other than what Commit records. */
+  commitContextNote?: ReactNode;
+  /**
+   * Changes surface only: the Diff shows a read-only comparison (since last
+   * push), not the uncommitted set. While it does, the footer offers no commit
+   * and the "…" menu no bulk Git changes, so nothing acts on a different set
+   * from the one listed; one action switches to Uncommitted instead.
+   */
+  comparison?: { onSwitch: () => void };
+  /**
+   * Changes surface only: the Diff can show the staged version alone. When a
+   * staged commit would record something other than the full diff, the
+   * commit bar says so and links here (Sol R5 B01).
+   */
+  stagedReview?: { active: boolean; onChange: (on: boolean) => void };
+  /** Changes surface only: the diff couldn't be read, so Commit steps back behind the recovery path. */
+  diffUnavailable?: boolean;
+  /** Changes surface only: a line above the commit bar (an unsent review note in wide review). */
+  footerNote?: ReactNode;
+  /** Changes surface only: commands placed first in the "…" menu (AI review, wrap long lines). */
+  extraMenuItems?: AppActionMenuItem[];
+  /** Changes surface only: how many files the Diff view lists, shown on its toggle. */
+  diffCount?: number;
+  /** Changes surface only: extra commands for the toolbar row (Run checks). */
+  toolbarExtra?: ReactNode;
+  /** Changes surface only: reports each settled read of the file list. */
+  onChangesLoaded?: (state: { loadedAt: number | null; loading: boolean }) => void;
+  /** Changes surface only: where the "More Git actions" menu goes (the panel header), instead of the toolbar. */
+  moreMenuHost?: HTMLElement | null;
+  /** Changes surface only: select this file (from the transcript), once per nonce. */
+  selectRequest?: { path: string; nonce: number } | null;
+  /** Changes surface only: list or full diff; the dock keeps it across tab switches. */
+  changesMode?: "list" | "diff";
+  onChangesModeChange?: (mode: "list" | "diff") => void;
+  /** Changes surface only: the dock header already offers Refresh. */
+  hideChangesRefresh?: boolean;
+  /** Changes surface only: +added −removed lines per repository path, when a diff against HEAD is loaded. */
+  lineCounts?: ReadonlyMap<string, { additions: number; deletions: number }>;
   /** Which Git view is showing; the dock keeps it across tab switches. */
   view?: GitView;
   onViewChange?: (view: GitView) => void;
@@ -128,13 +190,15 @@ export interface GitPanelProps {
   onOpenGitHubSettings: () => void;
 }
 
-const THREAD_READ_ONLY_REASON = "Switch this thread from Read only to Ask or Full access before changing Git or contacting GitHub.";
+const THREAD_READ_ONLY_REASON = "Switch this thread from Read only to Ask to act or Full access before changing Git or contacting GitHub.";
 
 const VIEWS: Array<{ id: GitView; label: string; icon: typeof FileDiff }> = [
   { id: "changes", label: "Changes", icon: FileDiff },
   { id: "pulls", label: "Pull requests", icon: GitPullRequest },
   { id: "history", label: "History", icon: History },
 ];
+/** The dock's Git tab: Changes has a tab of its own there. */
+const REPOSITORY_VIEWS = VIEWS.filter((entry) => entry.id !== "changes");
 
 function focusTarget(root: HTMLElement | null, target: GitFocusTarget): HTMLElement | null {
   const node = root?.querySelector<HTMLElement>(`[data-git-focus="${target}"]`);
@@ -194,7 +258,7 @@ function commitReadiness(input: {
 function GitPanelInner(props: GitPanelProps) {
   const READ_ONLY_REASON = props.readOnlyReason ?? THREAD_READ_ONLY_REASON;
   // These fields are local so typing a commit message does not re-render the
-  // conversation, the sidebar, and every other Workspace surface.
+  // conversation, the sidebar, and every other Tools surface.
   const [localDraft, setLocalDraft] = useState<GitPanelDraft>({ commitMessage: "", remoteInput: "", repositoryName: props.defaultRepositoryName, visibility: "private" });
   const draft = props.draft ?? localDraft;
   const { commitMessage, remoteInput, repositoryName, visibility } = draft;
@@ -205,6 +269,10 @@ function GitPanelInner(props: GitPanelProps) {
   }, [onDraftChange]);
   const updateDraft = (patch: Partial<GitPanelDraft>) => setDraft({ ...draft, ...patch });
   const messageRef = useRef<HTMLTextAreaElement>(null);
+  // In the Changes tab the commit bar rests as one line (message + button) and
+  // opens into the full editor while the message field has focus.
+  const [commitEditing, setCommitEditing] = useState(false);
+  const commitCollapsedRef = useRef(false);
   const [preparingCommit, setPreparingCommit] = useState(false);
   const preparingCommitRef = useRef(false);
   const [commitDraftNotice, setCommitDraftNotice] = useState("");
@@ -214,17 +282,27 @@ function GitPanelInner(props: GitPanelProps) {
   commitContextRef.current = currentCommitContext;
   const mountedRef = useRef(true);
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
-  const [localView, setLocalView] = useState<GitView>("changes");
-  const view = props.view ?? localView;
+  const surface = props.surface;
+  const [localView, setLocalView] = useState<GitView>(surface === "repository" ? "history" : "changes");
+  const requestedView = props.view ?? localView;
+  // Each surface shows only its own views.
+  const view: GitView = surface === "changes" ? "changes"
+    : surface === "repository" && requestedView === "changes" ? "history" : requestedView;
+  const views = surface === "repository" ? REPOSITORY_VIEWS : VIEWS;
+  const [localChangesMode, setLocalChangesMode] = useState<"list" | "diff">("list");
+  const hasDiffView = Boolean(props.renderDiff || props.diffView);
+  const changesMode = hasDiffView ? props.changesMode ?? localChangesMode : "list";
+  const setChangesMode = (mode: "list" | "diff") => { setLocalChangesMode(mode); props.onChangesModeChange?.(mode); };
   // Grow with the message up to the CSS cap, then scroll. Width changes only
   // matter for wrapping, so the observer ignores the height this sets.
   const resizeMessage = useCallback(() => {
     const node = messageRef.current;
     if (!node) return;
+    if (commitCollapsedRef.current) { node.style.height = ""; return; }
     node.style.height = "auto";
     node.style.height = `${Math.min(220, Math.max(54, node.scrollHeight + node.offsetHeight - node.clientHeight))}px`;
   }, []);
-  useLayoutEffect(resizeMessage, [commitMessage, resizeMessage]);
+  useLayoutEffect(resizeMessage, [commitMessage, resizeMessage, commitEditing]);
   useLayoutEffect(() => {
     const node = messageRef.current;
     if (!node) return;
@@ -309,6 +387,37 @@ function GitPanelInner(props: GitPanelProps) {
     workflow && (workflow.readRevision !== undefined || snapshot?.changes !== undefined || snapshot?.changesError !== undefined) ? workflow : undefined);
   const history = useProjectGitHistory(absent ? undefined : props.inspection, view === "history");
   const plan = commitPlan(changes.changes, snapshot);
+  const onChangesLoaded = props.onChangesLoaded;
+  useEffect(() => {
+    if (surface === "changes") onChangesLoaded?.({ loadedAt: changes.loadedAt, loading: changes.loading });
+  }, [changes.loadedAt, changes.loading, onChangesLoaded, surface]);
+  // Selecting a file by path (Diff, or a file named in the transcript) picks
+  // the row Files shows for it: the newest edits first, then staged, then new.
+  const changeRows = changes.changes?.rows;
+  const changesSelect = changes.select;
+  const selectPath = useCallback((path: string | null) => {
+    if (!path) { changesSelect(null); return; }
+    const rows = (changeRows ?? []).filter((row) => row.path === path);
+    const row = rows.find((entry) => entry.area === "unstaged") ?? rows.find((entry) => entry.area === "staged") ?? rows[0];
+    changesSelect(row ? { path: row.path, area: row.area } : null);
+  }, [changeRows, changesSelect]);
+  const [requestedPath, setRequestedPath] = useState<string | null>(null);
+  const handledSelectNonce = useRef(0);
+  const selectRequest = props.selectRequest;
+  useEffect(() => {
+    if (!selectRequest || selectRequest.nonce <= handledSelectNonce.current || !changeRows) return;
+    handledSelectNonce.current = selectRequest.nonce;
+    // A path the list doesn't hold (only in the push comparison, or no longer
+    // changed) can still open in Diff. The explicit request always wins over
+    // whatever was selected before, so Diff never falls back to an older file.
+    if (changeRows.some((row) => row.path === selectRequest.path)) { setRequestedPath(null); selectPath(selectRequest.path); }
+    else { changesSelect(null); setRequestedPath(selectRequest.path); }
+    window.requestAnimationFrame(() => {
+      rootRef.current?.querySelector<HTMLElement>(".git-change-row.selected")?.scrollIntoView?.({ block: "nearest" });
+    });
+  }, [changeRows, changesSelect, selectPath, selectRequest]);
+  const diffSelectedPath = requestedPath ?? changes.selected?.path ?? null;
+  const livePaths = useMemo(() => changeRows ? new Set(changeRows.map((row) => row.path)) : null, [changeRows]);
   const staged = snapshot?.stagedFiles ?? plan.staged;
   const changed = plan.all;
   const readiness = commitReadiness({
@@ -339,7 +448,9 @@ function GitPanelInner(props: GitPanelProps) {
   useEffect(() => {
     if (!focusRequest || handledFocusNonce.current === focusRequest.nonce) return;
     setRouteNotice(null);
-    if (focusRequest.view !== view) setView(focusRequest.view);
+    // A surface only switches between its own views; the checkout and the
+    // commit box are always visible on theirs.
+    if (focusRequest.view !== view && surface !== "changes" && !(surface === "repository" && focusRequest.view === "changes")) setView(focusRequest.view);
     const target = focusRequest.focus;
     let frames = 0;
     let noticeFrames = 0;
@@ -494,51 +605,49 @@ function GitPanelInner(props: GitPanelProps) {
     ]
     : [];
 
+  // One line per item; the one destructive command sits last, apart.
   const localItems: AppActionMenuItem[] = [
     {
       id: "stage",
       label: "Stage all",
-      description: "Marks every current change for the next commit.",
       icon: <Plus size={13} aria-hidden="true" />,
       disabled: mutationDisabled,
-      title: mutationDisabled ? mutationDisabledReason : "Stage every current change",
+      title: mutationDisabled ? mutationDisabledReason : "Mark every current change for the next commit",
       onSelect: () => props.onAction("stage"),
     },
     {
       id: "unstage",
       label: "Unstage all",
-      description: "Keeps the edits; removes them from the next commit.",
       icon: <Minus size={13} aria-hidden="true" />,
       disabled: mutationDisabled || (!!snapshot && !hasStaged),
       title: mutationDisabled
         ? mutationDisabledReason
-        : !!snapshot && !hasStaged ? "Nothing is staged." : "Unstage everything currently staged",
+        : !!snapshot && !hasStaged ? "Nothing is staged." : "Keep the edits, but take them out of the next commit",
       onSelect: () => props.onAction("unstage"),
-    },
-    {
-      id: "revert",
-      label: "Revert all changes…",
-      description: "Restores committed files and unstages everything. Added and new files are kept. Asks first.",
-      icon: <RotateCcw size={13} aria-hidden="true" />,
-      danger: true,
-      disabled: mutationDisabled,
-      title: mutationDisabled ? mutationDisabledReason : "Restore committed files; keep added, renamed-destination and untracked file contents",
-      onSelect: () => props.onAction("revert"),
     },
     // Raw Git output stays one step away for anyone who wants Git's own words.
     {
       id: "status",
-      label: "Show git status output",
-      description: "Read-only. Prints Git's own summary below.",
+      label: "Show Git status output",
       icon: <RefreshCw size={13} aria-hidden="true" />,
+      title: "Read-only. Prints Git's own summary below.",
       onSelect: () => props.onAction("status"),
     },
     {
       id: "diff",
       label: "Show full diff output",
-      description: "Read-only. Every tracked change against the last commit.",
       icon: <CodeXml size={13} aria-hidden="true" />,
+      title: "Read-only. Every tracked change against the last commit.",
       onSelect: () => props.onAction("diff"),
+    },
+    {
+      id: "revert",
+      label: "Revert all changes…",
+      icon: <RotateCcw size={13} aria-hidden="true" />,
+      danger: true,
+      disabled: mutationDisabled,
+      title: mutationDisabled ? mutationDisabledReason : "Restore committed files and unstage everything. Added and new files are kept. Asks first.",
+      onSelect: () => props.onAction("revert"),
     },
   ];
 
@@ -577,28 +686,97 @@ function GitPanelInner(props: GitPanelProps) {
     // evidence about GitHub *now*, and they do not claim to be.
     ? upstream
       ? ahead !== null && behind !== null
-        ? `Compared with ${upstreamLabel}: ${ahead} to push, ${behind} to pull · ${fetched ? `fetched ${fetched}` : "last known · not fetched this session"}`
+        ? `Tracking ${upstreamLabel} · ${fetched ? `fetched ${fetched}` : "not fetched yet this session"}`
         : `Tracking ${upstreamLabel}; push and pull counts are unavailable. Refresh to check again.`
-      : `${branch ?? "This branch"} has no tracked branch here yet. Pushing sets one.`
+      : `${branch ?? "This branch"} isn't on ${repository} yet. Pushing publishes it.`
     : props.githubAuthenticated
       ? "This project has no GitHub remote set up in Mythra Code."
       : "Attach an existing repository, or connect your GitHub account to create one.");
+  // Opus R6 D12: the everyday case fits one line at the default dock width
+  // ("Shared folder · origin · not fetched"); the full sentence stays in the
+  // tooltip and for assistive tech.
+  const syncShort = !props.githubRepoError && repository && upstream && ahead !== null && behind !== null
+    ? `${upstreamLabel} · ${fetched ? `fetched ${fetched}` : "not fetched"}`
+    : null;
 
   const onTabKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const index = VIEWS.findIndex((entry) => entry.id === view);
-    const next = event.key === "ArrowRight" ? (index + 1) % VIEWS.length
-      : event.key === "ArrowLeft" ? (index - 1 + VIEWS.length) % VIEWS.length
-        : event.key === "Home" ? 0 : event.key === "End" ? VIEWS.length - 1 : -1;
+    const index = views.findIndex((entry) => entry.id === view);
+    const next = event.key === "ArrowRight" ? (index + 1) % views.length
+      : event.key === "ArrowLeft" ? (index - 1 + views.length) % views.length
+        : event.key === "Home" ? 0 : event.key === "End" ? views.length - 1 : -1;
     if (next < 0) return;
     event.preventDefault();
-    setView(VIEWS[next].id);
-    event.currentTarget.querySelector<HTMLButtonElement>(`[data-git-view="${VIEWS[next].id}"]`)?.focus();
+    setView(views[next].id);
+    event.currentTarget.querySelector<HTMLButtonElement>(`[data-git-view="${views[next].id}"]`)?.focus();
   };
 
-  const commitCard = (
+  const pushReady = !!repository && (readiness === "push" || readiness === "push-unknown");
+  // The label names exactly what the button records: the staged files, or
+  // every uncommitted file (the Files list, and the default Diff scope).
+  const commitLabel = commitStaged ? `Commit ${staged} staged` : changed ? `Commit all ${fileCount(changed)}` : "Commit";
+  const commitTitle = mutationDisabled
+    ? mutationDisabledReason
+    : commitStaged
+      ? `Commit the ${fileCount(staged)} you staged${plan.heldBack ? `; newer edits to ${plan.heldBack} of them stay out` : ""}. ${autoPublish?.enabled ? "Automatic publishing pushes it." : "Nothing is pushed."}`
+      : `Stage and commit every current change to this repository. ${autoPublish?.enabled ? "Automatic publishing pushes it." : "Nothing is pushed."}`;
+  const commitMenuItems: AppActionMenuItem[] = repository ? [{
+    id: "commit-push",
+    label: commitStaged ? "Commit staged & push" : "Commit & push",
+    icon: <Upload size={13} aria-hidden="true" />,
+    disabled: mutationDisabled || !branch,
+    // The same message the person is looking at: the button once
+    // committed under a default message while their text sat above it.
+    title: mutationDisabled
+      ? mutationDisabledReason
+      : !branch
+        ? "Check out a named branch before pushing"
+        : `Commit${commitStaged ? " the staged files" : " every current change"} and push it to ${repository}`,
+    onSelect: () => void commit(commitStaged ? "commitStagedPush" : "commitPush"),
+  }] : [];
+  const generateLabel = props.commitSuggestion ? "Write a new message" : "Generate message";
+  const commitSuccessNote = props.gitCommitSuccess ? (
+    <div className="git-commit-success" role="status" aria-live="polite">
+      <CheckCircle2 size={14} aria-hidden="true" />
+      <div><strong>Committed</strong><small>{props.gitCommitSuccess}</small></div>
+    </div>
+  ) : null;
+
+  // Review first, commit last: in the Changes tab the bar is the panel's
+  // footer, the same place for one file or a hundred. At rest it is one line
+  // (message and button); it opens into the full editor while the message
+  // field has focus, or while something needs reading (a notice, progress).
+  const commitCollapsed = surface === "changes" && !commitEditing && !commitProgress && !commitDraftNotice;
+  // A staged commit records less than (or something other than) the full
+  // diff whenever other files changed too or a staged file has newer edits.
+  // Say what it records, one click from seeing exactly that.
+  const stagedDiverges = commitStaged && (plan.heldBack > 0 || changed > staged);
+  const stagedReview = props.stagedReview;
+  const commitTargetNote = surface === "changes" && stagedReview && !commitProgress && (stagedDiverges || stagedReview.active) ? (
+    <p className="git-commit-target">
+      <span>{stagedReview.active && !commitStaged
+        // Sol R6 B01: never let the patch and the commit target disagree
+        // silently. Choosing All changes leaves the staged view (below);
+        // if the view is staged anyway, say what Commit includes.
+        ? `Viewing staged only · Commit includes all ${fileCount(changed)}.`
+        : stagedReview.active
+          ? `Showing the staged version: what Commit ${staged} staged records.`
+          : `Commit records the staged version of ${fileCount(staged)}${plan.heldBack ? `; newer edits to ${plan.heldBack} stay out` : ""}${changed > staged ? `, not the other ${fileCount(changed - staged)}` : ""}.`}</span>
+      <button type="button" onClick={() => { stagedReview.onChange(!stagedReview.active); }}>{stagedReview.active ? (commitStaged ? "Show all changes" : "Review all changes") : "Review staged"}</button>
+    </p>
+  ) : null;
+  commitCollapsedRef.current = commitCollapsed;
+  const commitCard = nothingToCommit && !commitProgress ? null : (
     <form
-      className="git-commit-card"
+      className={`git-commit-card git-commit-bar${commitCollapsed ? " collapsed" : ""}${surface === "changes" && props.diffUnavailable && changesMode === "diff" ? " diff-unavailable" : ""}`}
+      aria-label="Commit"
       aria-busy={commitProgress}
+      onFocus={(event) => { if ((event.target as Element) === messageRef.current) setCommitEditing(true); }}
+      onBlur={(event) => {
+        const next = event.relatedTarget as Node | null;
+        // Menus that render outside the form (More ways to commit) keep it open.
+        if (next && (event.currentTarget.contains(next) || (next instanceof Element && next.closest(".app-action-list")))) return;
+        setCommitEditing(false);
+      }}
       onSubmit={(event) => {
         event.preventDefault();
         // Enter in the message field must not attempt an empty commit.
@@ -606,128 +784,146 @@ function GitPanelInner(props: GitPanelProps) {
         void commit(commitStaged ? "commitStaged" : "commit");
       }}
     >
-      <div className="git-commit-heading">
-        <span><GitCommitHorizontal size={17} /></span>
-        <div>
-          <strong>Commit changes locally</strong>
-          <small>{nothingToCommit
-            ? `The working folder matches the last commit.${repository && (readiness === "push" || readiness === "push-unknown") ? " Saved commits can still be pushed." : ""}`
-            : commitStaged
-              ? `${fileCount(staged)} staged${plan.heldBack ? `; newer edits to ${plan.heldBack} of them stay out` : ""}. ${autoPublish?.enabled ? "Saved locally, then pushed by automatic publishing." : "Saved to this repository only — nothing is pushed."}`
-              : `Stages all current changes and saves them to this repository. ${autoPublish?.enabled ? "Automatic publishing will push the commit." : "Nothing is pushed."}`}</small>
-        </div>
-      </div>
-      {props.gitCommitSuccess && (
-        <div className="git-commit-success" role="status" aria-live="polite">
-          <CheckCircle2 size={18} />
-          <div><strong>Committed successfully</strong><small>{props.gitCommitSuccess}</small></div>
-        </div>
-      )}
-      {hasStaged && <div className="git-commit-scope" role="group" aria-label="Changes to commit">
-        <button type="button" aria-pressed={commitStaged} disabled={mutationBusy} onClick={() => updateDraft({ commitScope: "staged" })}>Staged changes ({staged})</button>
-        <button type="button" aria-pressed={!commitStaged} disabled={mutationBusy} onClick={() => updateDraft({ commitScope: "all" })}>All changes{changed ? ` (${changed})` : ""}</button>
+      {props.commitContextNote && <p className="git-commit-context">{props.commitContextNote}</p>}
+      {/* Sol R6 M01: Commit still works when the diff can't be read (the Git
+          snapshot is valid), so the footer says how to review first. */}
+      {surface === "changes" && props.diffUnavailable && changesMode === "diff" && !commitProgress && !nothingToCommit && <p className="git-commit-target">
+        <span>Full diff unavailable · review the changed files before committing.</span>
+        <button type="button" onClick={() => setChangesMode("list")}>Show changed files</button>
+      </p>}
+      {commitTargetNote}
+      {hasStaged && !commitCollapsed && <div className="git-commit-scope" role="group" aria-label="Changes to commit">
+        <button type="button" aria-pressed={commitStaged} disabled={mutationBusy} onClick={() => updateDraft({ commitScope: "staged" })}>Staged ({staged})</button>
+        <button type="button" aria-pressed={!commitStaged} disabled={mutationBusy} onClick={() => {
+          updateDraft({ commitScope: "all" });
+          // Sol R6 B01: committing everything while the staged-only patch is
+          // on screen would contradict what's shown, so the review follows
+          // the commit target. The draft and focus stay where they are.
+          if (stagedReview?.active) stagedReview.onChange(false);
+        }}>All changes{changed ? ` (${changed})` : ""}</button>
       </div>}
-      <label className="dock-field"><span>Commit message <em>{draft.commitMessageSuggestionId && !draft.commitMessageEdited ? "Suggested" : "Optional"}</em></span><textarea ref={messageRef} className="git-commit-message" rows={2} maxLength={8000} value={commitMessage} readOnly={commitProgress} onChange={(event) => {
-        setCommitDraftNotice("");
-        updateDraft({ commitMessage: event.target.value, commitMessageEdited: true });
-      }} onKeyDown={(event) => {
-        // Enter adds a body line; the modifier keeps the old keyboard commit.
-        if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey) || event.nativeEvent.isComposing) return;
-        event.preventDefault();
-        event.currentTarget.form?.requestSubmit();
-      }} placeholder={"Summarize these changes\n\nAdd details if needed"} data-git-focus="commit" /></label>
-      {(suggestedMessage || props.onRegenerateCommitMessage) && !nothingToCommit && <div className="git-commit-draft-actions">
-        {props.onRegenerateCommitMessage && <button type="button" className="github-secondary-button" disabled={mutationBusy || props.commitSuggestionBusy} onClick={props.onRegenerateCommitMessage}><RefreshCw size={12} /> Regenerate</button>}
-        {suggestedMessage && draft.commitMessageEdited && <button type="button" className="github-secondary-button" disabled={mutationBusy} onClick={() => {
-          const suggestion = props.commitSuggestion!;
-          updateDraft({ commitMessage: suggestedMessage, commitMessageEdited: false, commitMessageSuggestionId: suggestion.id, commitMessageToken: commitStaged ? suggestion.context.stagedToken : suggestion.context.changesToken });
+      <div className={`git-commit-field${draft.commitMessageSuggestionId && !draft.commitMessageEdited ? " suggested" : ""}`}>
+        <textarea ref={messageRef} className="git-commit-message" rows={commitCollapsed ? 1 : 2} wrap={commitCollapsed ? "off" : "soft"} maxLength={8000} value={commitMessage} readOnly={commitProgress} aria-label="Commit message" onChange={(event) => {
           setCommitDraftNotice("");
-        }}>Use suggestion</button>}
-      </div>}
-      {props.commitSuggestionBusy && !nothingToCommit && <p className="git-fineprint">The agent can refresh the suggestion when it finishes.</p>}
+          updateDraft({ commitMessage: event.target.value, commitMessageEdited: true });
+        }} onKeyDown={(event) => {
+          // Enter adds a body line; the modifier keeps the old keyboard commit.
+          if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey) || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          event.currentTarget.form?.requestSubmit();
+        }} placeholder={commitCollapsed ? "Commit message" : "Commit message (optional)"} data-git-focus="commit" />
+        {!commitCollapsed && (props.onRegenerateCommitMessage || (suggestedMessage && draft.commitMessageEdited) || (draft.commitMessageSuggestionId && !draft.commitMessageEdited)) && <div className="git-commit-field-actions">
+          {draft.commitMessageSuggestionId && !draft.commitMessageEdited && <span className="git-commit-suggested">Suggested</span>}
+          {suggestedMessage && draft.commitMessageEdited && <button type="button" className="git-commit-field-button" disabled={mutationBusy} onClick={() => {
+            const suggestion = props.commitSuggestion!;
+            updateDraft({ commitMessage: suggestedMessage, commitMessageEdited: false, commitMessageSuggestionId: suggestion.id, commitMessageToken: commitStaged ? suggestion.context.stagedToken : suggestion.context.changesToken });
+            setCommitDraftNotice("");
+          }}>Use suggestion</button>}
+          {props.onRegenerateCommitMessage && <button
+            type="button"
+            className="git-commit-field-button"
+            disabled={mutationBusy || props.commitSuggestionBusy}
+            onClick={props.onRegenerateCommitMessage}
+            title={props.commitSuggestionBusy ? "The agent is busy. Generate a message when it finishes." : "Ask the agent to write a message for these changes"}
+          ><Sparkles size={12} aria-hidden="true" /> {generateLabel}</button>}
+        </div>}
+      </div>
       {commitDraftNotice && <p className="git-local-note bad" role="status">{commitDraftNotice}</p>}
-      {commitProgress ? (
-        <button className="git-commit-button" type="button" disabled>
-          <LoaderCircle className="spin" size={16} />
-          {props.gitCommitBusy ? "Committing…" : "Working…"}
-        </button>
-      ) : commitStaged ? (
-          <button className="git-commit-button" type="submit" disabled={mutationDisabled} title={mutationDisabled ? mutationDisabledReason : `Commit the ${fileCount(staged)} you staged`}>
-            <GitCommitHorizontal size={16} />
-            {`Commit staged (${staged})`}
+      <div className="git-commit-actions">
+        {commitProgress ? (
+          <button className="git-commit-button" type="button" disabled>
+            <LoaderCircle className="spin" size={14} aria-hidden="true" />
+            {props.gitCommitBusy ? "Committing…" : "Working…"}
           </button>
-      ) : nothingToCommit ? (
-        <button className="git-commit-button git-commit-empty" type="submit" disabled title={mutationDisabled ? mutationDisabledReason : "Nothing to commit: no staged, unstaged or new files."}>
-          <GitCommitHorizontal size={16} />
-          Nothing to commit
-        </button>
-      ) : (
-        <button className="git-commit-button" type="submit" disabled={mutationDisabled} title={mutationDisabled ? mutationDisabledReason : "Stage and commit every current change to the local repository"}>
-          <GitCommitHorizontal size={16} />
-          Commit all changes locally
-        </button>
-      )}
-      {repository && !commitProgress && nothingToCommit && (
-        readiness === "synced" ? (
-          <button
-            type="button"
-            className="github-secondary-button git-commit-secondary git-commit-empty"
-            disabled
-            title={mutationDisabled ? mutationDisabledReason : `Nothing to commit, and ${branch} has no commits waiting to push.`}
-          ><Upload size={13} /> Nothing to commit and push</button>
         ) : (
-          <button
-            type="button"
-            className="github-secondary-button git-commit-secondary"
-            // Pushes existing commits only: no commit, and the message stays.
-            onClick={() => { if (!mutationDisabled && branch) props.onAction("push"); }}
-            disabled={mutationDisabled || readiness === "detached"}
-            title={mutationDisabled
-              ? mutationDisabledReason
-              : readiness === "detached"
-                ? "Check out a named branch before pushing"
-                : readiness === "push" && !upstream
-                  ? `Push ${branch} to ${repository} and track it there. Nothing new is committed.`
-                  : `Push saved commits on ${branch} to ${repository}. Nothing new is committed.`}
-          ><Upload size={13} /> Push</button>
-        )
+          <button className="git-commit-button" type="submit" disabled={mutationDisabled} title={commitTitle} aria-keyshortcuts="Meta+Enter Control+Enter">
+            <GitCommitHorizontal size={14} aria-hidden="true" />
+            {commitLabel}
+          </button>
+        )}
+        {commitMenuItems.length > 0 && !commitProgress && (
+          <AppActionMenu className="git-commit-more" label="" ariaLabel="More ways to commit" items={commitMenuItems} disabled={mutationDisabled} />
+        )}
+      </div>
+      {!commitProgress && !commitCollapsed && <CommitIncludes plan={plan} />}
+      {!commitProgress && autoPublish?.enabled && (
+        <p className="git-commit-publish"><Upload size={11} aria-hidden="true" /> Publishing is on: the commit is also pushed to {autoPublish.repository || repository || "GitHub"}.</p>
       )}
-      {repository && !commitProgress && !nothingToCommit && (
-        <button
-          type="button"
-          className="github-secondary-button git-commit-secondary"
-          // The same message the person is looking at: the button once
-          // committed under a default message while their text sat above it.
-          onClick={() => void commit(commitStaged ? "commitStagedPush" : "commitPush")}
-          disabled={mutationDisabled || !branch}
-          title={mutationDisabled
-            ? mutationDisabledReason
-            : !branch
-              ? "Check out a named branch before pushing"
-              : `Commit${commitStaged ? " the staged files" : " every current change"} and push it to ${repository}`}
-        ><Upload size={13} /> Commit &amp; push</button>
-      )}
-      {!commitProgress && !nothingToCommit && <CommitIncludes plan={plan} />}
     </form>
   );
 
+  /** A clean folder that still has saved commits to push offers just that. */
+  const cleanPush = nothingToCommit && !commitProgress && pushReady ? (
+    <div className="git-clean-push">
+      <span>{ahead ? `${ahead} commit${ahead === 1 ? "" : "s"} not pushed yet` : "Saved commits may not be pushed yet"}</span>
+      <button
+        type="button"
+        className="github-secondary-button"
+        // Pushes existing commits only: no commit, and the message stays.
+        onClick={() => { if (!mutationDisabled && branch) props.onAction("push"); }}
+        disabled={mutationDisabled}
+        title={mutationDisabled
+          ? mutationDisabledReason
+          : readiness === "push" && !upstream
+            ? `Push ${branch} to ${repository} and track it there. Nothing new is committed.`
+            : `Push saved commits on ${branch} to ${repository}. Nothing new is committed.`}
+      ><Upload size={13} aria-hidden="true" /> Push</button>
+    </div>
+  ) : null;
+
+  const initializeState = (
+    <div className="studio-empty git-initialize-state">
+      <GitBranch size={20} aria-hidden="true" />
+      <strong>Not a Git repository</strong>
+      <span>Initialize Git to review changes, commit, and use checkpoints and worktrees. Nothing is uploaded.</span>
+      <button type="button" className="studio-empty-action" onClick={props.onInitializeGit} disabled={props.gitInitializing || props.readOnly} aria-busy={props.gitInitializing} title={props.readOnly ? READ_ONLY_REASON : "Create a local Git repository and initial snapshot"}>
+        {props.gitInitializing ? <LoaderCircle className="spin" size={13} aria-hidden="true" /> : <GitBranch size={13} aria-hidden="true" />}
+        {props.gitInitializing ? "Initializing…" : "Initialize Git"}
+      </button>
+    </div>
+  );
+
+  // The console is evidence, not furniture: it appears once there is
+  // something in it.
+  const gitConsole = props.gitOutput ? (
+    <details className="git-console" open>
+      <summary><ChevronRight size={12} aria-hidden="true" /> Git output</summary>
+      <pre className="git-screen">{props.gitOutput}</pre>
+    </details>
+  ) : null;
+  const comparing = surface === "changes" && changesMode === "diff" && Boolean(props.comparison);
+  // In a comparison only Git's read-only printouts stay beside it.
+  const menuLocalItems = comparing ? localItems.filter((item) => item.id === "status" || item.id === "diff") : localItems;
+  const changesMenuItems: AppActionMenuItem[] = props.extraMenuItems?.length
+    ? [...props.extraMenuItems, { ...menuLocalItems[0], separatorBefore: true }, ...menuLocalItems.slice(1)]
+    : menuLocalItems;
+  const comparisonFooter = comparing ? (
+    <div className="git-comparison-footer" role="group" aria-label="Commit">
+      <p>
+        <strong>Read-only comparison</strong> with the tracked remote branch: commits not pushed yet, plus current edits.{" "}
+        {changed
+          ? `Commit, stage and discard the ${fileCount(changed)} not committed yet under Uncommitted.`
+          : "Nothing is waiting to be committed."}
+      </p>
+      <button type="button" className="github-secondary-button" onClick={props.comparison!.onSwitch} title="Show the uncommitted files, where Commit, Stage and Discard act on exactly what is listed">
+        <GitCommitHorizontal size={13} aria-hidden="true" /> {changed ? `Switch to Uncommitted (${changed})` : "Switch to Uncommitted"}
+      </button>
+    </div>
+  ) : null;
+
+  if (absent) {
+    return (
+      <div className="git-workspace" ref={rootRef}>
+        {props.readOnly && <div className="history-warning"><ShieldCheck size={13} /> {props.readOnlyReason ?? "Read only: switch thread access to Ask to act or Full access to initialize Git."}</div>}
+        {initializeState}
+      </div>
+    );
+  }
+
   return (
-    <div className="git-workspace" ref={rootRef}>
-      {props.readOnly && <div className="history-warning"><ShieldCheck size={13} /> {props.readOnlyReason ?? "Read only: you can inspect changes, history and pull requests. Switch thread access to Ask or Full access before changing Git or contacting GitHub."}</div>}
+    <div className={`git-workspace${surface === "changes" ? " changes-surface" : ""}`} ref={rootRef}>
+      {props.readOnly && <div className="history-warning"><ShieldCheck size={13} /> {props.readOnlyReason ?? "Read only: you can inspect changes, history and pull requests. Switch thread access to Ask to act or Full access before changing Git or contacting GitHub."}</div>}
       {outsideRepositoryRoot && <div className="git-local-note bad" role="alert"><CircleAlert size={13} aria-hidden="true" /><span>{rootRequiredReason}</span></div>}
-      {absent && (
-        <div className="git-initialize-card">
-          <span className="github-repo-icon"><GitBranch size={16} /></span>
-          <div>
-            <strong>This project is not a Git repository yet</strong>
-            <small>Create one locally to enable commits, per-file staging, checkpoints, and isolated worktrees. Nothing is pushed anywhere.</small>
-          </div>
-          <button className="github-secondary-button" onClick={props.onInitializeGit} disabled={props.gitInitializing || props.readOnly} aria-busy={props.gitInitializing} title={props.readOnly ? READ_ONLY_REASON : "Create a local Git repository and initial snapshot"}>
-            {props.gitInitializing ? <LoaderCircle className="spin" size={13} /> : <GitBranch size={13} />}
-            {props.gitInitializing ? "Preparing…" : "Initialize Git"}
-          </button>
-        </div>
-      )}
       {props.repositoryState === "unknown" && (
         <div className="history-warning">
           <ShieldCheck size={13} /> {props.repositoryStateDetail || "Mythra Code could not read this project's repository status."} Local Git actions stay available; GitHub actions need a working connection.
@@ -736,14 +932,11 @@ function GitPanelInner(props: GitPanelProps) {
 
       {/* ------------------- which checkout, and where it stands ------------------- */}
 
-      {!absent && (
+      {!absent && surface !== "changes" && (
         <section className="git-checkout" aria-label="Checkout">
           <div className="git-checkout-repo">
             <GitFork size={13} aria-hidden="true" />
             <strong title={repository ?? undefined}>{repository || (props.githubRepoError ? "GitHub status unavailable" : "No GitHub remote configured")}</strong>
-            <span className={`git-folder-chip${workflow?.isolated ? " isolated" : ""}`}>
-              {workflow ? (workflow.isolated ? "Isolated worktree" : "Shared project folder") : "Local repository"}
-            </span>
             {remoteItems.length > 0 && <AppActionMenu compact ariaLabel="More GitHub actions" items={remoteItems} />}
           </div>
           <div className="git-checkout-branch" data-git-focus="branch">
@@ -760,14 +953,18 @@ function GitPanelInner(props: GitPanelProps) {
             ) : (
               <span className="git-branch-static" title={branch ?? undefined}><GitBranch size={13} aria-hidden="true" /><span>{branch ?? "No branch checked out"}</span></span>
             )}
-            {repository && upstream && ahead !== null && behind !== null && (
-              <span className="git-sync-counts" title={`Compared with ${upstream}`}>
-                <span className={ahead ? "active" : ""} aria-label={`${ahead} to push`}><Upload size={11} aria-hidden="true" />{ahead}</span>
-                <span className={behind ? "active" : ""} aria-label={`${behind} to pull`}><ArrowDownToLine size={11} aria-hidden="true" />{behind}</span>
-              </span>
-            )}
           </div>
-          <p className="git-sync-line" id={syncId} title={upstream ? `Tracking ${upstream}` : undefined}>{syncText}</p>
+          {/* Repository, branch and where this checkout stands each get a line:
+              the folder kind and push/pull counts no longer squeeze the names. */}
+          <p className="git-sync-line" id={syncId} title={syncShort ? `${workflow ? (workflow.isolated ? "Isolated worktree" : "Shared project folder") : "Local repository"} · ${syncText}` : upstream ? `Tracking ${upstream}` : undefined}>
+            {syncShort ? <>
+              <span aria-hidden="true"><span className={`git-folder-label${workflow?.isolated ? " isolated" : ""}`}>{workflow ? (workflow.isolated ? "Isolated worktree" : "Shared folder") : "Local repository"}</span>{" · "}{syncShort}</span>
+              <span className="sr-only">{workflow ? (workflow.isolated ? "Isolated worktree" : "Shared project folder") : "Local repository"} · {syncText}</span>
+            </> : <>
+              <span className={`git-folder-label${workflow?.isolated ? " isolated" : ""}`}>{workflow ? (workflow.isolated ? "Isolated worktree" : "Shared project folder") : "Local repository"}</span>
+              {" · "}{syncText}
+            </>}
+          </p>
 
           {repository && (
             <div className="git-remote-actions" role="group" aria-label="Remote actions">
@@ -785,7 +982,7 @@ function GitPanelInner(props: GitPanelProps) {
                 disabled={mutationDisabled || !upstream}
                 aria-describedby={syncId}
                 title={mutationDisabled ? mutationDisabledReason : upstream ? `Fast-forward ${branch ?? "this branch"} from ${upstream}. Never merges or rewrites.` : "Set a tracked branch first"}
-              ><ArrowDownToLine size={13} aria-hidden="true" /> Pull</button>
+              ><ArrowDownToLine size={13} aria-hidden="true" /> Pull{upstream && behind !== null && behind > 0 ? <b aria-label={`${behind} to pull`}>{behind}</b> : null}</button>
               <button
                 type="button"
                 data-git-focus="push"
@@ -800,7 +997,6 @@ function GitPanelInner(props: GitPanelProps) {
               {!props.githubAuthenticated && <button type="button" onClick={props.onOpenGitHubSettings}>Connect account</button>}
             </div>
           )}
-          {repository && !upstream && branch && <p className="git-fineprint">Fetch updates what is known; Pull only fast-forwards; Push uploads committed work. None of them commits for you.</p>}
           {/* Commit, connect and initialize show their own progress. */}
           {(workflowBusy || props.gitOperationBusy) && (
             <p className="git-fineprint" role="status"><LoaderCircle className="spin" size={11} aria-hidden="true" /> Waiting for the current Git operation to finish…</p>
@@ -838,13 +1034,7 @@ function GitPanelInner(props: GitPanelProps) {
           )}
 
           {workflow?.branchNotice && <p className="git-fineprint">{workflow.branchNotice}</p>}
-          {workspaceError && (
-            <div className="git-local-note bad" role="alert">
-              <CircleAlert size={13} aria-hidden="true" />
-              <span>{workspaceError}</span>
-              <button type="button" className="thread-pr-inline-button" onClick={workflow.onRefresh}>Try again</button>
-            </div>
-          )}
+          {workspaceError && <FriendlyGitError raw={workspaceError} onRetry={workflow.onRefresh} />}
           {workflow?.notice && !workspaceError && (
             <div className="git-local-note" role="status" aria-live="polite">
               <CheckCircle2 size={13} aria-hidden="true" />
@@ -865,7 +1055,7 @@ function GitPanelInner(props: GitPanelProps) {
 
       {/* Publishing this project to GitHub is optional and stays folded away
           until asked for. It is not a step anyone is behind on. */}
-      {!repository && (
+      {!repository && surface !== "changes" && (
         <div className="github-connect-project">
           {!showGitHub ? (
             <button className="github-secondary-button" onClick={() => setShowGitHub(true)} aria-expanded={false}>
@@ -929,8 +1119,56 @@ function GitPanelInner(props: GitPanelProps) {
       {/* ------------------------------- views ------------------------------- */}
 
       {routeNotice && <p className="git-blocked-reason git-route-notice" role="status" tabIndex={-1} ref={routeNoticeRef} data-git-route-nonce={routeNotice.nonce}>{routeNotice.text}</p>}
+      {surface === "changes" ? <>
+        {commitSuccessNote}
+        <div className="git-changes-toolbar">
+          {hasDiffView && (
+            <div className="git-view-tabs git-changes-mode" role="group" aria-label="Show changes as">
+              <button type="button" aria-pressed={changesMode === "list"} className={changesMode === "list" ? "active" : ""} onClick={() => setChangesMode("list")} title="Uncommitted files grouped as staged, not staged and new. Select one to see its diff.">
+                <ListTree size={13} aria-hidden="true" /><span>Files</span>
+                {changed > 0 && <b aria-label={`${changed} changed`}>{changed}</b>}
+              </button>
+              <button type="button" aria-pressed={changesMode === "diff"} className={changesMode === "diff" ? "active" : ""} onClick={() => setChangesMode("diff")} title="Each changed file's diff, with notes for the agent">
+                <FileDiff size={13} aria-hidden="true" /><span>Diff</span>
+                {props.diffCount ? <b aria-label={`${props.diffCount} in the diff`}>{props.diffCount}</b> : null}
+              </button>
+            </div>
+          )}
+          {/* A comparison can't act on anything, so its toolbar holds no checks (Opus I4). */}
+          {props.toolbarExtra && !comparing && <div className="git-changes-extra studio-actions">{props.toolbarExtra}</div>}
+          <span className="git-changes-spacer" aria-hidden="true" />
+          {props.moreMenuHost
+            ? createPortal(<AppActionMenu compact ariaLabel="More Git actions" triggerTitle="More Git actions" items={changesMenuItems} />, props.moreMenuHost)
+            : <AppActionMenu compact ariaLabel="More Git actions" triggerTitle="More Git actions" items={changesMenuItems} />}
+        </div>
+        {/* The list or diff scrolls on its own; the commit bar below is the
+            panel's footer and never moves with it. */}
+        <div className="git-changes-scroll">
+        {changesMode === "diff" ? (props.renderDiff ? props.renderDiff({ selectedPath: diffSelectedPath, livePaths, onSelectPath: (path) => { setRequestedPath(null); selectPath(path); } }) : props.diffView) : (
+          <GitChangesView
+            changes={changes}
+            snapshot={snapshot}
+            absent={absent}
+            mutationDisabled={mutationDisabled}
+            mutationDisabledReason={mutationDisabledReason}
+            onPathAction={props.onPathAction}
+            onStageAll={() => props.onAction("stage")}
+            onUnstageAll={() => props.onAction("unstage")}
+            moreItems={localItems}
+            commit={null}
+            hideRefresh={props.hideChangesRefresh}
+            hideToolbar
+            lineCounts={props.lineCounts}
+            cleanNote={cleanPush}
+          />
+        )}
+        {gitConsole}
+        </div>
+        {props.footerNote}
+        {comparing ? comparisonFooter : commitCard}
+      </> : <>
       <div className="git-view-tabs" role="tablist" aria-label="Git views" onKeyDown={onTabKeyDown}>
-        {VIEWS.map(({ id, label, icon: Icon }) => (
+        {views.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
@@ -980,15 +1218,9 @@ function GitPanelInner(props: GitPanelProps) {
           <GitHistoryView history={history} branch={branch} currentHeadOid={snapshot?.headOid ?? null} currentHeadKnown={snapshot !== null} absent={absent} onOpenTool={props.onOpenTool} />
         )}
       </div>
+      </>}
 
-      {/* The console is evidence, not furniture: it appears once there is
-          something in it. */}
-      {props.gitOutput && (
-        <details className="git-console" open>
-          <summary><ChevronRight size={12} aria-hidden="true" /> Git output</summary>
-          <pre className="git-screen">{props.gitOutput}</pre>
-        </details>
-      )}
+      {surface !== "changes" && gitConsole}
     </div>
   );
 }
@@ -1005,7 +1237,7 @@ function CommitIncludes({ plan }: { plan: CommitPlan }) {
   );
   return (
     <details className="git-commit-includes">
-      <summary><ChevronRight size={11} aria-hidden="true" /> What each commit includes</summary>
+      <summary><ChevronRight size={11} aria-hidden="true" /> What's included</summary>
       {plan.staged > 0 && (
         <div>
           <strong>Commit staged · {fileCount(plan.staged)}</strong>
@@ -1057,13 +1289,15 @@ function AutoPublishControl({ autoPublish, repository, disabled, disabledReason 
             title={autoPublish.hostOnly ?? disabledReason}
           />
           <span>
-            <strong>Automatically publish branches and commits</strong>
-            <small>{enabled ? `On for ${repository}` : "Off — nothing is pushed unless you push"}</small>
+            <strong>Publish automatically</strong>
+            <small>{enabled
+              ? `On for this project: new commits and branches are pushed to ${repository}`
+              : "Off for this project: nothing is pushed until you choose Push"}</small>
           </span>
         </label>
         {!confirming && (
-          <button type="button" className="thread-pr-inline-button" aria-expanded={expanded} aria-controls={explanationId} onClick={() => setExpanded(!expanded)}>
-            {expanded ? "Hide details" : "What it does"}
+          <button type="button" className="git-auto-publish-info" aria-expanded={expanded} aria-controls={explanationId} aria-label={expanded ? "Hide what automatic publishing does" : "What automatic publishing does"} title={expanded ? "Hide details" : "What it does"} onClick={() => setExpanded(!expanded)}>
+            <Info size={13} aria-hidden="true" />
           </button>
         )}
       </div>

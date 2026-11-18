@@ -1,5 +1,5 @@
 .skill-card.skill-card-selected {
-  outline: 2px solid var(--green);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 .skill-reference-guide { margin: 12px 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; }
@@ -59,7 +59,7 @@
 .official-skill-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 248px), 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
 .official-skill-card { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 11px 12px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); transition: border-color var(--t-fast) ease; }
 .official-skill-card:hover { border-color: var(--line-strong); }
-.official-skill-card:focus-within { border-color: var(--green-line); }
+.official-skill-card:focus-within { border-color: var(--accent-line); }
 .official-skill-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
 .official-skill-head > strong { min-width: 0; color: var(--text); font-size: var(--fs-ui); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
 .official-skill-head-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; }
@@ -89,7 +89,7 @@
 .official-skill-license::before { content: "·"; margin-right: 8px; color: var(--line-strong); }
 .official-skill-action { min-height: 28px; margin-left: auto; padding: 0 10px; gap: 5px; font-size: var(--fs-meta); }
 .official-skill-card[data-state="installing"] .official-skill-action:disabled { opacity: 1; cursor: progress; }
-.official-skill-installed { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; margin-left: auto; color: var(--green); font-weight: 600; }
+.official-skill-installed { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; margin-left: auto; color: var(--accent); font-weight: 600; }
 
 /* Origin tag: identity, not status, so it stays neutral and mixed-case
    beside the uppercase Off / Modified state tags. */
@@ -123,14 +123,14 @@
 .skill-editor-read-only { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--r-chip, 6px); color: var(--muted); font-size: var(--fs-micro); font-weight: 600; line-height: 16px; }
 .skill-editor-dialog.is-read-only .skill-editor-field textarea { color: var(--ink-2); background: var(--lm-code-bg, var(--field)); cursor: default; }
 /* Focus stays visible on the read-only field, without the editable ring. */
-.skill-editor-dialog.is-read-only .skill-editor-field textarea:focus { border-color: var(--green-line); box-shadow: none; }
+.skill-editor-dialog.is-read-only .skill-editor-field textarea:focus { border-color: var(--accent-line); box-shadow: none; }
 
 /* Rounded squares, smoothed into squircles where the engine supports it. */
 @supports (corner-shape: squircle) {
-  .official-skill-library, .official-skill-card, .skill-source-details { border-radius: 16px; corner-shape: squircle; }
-  .official-skill-library > summary { border-radius: 16px; corner-shape: squircle; }
-  .official-skill-library-icon, .official-skill-note, .official-skill-folder-notice { border-radius: 11px; corner-shape: squircle; }
-  .skill-publisher-tag, .skill-editor-read-only, .official-skill-source, .skill-origin-mark, .official-skill-requirements-trigger { border-radius: 7px; corner-shape: squircle; }
+  .official-skill-library, .official-skill-card, .skill-source-details { border-radius: var(--r-lg); corner-shape: squircle; }
+  .official-skill-library > summary { border-radius: var(--r-lg); corner-shape: squircle; }
+  .official-skill-library-icon, .official-skill-note, .official-skill-folder-notice { border-radius: var(--r-md); corner-shape: squircle; }
+  .skill-publisher-tag, .skill-editor-read-only, .official-skill-source, .skill-origin-mark, .official-skill-requirements-trigger { border-radius: var(--r-sm); corner-shape: squircle; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -12,8 +12,11 @@ export function ModelFavoriteStar({
   label,
   favorite,
   onToggle,
+  keyHint,
 }: {
   model: string;
+  /** Key that moves focus from the model row to this star, named in its tooltip. */
+  keyHint?: string;
   /** Human-readable model name used in the accessible label. */
   label?: string;
   favorite: boolean;
@@ -25,8 +28,9 @@ export function ModelFavoriteStar({
       type="button"
       className={`model-star ${favorite ? "on" : ""}`}
       aria-pressed={favorite}
-      aria-label={favorite ? `Unstar ${name}` : `Star ${name}`}
-      title={favorite ? "Remove from favorites" : "Add to favorites"}
+      aria-label={`Favorite ${name}`}
+      // Same phrase as the row's visible "→ Favorite" hint (M07).
+      title={`${favorite ? "Unfavorite: remove from favorites" : "Favorite: add to favorites"}${keyHint ? ` (${keyHint} from the model row, ← back)` : ""}`}
       onClick={(event) => {
         // The star lives inside an open menu; toggling it must not also pick
         // the model or close the menu.
@@ -34,10 +38,8 @@ export function ModelFavoriteStar({
         event.stopPropagation();
         onToggle(model);
       }}
-      onKeyDown={(event) => {
-        // Arrow keys belong to the option list, not to this control.
-        if (event.key.startsWith("Arrow")) event.stopPropagation();
-      }}
+      // Composer model menus reach it with → from its model row and leave
+      // with ← (see useMenuKeyboard); Settings' AppSelectMenu reaches it with Tab.
     >
       <Star size={13} strokeWidth={2} {...(favorite ? { fill: "currentColor" } : {})} />
     </button>

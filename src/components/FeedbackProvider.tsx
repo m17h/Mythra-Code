@@ -23,6 +23,8 @@ interface FeedbackRegistry {
   messages: Map<string, string>;
   diffs: WeakMap<Element, { current: FeedbackDiffSource | undefined }>;
   openForMessage: (messageId: string, trigger: HTMLElement) => void;
+  /** Open the note editor for a range inside one registered source (a diff line chosen from the keyboard). */
+  openForRange: (source: HTMLElement, range: Range, anchor: Element | FeedbackRect, returnFocus?: HTMLElement | null) => boolean;
 }
 
 const FeedbackContext = createContext<FeedbackRegistry | null>(null);
@@ -198,7 +200,7 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
   const openForMessage = useCallback((messageId: string, trigger: HTMLElement) => {
     const source = trigger.closest("article")?.querySelector<HTMLElement>(`[data-feedback-message]`);
     if (!source || source.getAttribute("data-feedback-message") !== messageId) return;
-    const registry = { ...registryBase, enabled: true, openForMessage: () => {} };
+    const registry = { ...registryBase, enabled: true, openForMessage: () => {}, openForRange: () => false };
     // A selection inside this reply wins; otherwise the whole reply is cited.
     const selection = window.getSelection();
     const range = selection && !selection.isCollapsed && selection.rangeCount ? selection.getRangeAt(0) : null;
@@ -211,9 +213,17 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
     if (next) openEditor({ ...next, rect: toFeedbackRect(trigger.getBoundingClientRect()) }, trigger);
   }, [openEditor, registryBase]);
 
+  const openForRange = useCallback((source: HTMLElement, range: Range, anchor: Element | FeedbackRect, returnFocus?: HTMLElement | null) => {
+    const registry = { ...registryBase, enabled: true, openForMessage: () => {}, openForRange: () => false };
+    const next = candidateFromRange(registry, range, source);
+    if (!next) return false;
+    openEditor({ ...next, rect: anchor instanceof Element ? toFeedbackRect(anchor.getBoundingClientRect()) : anchor }, returnFocus ?? (anchor instanceof HTMLElement ? anchor : null));
+    return true;
+  }, [openEditor, registryBase]);
+
   const registry = useMemo<FeedbackRegistry>(
-    () => ({ ...registryBase, enabled, openForMessage }),
-    [enabled, openForMessage, registryBase],
+    () => ({ ...registryBase, enabled, openForMessage, openForRange }),
+    [enabled, openForMessage, openForRange, registryBase],
   );
   const registryRef = useRef(registry);
   useEffect(() => { registryRef.current = registry; });
@@ -344,7 +354,7 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
       setError(`This note could not be added. Feedback holds up to ${MAX_FEEDBACK_NOTES} notes, so send or remove some first.`);
       return;
     }
-    setAnnouncement(`Feedback added to the composer.`);
+    setAnnouncement("Feedback added. It waits in the message box until you send it.");
     window.getSelection()?.removeAllRanges();
     closeEditor();
   };
@@ -373,7 +383,7 @@ export function FeedbackProvider({ enabled, scopeKey = "", onAdd, children }: {
               key={draft.key}
               anchor={draft.anchor}
               comment={comment}
-              submitLabel="Add"
+              submitLabel="Add feedback"
               error={error}
               onComment={(value) => { setComment(value); if (error) setError(""); }}
               onSubmit={submit}
@@ -422,4 +432,14 @@ export function useFeedbackDiffSource(source: FeedbackDiffSource | undefined): (
     if (node && diffs) diffs.set(node, sourceRef);
   }, [diffs]);
   return source && registry?.enabled ? attach : undefined;
+}
+
+/**
+ * Opens the note editor for an explicit range inside a registered diff — the
+ * keyboard and gutter route to the same line feedback a text selection gives.
+ * Null while feedback is unavailable.
+ */
+export function useFeedbackRangeOpener(): ((source: HTMLElement, range: Range, anchor: Element | FeedbackRect, returnFocus?: HTMLElement | null) => boolean) | null {
+  const registry = useContext(FeedbackContext);
+  return registry?.enabled ? registry.openForRange : null;
 }

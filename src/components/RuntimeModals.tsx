@@ -1,16 +1,23 @@
-import type { ReactNode } from "react";
-import { Check, Download, ExternalLink, KeyRound, LoaderCircle, RotateCcw, ShieldCheck, TerminalSquare, X } from "lucide-react";
+import { useRef, type ReactNode } from "react";
+import { Download, ExternalLink, KeyRound, LoaderCircle, RotateCcw, ShieldCheck, TerminalSquare, X } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { useModalFocus } from "../hooks/useModalFocus";
+
+const CODEX_CLI_GUIDE = "https://learn.chatgpt.com/docs/codex/cli";
 
 function RuntimeDialog({ open, onClose, auth = false, mark, eyebrow, title, description, children }: {
   open: boolean; onClose: () => void; auth?: boolean; mark: ReactNode;
   eyebrow: string; title: string; description: string; children: ReactNode;
 }) {
   const prefix = auth ? "auth-required" : "runtime-setup";
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // Shared modal contract: the app behind is inert, Tab stays inside,
+  // Escape closes (same as "Not now"), focus returns to the opener.
+  useModalFocus(dialogRef, open, { onEscape: onClose });
   return (
     <div className={`modal-backdrop runtime-setup-backdrop ${auth ? "auth-required-backdrop" : ""} ${open ? "open" : "closed"}`} onMouseDown={onClose} aria-hidden={!open} inert={!open ? true : undefined}>
-      <div className={`runtime-setup-modal ${auth ? "auth-required-modal" : ""}`} role="dialog" aria-modal="true" aria-labelledby={`${prefix}-title`} onMouseDown={(event) => event.stopPropagation()}>
-        <button className="runtime-setup-close" onClick={onClose} aria-label={auth ? "Close sign-in prompt" : "Close Codex setup"}><X size={17} /></button>
+      <div ref={dialogRef} className={`runtime-setup-modal ${auth ? "auth-required-modal" : ""}`} role="dialog" aria-modal="true" aria-labelledby={`${prefix}-title`} onMouseDown={(event) => event.stopPropagation()}>
+        <button className="runtime-setup-close" onClick={onClose} aria-label={auth ? "Close sign-in prompt" : "Close Codex CLI setup"}><X size={17} /></button>
         <div className={`runtime-setup-mark ${auth ? "auth-mark" : ""}`}>{mark}</div>
         <div className="runtime-setup-copy">
           <span className="runtime-eyebrow">{eyebrow}</span>
@@ -35,18 +42,21 @@ export function RuntimeSetupModal({
   onRetry: () => void;
 }) {
   return (
-    <RuntimeDialog open={open} onClose={onClose} mark={<TerminalSquare size={25} />} eyebrow="One-time setup" title="Connect the Codex runtime" description="Install the official Codex CLI for OpenAI sign-in or API keys, OpenRouter, tools, approvals, and threads.">
+    <RuntimeDialog open={open} onClose={onClose} mark={<TerminalSquare size={25} />} eyebrow="One-time setup" title="Install the Codex CLI" description="Mythra Code uses the Codex CLI to run OpenAI, OpenRouter and LM Studio models. Install it, then check again here. Claude and Cursor don’t need it.">
+        {/* The install guide is the step that fixes this, so it leads; the
+            card is that same link, not a decorative option. */}
         <div className="runtime-options">
-          <div className="runtime-option recommended">
+          <button type="button" className="runtime-option recommended" onClick={() => void openUrl(CODEX_CLI_GUIDE)}>
             <span className="runtime-option-icon"><Download size={17} /></span>
-            <div><strong>Codex CLI <em>Recommended</em></strong><small>For macOS and Windows.</small></div>
-          </div>
+            <div><strong>Codex CLI installation guide</strong><small>Official instructions for macOS and Windows. Opens in your browser.</small></div>
+            <ExternalLink size={14} aria-hidden="true" />
+          </button>
         </div>
-        <div className="runtime-note"><Check size={13} /> ChatGPT sign-in uses your browser and Mythra Code’s isolated credential store.</div>
+        {/* D15/M13: one install-guide action (the card above). The sign-in
+            note belonged to a different step, so it's gone from here. */}
         <div className="runtime-setup-actions">
           <button className="secondary-button" onClick={onClose}>Not now</button>
-          <button className="secondary-button" onClick={() => void openUrl("https://learn.chatgpt.com/docs/codex/cli")}><ExternalLink size={13} /> Installation guide</button>
-          <button className="primary-button" onClick={onRetry} disabled={checking}>{checking ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={13} />} Try again</button>
+          <button className="secondary-button" onClick={onRetry} disabled={checking}>{checking ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={13} />} {checking ? "Checking…" : "Check again"}</button>
         </div>
     </RuntimeDialog>
   );

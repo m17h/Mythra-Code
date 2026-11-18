@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { EmptyState } from "./SettingsBits";
 import { save } from "@tauri-apps/plugin-dialog";
 import { downloadDir, join } from "@tauri-apps/api/path";
 import { Copy, Download, FolderCog, Upload } from "lucide-react";
@@ -66,7 +67,7 @@ function partSummary(part: ProjectProfilePart, overrides: ProjectOverrides): str
 const PART_LABEL = new Map(PROJECT_PROFILE_PARTS.map((part) => [part.id, part.label]));
 
 /**
- * Settings → Projects → Project profiles. Every project that differs from the
+ * Settings → Projects → Copy and share. Every project that differs from the
  * app defaults, what it changes, and ways to reuse that: copy it to another
  * project or export it as a file someone else can import. Edits go into the
  * Settings draft like the rest of the pane, so Save and Cancel still apply.
@@ -144,7 +145,7 @@ export function ProjectProfiles({ projects, onProjects, onAppliedToActive, activ
     const next = applyProjectProfile(target, pending.settings, chosen);
     onProjects(projects.map((project) => project.id === target.id ? next : project));
     if (target.id === activeProjectId) onAppliedToActive(next);
-    setStatus(`Applied to ${target.name}. Save Settings to keep it.`);
+    setStatus(`Applied to ${target.name}.`);
     setPending(null);
   };
 
@@ -163,7 +164,7 @@ export function ProjectProfiles({ projects, onProjects, onAppliedToActive, activ
   return (
     <div className="set-group project-profiles">
       <div className="set-group-head">
-        <h4>Project profiles</h4>
+        <h4>Copy and share</h4>
         <button type="button" className="secondary-button compact" disabled={!eligible.length} onClick={() => fileRef.current?.click()}><Upload size={12} /> Import…</button>
         <input ref={fileRef} type="file" accept=".json,application/json" hidden aria-label="Import project profile" onChange={(event) => {
           const file = event.target.files?.[0];
@@ -171,7 +172,7 @@ export function ProjectProfiles({ projects, onProjects, onAppliedToActive, activ
           if (file) void importFile(file);
         }} />
       </div>
-      <p>What each project changes from the app defaults, in one place. Copy a project&rsquo;s settings to another project, or export them as a file to share.</p>
+      <p>Copy a project&rsquo;s settings to another project, or export them to share.</p>
 
       {customized.length ? <div className="set-card project-profile-list">
         {customized.map((project) => {
@@ -190,7 +191,7 @@ export function ProjectProfiles({ projects, onProjects, onAppliedToActive, activ
             </div>
           </div>;
         })}
-      </div> : <div className="project-default-empty"><FolderCog size={18} /><span><strong>Every project uses the app defaults</strong><small>Projects show up here once they have their own provider, instructions, Run or Check command, or sub-agent settings.</small></span></div>}
+      </div> : <EmptyState icon={FolderCog} title="Nothing to share yet" detail="Projects appear here once they have their own settings." />}
 
       {pending && <div className="set-card project-profile-review" role="group" aria-label="Apply project profile">
         <div className="project-profile-review-head">
@@ -199,7 +200,7 @@ export function ProjectProfiles({ projects, onProjects, onAppliedToActive, activ
         </div>
         <div className="project-default-field">
           <span>Apply to</span>
-          <AppSelectMenu value={pending.targetId} options={targetOptions} ariaLabel="Project to apply the profile to" placeholder="Choose a project…" searchable={targetOptions.length > 8} emptyMessage="There is no other project to apply this to." onChange={(targetId) => setPending({ ...pending, targetId })} />
+          <AppSelectMenu portal value={pending.targetId} options={targetOptions} ariaLabel="Project to apply the profile to" placeholder="Choose a project…" searchable={targetOptions.length > 8} emptyMessage="There is no other project to apply this to." onChange={(targetId) => setPending({ ...pending, targetId })} />
         </div>
         <ul className="project-profile-parts">
           {pending.parts.map((part) => {

@@ -56,6 +56,18 @@ export function FileBrowser({ root, onAttach, source = LOCAL_FILES }: { root: st
   // then a small one used to render the large file's late response under the
   // small file's name.
   const previewRequestRef = useRef(0);
+  // One tab stop for the whole list (arrow keys move within it), and focus
+  // that lands back on the right row after opening a folder or closing a preview.
+  const listRef = useRef<HTMLDivElement>(null);
+  const [activePath, setActivePath] = useState<string | null>(null);
+  const focusFirstAfterLoad = useRef(false);
+  const focusRow = (path: string | null | undefined) => {
+    if (!path) return;
+    window.requestAnimationFrame(() => {
+      const row = [...(listRef.current?.querySelectorAll<HTMLButtonElement>("[data-file-row]") ?? [])].find((node) => node.dataset.fileRow === path);
+      row?.focus();
+    });
+  };
   const rootIsCurrent = directoryRoot === normalizedRoot;
   const loading = query.trim() ? searchLoading : directoryLoading;
 
@@ -136,6 +148,48 @@ export function FileBrowser({ root, onAttach, source = LOCAL_FILES }: { root: st
       .map((entry) => ({ path: joinPath(currentDirectory, entry.fileName), name: entry.fileName, directory: entry.isDirectory }));
   }, [currentDirectory, directory, normalizedRoot, query, results, rootIsCurrent, showIgnored]);
 
+  const rovingPath = entries.some((entry) => entry.path === activePath) ? activePath
+    : entries.some((entry) => entry.path === selected) ? selected : entries[0]?.path ?? null;
+  useEffect(() => {
+    if (!focusFirstAfterLoad.current || !entries.length) return;
+    focusFirstAfterLoad.current = false;
+    setActivePath(entries[0].path);
+    focusRow(entries[0].path);
+  }, [entries]);
+  const closePreview = () => {
+    const path = selected;
+    previewRequestRef.current += 1;
+    setSelected(null);
+    setPreview("");
+    setPreviewLoading(false);
+    focusRow(path);
+  };
+  const onListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[data-file-row]")];
+    const index = rows.indexOf(document.activeElement as HTMLButtonElement);
+    if (index < 0) return;
+    const entry = entries[index];
+    let next = -1;
+    if (event.key === "ArrowDown") next = Math.min(rows.length - 1, index + 1);
+    else if (event.key === "ArrowUp") next = Math.max(0, index - 1);
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = rows.length - 1;
+    else if (event.key === "ArrowRight" && entry?.directory) { event.preventDefault(); focusFirstAfterLoad.current = true; navigate(entry.path); return; }
+    else if ((event.key === "ArrowLeft" || event.key === "Backspace") && !query.trim() && currentDirectory !== normalizedRoot) {
+      event.preventDefault();
+      const from = currentDirectory;
+      goUp();
+      // Land on the folder just left, once its parent has listed.
+      setActivePath(from);
+      focusRow(from);
+      window.setTimeout(() => focusRow(from), 250);
+      return;
+    }
+    if (next < 0) return;
+    event.preventDefault();
+    setActivePath(entries[next]?.path ?? null);
+    rows[next].focus();
+  };
   const relativeDirectory = relativeDisplayPath(normalizedRoot, currentDirectory);
   const breadcrumbParts = rootIsCurrent ? pathSegments(relativeDirectory) : [];
 
@@ -196,14 +250,22 @@ export function FileBrowser({ root, onAttach, source = LOCAL_FILES }: { root: st
         <button className={`file-nav-button ${showIgnored ? "active" : ""}`} onClick={() => setShowIgnored((show) => !show)} aria-pressed={showIgnored} aria-label={showIgnored ? "Hide generated and ignored folders" : "Show generated and ignored folders"} title={showIgnored ? "Hide generated folders" : "Show generated folders"}>{showIgnored ? <EyeOff size={13} /> : <Eye size={13} />}</button>
       </div>
       <label className="file-search"><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the whole project…" />{loading || previewLoading ? <LoaderCircle className="spin" size={13} /> : query && <button onClick={() => setQuery("")} aria-label="Clear file search"><X size={12} /></button>}</label>
-      <div className="file-browser-body">
-        <div className="file-results" aria-label={query ? "Project search results" : "Folder contents"}>
-          {entries.map((entry) => <button key={entry.path} className={selected === entry.path ? "selected" : ""} onClick={() => void openEntry(entry.path, entry.directory)} title={entry.path}>{entry.directory ? <Folder size={13} /> : <File size={13} />}<span>{entry.name}</span>{entry.directory && <ChevronRight size={11} />}</button>)}
+      {/* The preview pane only takes room once there is a file to show. */}
+      <div className={`file-browser-body${rootIsCurrent && selected ? " has-preview" : ""}`}>
+        <div className="file-results" ref={listRef} role="group" aria-label={query ? "Project search results" : "Folder contents"} onKeyDown={onListKeyDown}>
+          {entries.map((entry) => <button key={entry.path} data-file-row={entry.path} tabIndex={entry.path === rovingPath ? 0 : -1} aria-current={selected === entry.path ? "true" : undefined} className={selected === entry.path ? "selected" : ""} onFocus={() => setActivePath(entry.path)} onClick={(event) => { if (entry.directory && event.detail === 0) focusFirstAfterLoad.current = true; void openEntry(entry.path, entry.directory); }} title={entry.path}>{entry.directory ? <Folder size={13} /> : <File size={13} />}<span>{entry.name}</span>{entry.directory && <ChevronRight size={11} />}</button>)}
           {!entries.length && !loading && <span className="file-empty">{directoryError || (query ? "No matching files" : "This folder is empty")}</span>}
         </div>
-        <div className="file-preview">
-          {rootIsCurrent && selected ? <><div className="file-preview-bar"><span>{relativeDisplayPath(normalizedRoot, selected)}</span>{onAttach && <button onClick={() => onAttach(selected)} aria-label={`Attach ${basename(selected)}`}><Paperclip size={11} /> Attach</button>}</div><pre>{previewLoading ? "Loading preview…" : preview}</pre></> : <div className="file-preview-empty"><File size={22} /><span>{query ? "Select a search result to preview it" : "Select a file to preview it"}</span></div>}
-        </div>
+        {rootIsCurrent && selected && (
+          <div className="file-preview" role="region" aria-label={`Preview of ${basename(selected)}`} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closePreview(); } }}>
+            <div className="file-preview-bar">
+              <span title={selected}>{relativeDisplayPath(normalizedRoot, selected)}</span>
+              {onAttach && <button onClick={() => onAttach(selected)} aria-label={`Attach ${basename(selected)}`}><Paperclip size={11} aria-hidden="true" /> Attach</button>}
+              <button className="file-preview-close" onClick={closePreview} aria-label="Close preview" title="Close preview (Esc)"><X size={12} aria-hidden="true" /></button>
+            </div>
+            <pre tabIndex={0} aria-label={`Contents of ${basename(selected)}`}>{previewLoading ? "Loading preview…" : preview}</pre>
+          </div>
+        )}
       </div>
     </div>
   );

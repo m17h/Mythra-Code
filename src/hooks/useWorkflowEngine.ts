@@ -264,11 +264,11 @@ function workflowPreflight(
   const localProvider = workflow.run.provider === "claude" || workflow.run.provider === "cursor";
   if (!current.runtimeAvailable && (!localProvider || workflow.steps.some((step) => step.type === "command"))) {
     return { ready: false, retryWhenReady: true, message: localProvider
-      ? "Install or reconnect the Codex runtime to run this workflow's shell-command steps. Its agent steps use the selected provider."
-      : "Install or reconnect the Codex runtime before running workflows." };
+      ? "Install or reconnect the Codex CLI to run this workflow’s command steps. Its agent steps use the selected provider."
+      : "Install or reconnect the Codex CLI before running workflows." };
   }
   if (workflow.run.provider === "openai" && !current.chatGptConnected) {
-    return { ready: false, retryWhenReady: true, message: "Sign in to ChatGPT or use an OpenAI API key before running this OpenAI workflow." };
+    return { ready: false, retryWhenReady: true, message: "Sign in with ChatGPT or use an OpenAI API key before running this OpenAI workflow." };
   }
   if (workflow.run.provider === "openrouter" && !current.openRouterReady) {
     return { ready: false, retryWhenReady: true, message: "Add an OpenRouter API key before running this workflow." };
@@ -391,7 +391,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
         || task.lastCompletedTurnId === storedWorkflow.unconfirmedCompletedTurnId
         || !TERMINAL_STATUSES.has(task.status)) {
         if (source === "manual") current.onError(storedWorkflow.unconfirmedBaselineUnknown
-          ? "The previous delivery has no known history baseline. Inspect its conversation; after confirming its work has stopped, recreate the recipe to resume runs."
+          ? "The previous delivery has no known history baseline. Inspect its conversation; after confirming its work has stopped, recreate the workflow to resume runs."
           : "The previous workflow delivery is still unconfirmed. Inspect or stop its conversation before starting another run.");
         return undefined;
       }
@@ -408,7 +408,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     const workflow = { ...preflight.workflow, run: { ...preflight.workflow.run, subagentsEnabled: false } };
     const userPrompt = invocation?.userPrompt?.trim() ?? "";
     if (userPrompt && !workflow.steps.some((step) => step.type === "agent")) {
-      current.onError("This recipe only runs commands. Use its inputs instead of an additional prompt.");
+      current.onError("This workflow only runs commands. Use its inputs instead of an additional prompt.");
       return undefined;
     }
 

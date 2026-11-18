@@ -39,6 +39,8 @@ export function XtermPanel({
   const cursorRef = useRef(0);
   const generationRef = useRef(0);
   const [notice, setNotice] = useState<LinkNotice | null>(null);
+  // The idle "Click a link…" hint only appears once the output holds a link.
+  const [hasLinks, setHasLinks] = useState(false);
   // Callers may pass new handlers on every render. The terminal reads the
   // latest ones through refs, so it is never torn down (and its screen never
   // blanked) just because a parent re-rendered.
@@ -167,10 +169,12 @@ export function XtermPanel({
         cursorRef.current = 0;
         terminal.reset();
         placeholderShown = false;
+        setHasLinks(false);
       }
       const { text, cursor } = outputStore.read(cursorRef.current);
       cursorRef.current = cursor;
       if (!text) return;
+      if (/\bhttps?:\/\/\S/.test(text)) setHasLinks(true);
       if (placeholderShown) {
         // Through the write queue, so it lands after the queued placeholder
         // rather than before it (reset() is immediate; writes are not).
@@ -216,12 +220,12 @@ export function XtermPanel({
             <span>Click to open</span>{" "}
             <code>{notice.url}</code>
           </span>
-        ) : (
+        ) : hasLinks ? (
           <span className="terminal-link-message">
             <ExternalLink size={11} aria-hidden="true" />
             <span>Click a link to open it in your browser</span>
           </span>
-        )}
+        ) : null}
       </div>
     </>
   );

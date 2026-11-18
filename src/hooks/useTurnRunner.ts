@@ -743,7 +743,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     }
     if (effectiveSettings.provider === "openai" && account?.type !== "chatgpt" && account?.type !== "apiKey") {
       if (!deferredDelivery) setAuthRequiredOpen(true);
-      setError("Sign in to ChatGPT or use an OpenAI API key before starting this prompt.");
+      setError("Sign in with ChatGPT or use an OpenAI API key before starting this prompt.");
       return false;
     }
     if (effectiveSettings.provider === "openrouter" && !openRouterReady) {

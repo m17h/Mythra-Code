@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Switch } from "../Switch";
 import { Check, ChevronDown, LoaderCircle, MonitorSmartphone, Radar, RefreshCw, Settings2 } from "lucide-react";
 import { safeErrorText } from "../../lib/errors";
 import { LOCAL_MACHINE, switchMachine, useActiveMachine } from "../../lib/remote/activeMachine";
@@ -43,6 +44,26 @@ export function MachineSwitcher({ onManageDevices }: { onManageDevices: () => vo
   }, []);
 
   useEffect(() => startRemoteDevices(), []);
+
+  const menuRef = useRef<HTMLDivElement>(null);
+  const focusFirstRow = useRef<"first" | "last" | null>(null);
+  const moveRow = useCallback((step: "next" | "previous" | "first" | "last") => {
+    const rows = Array.from(menuRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), [role='switch']:not(:disabled)") ?? [])
+      .filter((row) => row.getClientRects().length > 0);
+    if (!rows.length) return;
+    const index = rows.indexOf(document.activeElement as HTMLElement);
+    const next = step === "first" ? 0 : step === "last" ? rows.length - 1
+      : index < 0 ? (step === "next" ? 0 : rows.length - 1)
+      : (index + (step === "next" ? 1 : -1) + rows.length) % rows.length;
+    rows[next]?.focus();
+  }, []);
+  // Opened from the keyboard: focus lands on the first (or last) row.
+  useEffect(() => {
+    if (!open || !focusFirstRow.current) return;
+    const where = focusFirstRow.current;
+    focusFirstRow.current = null;
+    requestAnimationFrame(() => moveRow(where));
+  }, [moveRow, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -124,7 +145,19 @@ export function MachineSwitcher({ onManageDevices }: { onManageDevices: () => vo
         aria-label={`Choose a device, ${activeLabel}`}
         aria-controls={open ? menuId : undefined}
         title={remoteActive ? `Choose a device · ${activeLabel}` : "Choose which device to work on"}
-        onClick={() => setOpen((current) => !current)}
+        onClick={(event) => {
+          // detail is 0 for Enter/Space: keyboard users land on the first row.
+          if (event.detail === 0 && !open) focusFirstRow.current = "first";
+          setOpen((current) => !current);
+        }}
+        onKeyDown={(event) => {
+          // Same entry keys as every other menu: ↓ opens on the first row.
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          focusFirstRow.current = event.key === "ArrowUp" ? "last" : "first";
+          if (open) moveRow(event.key === "ArrowUp" ? "last" : "first");
+          else setOpen(true);
+        }}
       >
         {device && <StatusDot device={device} />}
         {!device && network?.localNetwork && <span className="machine-dot unreachable" role="img" aria-label="Local network access is off" />}
@@ -134,11 +167,17 @@ export function MachineSwitcher({ onManageDevices }: { onManageDevices: () => vo
       </button>
 
       {open && (
-        <div className="machine-menu" id={menuId} role="group" aria-label="Devices">
+        <div ref={menuRef} className="machine-menu" id={menuId} role="group" aria-label="Devices" onKeyDown={(event) => {
+          // ↑/↓ move between the rows and buttons; Home/End jump to the ends.
+          const step = { ArrowDown: "next", ArrowUp: "previous", Home: "first", End: "last" }[event.key] as "next" | "previous" | "first" | "last" | undefined;
+          if (!step || event.target instanceof HTMLInputElement) return;
+          event.preventDefault();
+          moveRow(step);
+        }}>
           <button type="button" className="machine-row" aria-pressed={!remoteActive} onClick={() => choose(LOCAL_MACHINE)}>
             <MonitorSmartphone size={14} aria-hidden="true" />
             <span className="machine-row-name">{local}</span>
-            {!remoteActive && <Check size={14} className="machine-row-check" aria-label="Selected" />}
+            {!remoteActive && <Check size={14} className="machine-row-check" aria-hidden="true" />}
           </button>
 
           {!ready && <p className="machine-menu-note" role="status">{initializationError ?? "Loading devices…"}</p>}
@@ -161,7 +200,7 @@ export function MachineSwitcher({ onManageDevices }: { onManageDevices: () => vo
               <StatusDot device={entry} />
               <span className="machine-row-name">{entry.name}</span>
               <small>{deviceStateLabel(entry)}</small>
-              {device?.fingerprint === entry.fingerprint && <Check size={14} className="machine-row-check" aria-label="Selected" />}
+              {device?.fingerprint === entry.fingerprint && <Check size={14} className="machine-row-check" aria-hidden="true" />}
             </button>
           ))}
 
@@ -186,8 +225,7 @@ export function MachineSwitcher({ onManageDevices }: { onManageDevices: () => vo
 
           {ready && snapshot && <div className="access-switch">
             <span>{HOSTING_LABEL}<small>Also shows this computer's name on your network.</small></span>
-            <button type="button" role="switch" aria-label={HOSTING_LABEL} aria-checked={snapshot.hosting} disabled={changing}
-              className={`toggle-switch ${snapshot.hosting ? "on" : ""}`} onClick={() => setHosting(!snapshot.hosting)}><span /></button>
+            <Switch checked={snapshot.hosting} onChange={(next) => setHosting(next)} label={HOSTING_LABEL} disabled={changing} />
           </div>}
           <button type="button" className="machine-row subtle" onClick={() => { closeMenu(); onManageDevices(); }}>
             <Settings2 size={14} aria-hidden="true" />

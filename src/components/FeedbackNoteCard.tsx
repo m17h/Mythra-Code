@@ -226,7 +226,7 @@ export function FeedbackNoteCard({ anchor, comment, submitLabel, error, stale, o
     <div className="feedback-card">
       <div className="feedback-card-head" title={summary.title}>
         <FeedbackAnchorIcon anchor={anchor} />
-        <strong>{summary.place}</strong>
+        <strong>{anchor.kind === "assistant" ? "Feedback on this reply" : summary.place}</strong>
         {summary.detail && <small>{summary.detail}</small>}
       </div>
       {quote && <blockquote className={`feedback-card-quote ${summary.code ? "code" : ""}`}>{quote}</blockquote>}

@@ -53,7 +53,7 @@ function activityFromItem(
     return { id, kind: "command", title: item.command ?? "Run command", detail: item.aggregatedOutput ?? item.cwd, status: item.status, timelineOrder, turnId, turnStatus };
   }
   if (item.type === "fileChange") {
-    return { id, kind: "file", workType: "files", title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`, itemCount: item.changes?.length, status: item.status, timelineOrder, turnId, turnStatus };
+    return { id, kind: "file", workType: "files", title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`, detail: fileChangePaths(item.changes), itemCount: item.changes?.length, status: item.status, timelineOrder, turnId, turnStatus };
   }
   if (item.type === "webSearch") {
     // History does not record the web-search item lifecycle. A live turn alone
@@ -167,4 +167,11 @@ export function timelineFromTurns(turns: Turn[] = [], options: ThreadTimelineOpt
   }
 
   return { messages, activities };
+}
+
+/** Paths of a Codex file-change item, one per line (undefined when none are named). */
+export function fileChangePaths(changes: unknown[] | undefined): string | undefined {
+  const paths = (changes ?? []).map((change) => change && typeof change === "object" && typeof (change as { path?: unknown }).path === "string"
+    ? (change as { path: string }).path : "").filter(Boolean);
+  return paths.length ? paths.join("\n") : undefined;
 }
