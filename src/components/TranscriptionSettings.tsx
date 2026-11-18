@@ -1,3 +1,4 @@
+import { rovingChoiceKeyDown, SettingInfo } from "./SettingsBits";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AudioLines, Check, ExternalLink, Info, KeyRound, LoaderCircle, RotateCcw, Trash2, Voicemail } from "lucide-react";
@@ -49,7 +50,7 @@ function ModeIcon({ mode }: { mode: TranscriptionMode }) {
 
 function keyStatusLabel(state: TranscriptionKeyState, checking: boolean): string {
   if (state === "saved") return "Key saved";
-  if (state === "missing") return "No key yet";
+  if (state === "missing") return "No key";
   if (state === "unavailable") return "Can't check";
   return checking ? "Checking…" : "Not checked";
 }
@@ -124,7 +125,8 @@ export function TranscriptionSettings({ visible, value, onChange, accountOpenRou
     ? {
       label: selectedModel,
       icon: <ModeIcon mode={selectedMode} />,
-      detail: catalogState.status === "loading" || catalogState.status === "idle" ? "Checking the model list…" : "Not in the current model list",
+      // A default is never a warning: name it plainly until the list loads.
+      detail: catalogState.status === "loading" || catalogState.status === "idle" ? "Checking the model list…" : settings.models?.[provider] ? "Your saved choice" : "Default",
     }
     : undefined;
   const providerLabel = TRANSCRIPTION_PROVIDER_LABELS[provider];
@@ -145,10 +147,10 @@ export function TranscriptionSettings({ visible, value, onChange, accountOpenRou
     <section className="settings-section transcription-settings">
       <div className="set-group">
         <h4>Transcription provider</h4>
-        <p>Press the microphone in the message box and speak. With a live dictation model your words appear in the draft as you talk; with other models the recording is transcribed when you press Done. The text stays in your draft to edit. Voice input never sends your message automatically.</p>
-        <div className="provider-cards transcription-provider-cards">
+        <p>In the message box, choose More (…) → Voice input and speak. Text lands in your draft and is never sent automatically. <SettingInfo label="How voice input works">With a live dictation model your words appear in the draft as you talk; with other models the recording is transcribed when you press Done. The text stays in your draft to edit.</SettingInfo></p>
+        <div className="provider-cards transcription-provider-cards" role="radiogroup" aria-label="Transcription provider" onKeyDown={rovingChoiceKeyDown}>
           {TRANSCRIPTION_PROVIDERS.map((id) => (
-            <button key={id} type="button" className={`provider-card ${provider === id ? "selected" : ""}`} aria-pressed={provider === id} onClick={() => chooseProvider(id)}>
+            <button key={id} type="button" role="radio" aria-checked={provider === id} tabIndex={provider === id ? 0 : -1} className={`provider-card ${provider === id ? "selected" : ""}`} onClick={() => chooseProvider(id)}>
               <span className={`provider-logo ${id}`}>{id === "openai" ? <OpenAILogo size={17} /> : <OpenRouterLogo size={18} />}</span>
               <span><strong>{TRANSCRIPTION_PROVIDER_LABELS[id]}</strong><small>{id === "openai" ? "OpenAI API key" : "OpenRouter API key"}</small></span>
               <span className={`provider-status ${keys[id] === "saved" ? "on" : ""}`}>{keyStatusLabel(keys[id], checking)}</span>
@@ -156,7 +158,6 @@ export function TranscriptionSettings({ visible, value, onChange, accountOpenRou
             </button>
           ))}
         </div>
-        <small className="set-control-help">Only the selected provider receives your audio. Both keys stay saved when you switch.</small>
       </div>
 
       <div className="set-group">
@@ -195,8 +196,11 @@ export function TranscriptionSettings({ visible, value, onChange, accountOpenRou
               <span className="transcription-mode-pill"><ModeIcon mode={selectedMode} /> {MODE_LABELS[selectedMode]}</span>
               <small>
                 {selectedMode === "live"
-                  ? `Words appear in your draft while you speak. Audio streams to ${providerLabel} as you talk, so Cancel removes this dictation's text but can't recall audio already sent.`
-                  : `Text appears when you press Done; the recording is uploaded to ${providerLabel} then. Cancel before that discards it.`}
+                  ? `Words appear in your draft while you speak.`
+                  : `Text appears when you press Done.`}
+                {" "}<SettingInfo label="When audio is sent">{selectedMode === "live"
+                  ? `Audio streams to ${providerLabel} as you talk, so Cancel removes this dictation's text but can't recall audio already sent.`
+                  : `The recording is uploaded to ${providerLabel} when you press Done. Cancel before that discards it.`}</SettingInfo>
               </small>
             </div>
           )}
@@ -212,7 +216,7 @@ export function TranscriptionSettings({ visible, value, onChange, accountOpenRou
 
       <p className="settings-footnote" role="note">
         <Info size={13} aria-hidden="true" />
-        <span><strong>Billing and privacy.</strong> {TRANSCRIPTION_PROVIDER_LABELS[provider]} bills transcription to the API key you add here. ChatGPT, Claude, and Cursor subscriptions don't cover it. Voice input stops after {MAX_RECORDING_SECONDS / 60} minutes. Mythra Code processes audio in memory and never saves it to disk; {TRANSCRIPTION_PROVIDER_LABELS[provider]} processes and retains it under its own policies.</span>
+        <span>Billed to this API key; subscriptions don&rsquo;t cover it. <SettingInfo label="Billing and privacy">{TRANSCRIPTION_PROVIDER_LABELS[provider]} bills transcription to the API key you add here. ChatGPT, Claude and Cursor subscriptions don&rsquo;t cover it. Only the selected provider receives your audio, and both keys stay saved when you switch. Voice input stops after {MAX_RECORDING_SECONDS / 60} minutes. Mythra Code processes audio in memory and never saves it to disk; {TRANSCRIPTION_PROVIDER_LABELS[provider]} processes and retains it under its own policies.</SettingInfo></span>
       </p>
     </section>
   );
@@ -248,16 +252,18 @@ function TranscriptionKeyPanel({ visible, provider, accountKeySaved, onOpenAccou
   const statusCopy = state === "saved"
     ? "Stored securely on this device"
     : state === "missing"
-      ? "No key saved"
+      ? "Next step: paste an API key to turn on voice input"
       : state === "unavailable"
         ? "The OS credential store didn't respond. Try again in a moment."
         : checking ? "Checking…" : "Not checked yet";
 
   return (
-    <div className="credential-panel stacked" data-settings-row="transcription-key">
+    // M10 (round 6): with no key saved, the key field is the next step and
+    // reads as one (accent edge); the model and billing below can wait.
+    <div className={`credential-panel stacked${state === "missing" ? " needs-key" : ""}`} data-settings-row="transcription-key">
       <div className="credential-status">
         <div><strong>{label} transcription key</strong><small>{statusCopy}</small></div>
-        {state === "saved" && <span className="connected-badge"><Check size={12} /> Saved</span>}
+        
       </div>
       <div className="key-input-row">
         <input
@@ -306,7 +312,7 @@ function TranscriptionKeyPanel({ visible, provider, accountKeySaved, onOpenAccou
         </small>
       )}
       <small className="transcription-key-help">
-        Keys are saved or removed immediately in your OS credential store, separately from your chat accounts. Cancel doesn't undo key changes. Removing a key doesn't change Models &amp; accounts.
+        Stored in your OS credential store, separately from your chat accounts.
         {" "}<ExternalButton url={TRANSCRIPTION_LINKS[provider].keys}>{`Create an ${label} API key`}</ExternalButton>
       </small>
     </div>

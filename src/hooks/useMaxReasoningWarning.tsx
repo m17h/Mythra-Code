@@ -46,7 +46,7 @@ export function useMaxReasoningWarning({ value, maxValue, scope, onChange, canAp
       links: [
         { label: "Compare models on Artificial Analysis", url: "https://artificialanalysis.ai/" },
       ],
-      footer: "You can turn this warning off in Settings → Interface → Reasoning warnings.",
+      footer: "You can turn this warning off in Settings → Models & accounts → Model options.",
     }).then((confirmed) => {
       if (pending.current !== controller) return;
       pending.current = null;

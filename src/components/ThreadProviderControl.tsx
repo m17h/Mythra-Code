@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
 import { Check, ChevronDown, Settings } from "lucide-react";
 import type { Provider } from "../types";
 import { ProviderLogo } from "./BrandLogos";
 
 const PROVIDERS: Array<{ id: Provider; label: string; detail: string }> = [
-  { id: "openai", label: "OpenAI", detail: "Codex · subscription or API key" },
+  { id: "openai", label: "OpenAI", detail: "ChatGPT plan or API key" },
   { id: "claude", label: "Claude", detail: "Claude Code · subscription or API key" },
   { id: "cursor", label: "Cursor", detail: "Cursor subscription models" },
   { id: "openrouter", label: "OpenRouter", detail: "API model routing" },
@@ -42,16 +43,10 @@ export function ThreadProviderControl({
     const close = (event: PointerEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
+    // Arrow keys open a model catalog straight from its trigger, emitting no
+    // pointer or click event, so that path needs its own dismissal or both
+    // popovers end up open at once. Escape is handled by useMenuKeyboard.
     const keys = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        // Escape closes only this menu — never the app-level stop-turn handler.
-        event.stopPropagation();
-        setOpen(false);
-        return;
-      }
-      // Arrow keys open a model catalog straight from its trigger, emitting no
-      // pointer or click event, so that path needs its own dismissal or both
-      // popovers end up open at once.
       if ((event.key === "ArrowDown" || event.key === "ArrowUp") && !rootRef.current?.contains(event.target as Node)) {
         setOpen(false);
       }
@@ -67,28 +62,38 @@ export function ThreadProviderControl({
   }, [open]);
 
   const label = providerLabel(provider);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuKeys = useMenuKeyboard({ open, setOpen, menuRef, triggerRef });
   return (
     <div className={`thread-provider-control composer-provider-control ${open ? "open" : ""}`} ref={rootRef}>
       <button
+        ref={triggerRef}
+        type="button"
         className={`provider-pill openrouter-trigger ${unavailable?.[provider] ? "unavailable" : ""}`}
         onClick={() => setOpen((value) => !value)}
+        onPointerDown={menuKeys.onTriggerPointerDown}
+        onKeyDown={menuKeys.onTriggerKeyDown}
+        title={`Provider: ${label}`}
         aria-label={`${threadStarted ? "Thread" : "New thread"} provider: ${label}`}
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={disabled}
       >
-        <span className={`provider-mark ${provider}`}><ProviderLogo provider={provider} size={provider === "claude" ? 16 : 13} /></span>
+        <span className={`provider-mark ${provider}`} aria-hidden="true"><ProviderLogo provider={provider} size={provider === "claude" ? 16 : 13} /></span>
         <span className="openrouter-trigger-copy"><small>Provider</small><strong>{label}</strong></span>
-        <ChevronDown size={12} />
+        <ChevronDown size={12} aria-hidden="true" />
       </button>
-      <div className="thread-provider-menu" role="menu" aria-hidden={!open || undefined} aria-label="Thread provider">
-          <div className="thread-provider-menu-heading" role="presentation">
-            <strong>{threadStarted ? "Thread provider" : "Provider for this thread"}</strong>
-            <small>{threadStarted ? "Choose another provider to hand off this conversation in a new linked thread." : "This choice does not change the app default."}</small>
+      <div ref={menuRef} className="thread-provider-menu" role="menu" aria-hidden={!open || undefined} inert={!open || undefined} aria-label="Provider" onKeyDown={menuKeys.onMenuKeyDown}>
+          <div className="composer-menu-heading thread-provider-menu-heading" role="presentation">
+            <strong>Provider</strong>
+            <small>{threadStarted ? "Another provider continues in a new linked thread." : "For this thread only."}</small>
           </div>
           {PROVIDERS.map((entry) => (
             <button
+              type="button"
               key={entry.id}
+              tabIndex={-1}
               role="menuitemradio"
               aria-checked={entry.id === provider}
               className={`${entry.id === provider ? "selected" : ""} ${unavailable?.[entry.id] ? "unavailable" : ""}`}
@@ -96,8 +101,14 @@ export function ThreadProviderControl({
               onClick={() => {
                 const issue = unavailable?.[entry.id];
                 if (issue) { onUnavailable?.(issue); return; }
-                setOpen(false);
-                if (entry.id !== provider) onProvider(entry.id);
+                menuKeys.select(() => { if (entry.id !== provider) onProvider(entry.id); });
+                // A new provider swaps the whole model control, and this pill
+                // with it: give focus to the pill that replaced it.
+                if (entry.id !== provider) requestAnimationFrame(() => requestAnimationFrame(() => {
+                  const active = document.activeElement;
+                  if (active && active !== document.body && active.isConnected) return;
+                  document.querySelector<HTMLElement>(".composer-zone .provider-pill")?.focus();
+                }));
               }}
             >
               <span className={`provider-mark ${entry.id}`}><ProviderLogo provider={entry.id} size={entry.id === "claude" ? 16 : 14} /></span>
@@ -106,6 +117,8 @@ export function ThreadProviderControl({
             </button>
           ))}
           <button
+            type="button"
+            tabIndex={-1}
             className="thread-provider-default"
             role="menuitem"
             onClick={() => {

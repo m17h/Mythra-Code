@@ -122,7 +122,16 @@ export function providerHeaderUsage(
     };
   }
   const window = selectedUsageWindow(windows, options.selectedWindow)!;
-  return { text: `${window.label} ${window.percentLabel}`, title };
+  const name = compactWindowName(window.label);
+  return { text: name ? `${name} · ${window.percentLabel}` : window.percentLabel, title };
+}
+
+/**
+ * One chip format for every provider ("5h · 62% left"): providers name the
+ * same window "5h", "5-hour" or "5 hour", so the toolbar shortens them alike.
+ */
+export function compactWindowName(label: string): string {
+  return label.trim().replace(/\b(\d+)[\s-]*(hours?|hr)\b/gi, "$1h").replace(/\b(\d+)[\s-]*(days?)\b/gi, "$1d").replace(/\b7d\b/g, "Weekly");
 }
 
 /**

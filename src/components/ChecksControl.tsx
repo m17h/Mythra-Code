@@ -7,6 +7,12 @@ import RunCommandDiscovery, { useDiscoveryPreferences, type CommandDiscoveryStat
 import { FeedbackFloat, toFeedbackRect, useFloatDismiss, type FeedbackRect } from "./FeedbackNoteCard";
 import "./ChecksControl.css";
 
+/**
+ * Opens the check-command editor from elsewhere (the Changes "…" menu). The
+ * unset control stays quiet in the toolbar, so its settings live in that menu.
+ */
+export const EDIT_CHECKS_EVENT = "mythra:edit-checks";
+
 /** Matches the collapse transition in ChecksControl.css. */
 const REVEAL_EXIT_MS = 260;
 
@@ -142,11 +148,11 @@ export function ChecksControl({
     requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
   }, [editorOpen, saved]);
 
-  const openEditor = (opener: HTMLElement | null) => {
+  const openEditor = (opener: HTMLElement | null, anchor?: HTMLElement | null) => {
     const split = splitRef.current;
     if (!split) return;
     openerRef.current = opener;
-    setEditorRect(toFeedbackRect(split.getBoundingClientRect()));
+    setEditorRect(toFeedbackRect((anchor ?? split).getBoundingClientRect()));
     // The Review action row restyles every descendant button, so the popover
     // (with its model menus) mounts beside it, still inside the themed dock.
     setPortalTarget(split.closest<HTMLElement>(".studio-panel") ?? split.closest<HTMLElement>(".app-shell"));
@@ -166,6 +172,22 @@ export function ChecksControl({
   useFloatDismiss(editorOpen, popoverRef, (reason) => {
     if (reason === "escape") closeEditor();
     else if (draft.trim() === saved) closeEditor(false);
+  });
+  // The Changes "…" menu asks for the editor; only a mounted, visible control answers.
+  useEffect(() => {
+    const onEdit = () => {
+      const split = splitRef.current;
+      if (!split) return;
+      if (split.getClientRects().length) { openEditor(triggerRef.current); return; }
+      // Changes keeps an unset control out of its toolbar (R6-1); the editor
+      // then opens under the "…" menu that asked for it, and focus returns there.
+      const panel = split.closest<HTMLElement>(".studio-panel");
+      if (!panel?.getClientRects().length || !split.closest(".git-changes-toolbar")) return;
+      const menu = panel.querySelector<HTMLElement>('[aria-label="More Git actions"]');
+      openEditor(menu, menu);
+    };
+    window.addEventListener(EDIT_CHECKS_EVENT, onEdit);
+    return () => window.removeEventListener(EDIT_CHECKS_EVENT, onEdit);
   });
   const save = (value: string) => {
     onSave(value.trim());
@@ -190,13 +212,14 @@ export function ChecksControl({
   const finding = Boolean(discovery?.pending);
   const modelSummary = discoveryModelNote ?? prefs.summary;
   const state = running ? "running" : saved ? "ready" : finding ? "finding" : discovery ? "discover" : "unset";
-  const label = running ? "Stop checks" : saved ? "Run checks" : finding ? "Finding checks…" : discovery ? "Find checks" : "Set up checks";
+  // Without a saved command the button only looks for one; nothing runs.
+  const label = running ? "Stop checks" : saved ? "Run checks" : finding ? "Finding checks…" : "Set up checks…";
   const activeCommand = runningCommand || saved;
   const title = running
     ? `Stop ${activeCommand}`
     : saved ? disabledReason || `Run ${saved}`
       : finding ? `Finding this project’s check command with ${modelSummary}`
-        : discovery ? `Find and save this project’s check command with ${modelSummary}. Nothing runs until you press Run checks.`
+        : discovery ? `Find a test/check command; nothing runs yet. Uses ${modelSummary}, then saves it for Run checks.`
           : "Save a check command for this project, like npm test";
 
   const heading = shown ? resultHeading(shown) : null;
@@ -275,9 +298,13 @@ export function ChecksControl({
     </FeedbackFloat>
   );
 
+  // Not set up yet and nothing to report: a one-time setup action. In the
+  // Changes toolbar it sits quietly at the end of the row, and its caret's
+  // editor moves to the "…" menu (CSS scopes this to that toolbar).
+  const quiet = (state === "discover" || state === "unset") && !discoveryCardOpen && !cardOpen;
   return (
     <div className="checks-control">
-      <div className={`checks-split ${state}`} ref={splitRef}>
+      <div className={`checks-split ${state}${quiet ? " quiet" : ""}`} ref={splitRef}>
         <button
           ref={triggerRef}
           type="button"

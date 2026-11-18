@@ -1,3 +1,4 @@
+import { SettingInfo } from "./SettingsBits";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, ExternalLink, KeyRound, LoaderCircle, Trash2 } from "lucide-react";
@@ -47,8 +48,10 @@ function openExternal(url: string): void {
   void openUrl(url).catch(() => undefined);
 }
 
-function ExternalButton({ url, children }: { url: string; children: string }) {
-  return <button type="button" className="provider-api-link" onClick={() => openExternal(url)}>{children} <ExternalLink size={11} aria-hidden="true" /></button>;
+/** `quiet` is reference help (limits, credits): muted ink, so the one
+ * action link ("Create a key") is the only accent in the line (M10). */
+function ExternalButton({ url, children, quiet = false }: { url: string; children: string; quiet?: boolean }) {
+  return <button type="button" className={`provider-api-link${quiet ? " quiet" : ""}`} onClick={() => openExternal(url)}>{children} <ExternalLink size={11} aria-hidden="true" /></button>;
 }
 
 /** Key and billing state, read only while the pane is on screen. */
@@ -193,9 +196,9 @@ export function OpenAiApiKeyPanel({ visible, account, runtimeAvailable, operatio
     setNotice("");
     try {
       await activateOpenAiApiKey();
-      setNotice("Codex now bills this API key.");
+      setNotice("OpenAI threads now bill this API key.");
     } catch (reason) {
-      setError(safeErrorText(reason, "Codex could not use the API key."));
+      setError(safeErrorText(reason, "The Codex CLI could not use the API key."));
     } finally {
       await Promise.allSettled([refresh(), onChanged()]);
       finish();
@@ -235,7 +238,7 @@ export function OpenAiApiKeyPanel({ visible, account, runtimeAvailable, operatio
     let attempted = false;
     try {
       if (next === "apiKey" && !(await confirmDialog(
-        "Use OpenAI API billing?\n\nNew OpenAI work will require an API key and will not use your ChatGPT plan, even if that key fails or runs out. Connecting the key replaces Codex's ChatGPT sign-in in Mythra Code. Returning to your plan may need browser sign-in again.",
+        "Use OpenAI API billing?\n\nNew OpenAI work will require an API key and will not use your ChatGPT plan, even if that key fails or runs out. Connecting the key replaces the ChatGPT account sign-in in Mythra Code. Returning to your plan may need browser sign-in again.",
         { confirmLabel: "Select API key" },
       ))) return;
       setError(""); setNotice("");
@@ -258,7 +261,7 @@ export function OpenAiApiKeyPanel({ visible, account, runtimeAvailable, operatio
     let attempted = false;
     try {
       if (inUse && !(await confirmDialog(
-        "Remove the OpenAI API key?\n\nCodex is using this key, so Mythra Code also signs Codex out. Add a key again or select Subscription and sign in with ChatGPT to keep using OpenAI.",
+        "Remove the OpenAI API key?\n\nOpenAI threads use this key, so Mythra Code also signs the Codex CLI out. Add a key again or select Subscription and sign in with ChatGPT to keep using OpenAI.",
         { confirmLabel: "Remove key" },
       ))) return;
       setError("");
@@ -278,14 +281,14 @@ export function OpenAiApiKeyPanel({ visible, account, runtimeAvailable, operatio
     <div className="credential-panel stacked provider-api-key" data-settings-row="openai-api-key">
       <div className="credential-status"><div><strong>Bill OpenAI work to</strong><small>{status && billing === null ? "Choose again: the saved choice couldn't be read" : "Applies immediately to chats, sub-agents, titles and helpers"}</small></div>{busy === "billing" && <LoaderCircle className="spin" size={14} />}</div>
       <BillingOptions label="OpenAI" subscription="ChatGPT" billing={billing} disabled={blocked} onChoose={(next) => void choose(next)} />
-      <small className="provider-api-help">Only the selected method is allowed. Mythra Code never switches automatically if sign-in fails, limits are reached, or API credits run out. Change this choice yourself to switch.</small>
+      <small className="provider-api-help">Mythra Code never switches billing on its own, even if limits or credits run out.</small>
       <div className="credential-status">
         <div>
           <strong>OpenAI API key</strong>
-          <small>{inUse ? "In use · Codex bills this key per token" : keyStatusCopy(state, account?.type === "chatgpt" ? "Saved on this device · ChatGPT is in use" : "Saved on this device")}</small>
+          <small>{inUse ? "In use · OpenAI bills this key per token" : keyStatusCopy(state, account?.type === "chatgpt" ? "Saved on this device · ChatGPT account in use" : "Saved on this device")}</small>
         </div>
         {inUse
-          ? <span className="connected-badge"><Check size={12} /> In use</span>
+          ? <span className="provider-status on">In use</span>
           : billing === "apiKey" && state === "saved" && runtimeAvailable && (
             <button type="button" className="secondary-button" onClick={() => void activate()} disabled={blocked}>
               {busy === "using" ? <LoaderCircle className="spin" size={13} /> : <KeyRound size={13} />} Connect saved key
@@ -295,9 +298,10 @@ export function OpenAiApiKeyPanel({ visible, account, runtimeAvailable, operatio
       <KeyInputRow provider="openai" visible={visible} billing={billing} state={state} busy={busy} disabled={blocked || billing === null} saveLabel={billing === "apiKey" && runtimeAvailable ? "Save and connect" : "Save key"} onSave={save} onRemove={() => void remove()} />
       <Feedback error={error} notice={notice} />
       <small className="provider-api-help">
-        Billed per token to your OpenAI API account; ChatGPT plan limits and credits don’t cover it. Connecting the key replaces Codex’s ChatGPT sign-in in Mythra Code; switching back may need browser sign-in again. Billing choices and keys are saved immediately, apart from voice input keys; Cancel doesn’t undo them. Use a dedicated project/key and monitor spending, especially if someone else uses it.
+        Billed per token to your OpenAI API account; ChatGPT plan limits don’t cover it. 
+        <SettingInfo label="About OpenAI API keys">Connecting the key replaces the ChatGPT account sign-in in Mythra Code; switching back may need browser sign-in again. Billing choices and keys save immediately (voice input keys are separate), and Cancel doesn’t undo them. Use a dedicated project and key, and monitor spending, especially if someone else uses it.</SettingInfo>
         {" "}<ExternalButton url={PROVIDER_API_LINKS.openai.keys}>Create a key</ExternalButton>
-        {" "}<ExternalButton url={PROVIDER_API_LINKS.openai.limits}>Limits</ExternalButton>
+        {" "}<ExternalButton quiet url={PROVIDER_API_LINKS.openai.limits}>Limits</ExternalButton>
       </small>
     </div>
   );
@@ -380,13 +384,13 @@ export function ClaudeBillingPanel({ visible, claudeStatus, operation, disabled 
         {busy === "billing" && <LoaderCircle className="spin" size={14} aria-label="Changing billing" />}
       </div>
       <BillingOptions label="Claude" subscription="Claude Code login" billing={billing} disabled={blocked} onChoose={choose} />
-      <small className="provider-api-help">Only the selected method is allowed. Mythra Code never switches automatically if sign-in fails, limits are reached, or API credits run out. Change this choice yourself to switch.</small>
+      <small className="provider-api-help">Mythra Code never switches billing on its own, even if limits or credits run out.</small>
       <div className="credential-status">
         <div>
           <strong>Anthropic API key</strong>
           <small>{keyStatusCopy(state, billing === "apiKey" ? "In use · Claude turns bill this key" : "Saved on this device · not in use")}</small>
         </div>
-        {state === "saved" && billing === "apiKey" && <span className="connected-badge"><Check size={12} /> In use</span>}
+        {state === "saved" && billing === "apiKey" && <span className="provider-status on">In use</span>}
       </div>
       <KeyInputRow
         provider="anthropic"
@@ -404,10 +408,11 @@ export function ClaudeBillingPanel({ visible, claudeStatus, operation, disabled 
       />
       <Feedback error={error} notice={notice} />
       <small className="provider-api-help">
-        API-key billing sends the turns Mythra Code starts to the Claude Console organization that owns the key; your Claude Code login stays as it is for switching back. Max and Team plans can include monthly API credits once linked to a Console organization; the Console decides whether they apply and shows what remains. Claude Code passes its environment to the commands it runs, so give Mythra Code a dedicated key with a spend limit, in its own workspace if someone else will use it. Billing choices and keys are saved immediately; Cancel doesn’t undo them.
+        Turns bill the Claude Console organization that owns the key. 
+        <SettingInfo label="About Anthropic API keys">Your Claude Code login stays as it is for switching back. Max and Team plans can include monthly API credits once linked to a Console organization; the Console decides whether they apply and shows what remains. Claude Code passes its environment to the commands it runs, so give Mythra Code a dedicated key with a spend limit, in its own workspace if someone else will use it. Billing choices and keys save immediately, and Cancel doesn’t undo them.</SettingInfo>
         {" "}<ExternalButton url={PROVIDER_API_LINKS.anthropic.keys}>Create a key</ExternalButton>
-        {" "}<ExternalButton url={PROVIDER_API_LINKS.anthropic.limits}>Spend limits</ExternalButton>
-        {" "}<ExternalButton url={PROVIDER_API_LINKS.anthropic.credits}>About API credits</ExternalButton>
+        {" "}<ExternalButton quiet url={PROVIDER_API_LINKS.anthropic.limits}>Spend limits</ExternalButton>
+        {" "}<ExternalButton quiet url={PROVIDER_API_LINKS.anthropic.credits}>About API credits</ExternalButton>
       </small>
     </div>
   );

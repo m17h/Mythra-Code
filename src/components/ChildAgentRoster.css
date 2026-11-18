@@ -1,0 +1,39 @@
+/* Moved from SettingsModal.legacy.css (retired in round 3). These rules keep
+   their original selectors (and so their specificity) and their original
+   order, and sit at the top of this sheet so they still load before the
+   rules that already lived here. */
+.worker-roster { margin-top: var(--s-3); transition: opacity 140ms ease; }
+.worker-roster.muted { opacity: .5; }
+.worker-roster-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); margin-bottom: 7px; }
+.worker-roster-head > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.worker-roster-head strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 620; }
+.worker-roster-head small { color: var(--muted-2); font-size: var(--fs-meta); }
+.worker-roster-count { flex: 0 0 auto; color: var(--muted-2); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
+.worker-card { overflow: hidden; transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.worker-card.expanded { overflow: visible; }
+.worker-card.off .worker-copy { opacity: .58; }
+.worker-card-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); padding: var(--s-2); }
+.worker-card-face { min-width: 0; display: grid; grid-template-columns: 26px minmax(0, 1fr) 14px; align-items: center; gap: var(--s-2); padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.worker-caret { color: var(--muted-2); transition: transform var(--t-mid) var(--ease); }
+.worker-card.expanded .worker-caret { transform: rotate(180deg); }
+.worker-issue { display: flex; align-items: flex-start; gap: 5px; margin: 0; padding: 0 var(--s-2) var(--s-2) 42px; color: color-mix(in srgb, var(--orange) 70%, var(--text)); font-size: var(--fs-micro); line-height: 1.4; }
+.worker-issue svg { flex: 0 0 auto; margin-top: 1px; }
+.worker-config-shell { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows var(--t-mid) var(--ease), opacity var(--t-fast) ease; }
+.worker-config-shell.open { grid-template-rows: 1fr; opacity: 1; }
+.worker-config { min-height: 0; overflow: hidden; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2); margin: 0 var(--s-2) var(--s-2); padding-top: var(--s-2); border-top: 1px solid var(--line); }
+.worker-config-shell.open .worker-config { overflow: visible; }
+.worker-field { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.worker-field:has(.app-select.open) { position: relative; z-index: 12; }
+.worker-field.wide { grid-column: 1 / -1; }
+.worker-field > span { color: var(--muted-2); font-size: var(--fs-meta); letter-spacing: 0; }
+.worker-field input { min-width: 0; outline: 0; }
+.worker-remove { grid-column: 1 / -1; justify-self: start; display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border: 1px solid color-mix(in srgb, var(--red) 22%, transparent); border-radius: var(--r-xs); color: color-mix(in srgb, var(--red) 72%, var(--text)); background: transparent; font-size: var(--fs-micro); cursor: pointer; transition: background var(--t-fast) ease; }
+.worker-remove:hover { background: color-mix(in srgb, var(--red) 10%, transparent); }
+.worker-empty { margin: 0; padding: var(--s-3); border: 1px dashed var(--line); color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; text-align: center; }
+.worker-add { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .8fr) auto; gap: 6px; margin-top: 7px; }
+.worker-add input { min-width: 0; outline: 0; }
+.worker-add > button { display: flex; align-items: center; justify-content: center; gap: 5px; cursor: pointer; }
+.worker-add > button:disabled { opacity: .4; cursor: default; }
+@media (max-width: 760px) {
+  .worker-config, .worker-add { grid-template-columns: 1fr; }
+}

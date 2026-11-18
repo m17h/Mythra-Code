@@ -12,7 +12,9 @@ import {
 } from "react";
 import { ArrowUp, Boxes, CalendarClock, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, Pencil, RotateCw, Trash2, X } from "lucide-react";
 import { loadStored, storeValue } from "../lib/storage";
+import { isMacPlatform } from "../lib/platform";
 import { recordComposerInputToFrame } from "../lib/runtimePerformanceBridge";
+import { formatShortcut, formatKeys } from "../lib/shortcuts";
 import type { ChatFont, Provider } from "../types";
 import type { QueuedTurn } from "../lib/taskStore";
 import type { AttachmentRecord } from "./StudioDock";
@@ -28,9 +30,12 @@ import { TimedPromptPicker } from "./TimedPromptPicker";
 import { useVoiceInput, type VoiceInputConfig } from "../hooks/useVoiceInput";
 import { VoiceInputButton, VoiceInputStatus } from "./VoiceInput";
 import { isVoiceInputLocked } from "../lib/voiceInputLock";
+import { mentionKeyAction, nextMentionIndex } from "../lib/mentionKeys";
 
 export interface ComposerHandle {
   setDraft: (text: string) => void;
+  /** Puts an earlier message back in the box, with a banner saying so. */
+  editMessage?: (text: string) => void;
   focus: () => void;
 }
 
@@ -312,6 +317,9 @@ export const Composer = forwardRef<ComposerHandle, {
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const scheduleButtonRef = useRef<HTMLButtonElement>(null);
   const [draft, setDraftState] = useState(() => draftFor(props.threadKey));
+  // The draft holds a copy of an earlier message (message "Edit"). Cleared on
+  // send, when the box is emptied, and on thread switch.
+  const [editingCopy, setEditingCopy] = useState<{ key: string; previous: string } | null>(null);
   const dependencyPreview = useSkillDependencyPreview(draft, props.onAnalyzeSkillDependencies, props.threadKey);
   const blockedNames = useMemo(() => blockedSkillNames(dependencyPreview.report), [dependencyPreview.report]);
   const submittingRef = useRef(new Set<string>());
@@ -356,7 +364,9 @@ export const Composer = forwardRef<ComposerHandle, {
     setSelectedWorkflow(selectedWorkflowsRef.current.get(props.threadKey)?.workflow ?? null);
     // A schedule always belongs to the draft it was opened from.
     setScheduleOpen(false);
+    setEditingCopy(null);
   }
+  if (editingCopy && (editingCopy.key !== props.threadKey || !draft.trim())) setEditingCopy(null);
 
   // A transcript joins the end of the open draft and is never sent. Voice is
   // canceled on every thread switch and before the draft is sent, scheduled
@@ -425,6 +435,16 @@ export const Composer = forwardRef<ComposerHandle, {
       cancelVoice("Voice input canceled because the draft was replaced.");
       setDraft(text);
       requestAnimationFrame(() => textareaRef.current?.focus());
+    },
+    editMessage: (text: string) => {
+      cancelVoice("Voice input canceled because the draft was replaced.");
+      setEditingCopy({ key: threadKeyRef.current, previous: draftFor(threadKeyRef.current) });
+      setDraft(text);
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        textarea?.focus();
+        textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
+      });
     },
     focus: () => textareaRef.current?.focus(),
   }), [cancelVoice, setDraft]);
@@ -775,7 +795,7 @@ export const Composer = forwardRef<ComposerHandle, {
                         ><RotateCw size={12} /></button>
                       )}
                       {props.queueing && props.canSteer && props.onSteerQueued && (
-                        <button className="steer-queued" onClick={() => props.onSteerQueued?.(queuedTurn.id)} title="Send this into the active turn now" aria-label={`Steer queued message ${index + 1} now`}><CornerUpRight size={12} /></button>
+                        <button className="steer-queued" onClick={() => props.onSteerQueued?.(queuedTurn.id)} title="Send this into the active turn now" aria-label={`Send queued message ${index + 1} to the current run now`}><CornerUpRight size={12} /></button>
                       )}
                       {props.onRemoveQueued && (
                         <button className="remove-queued" onClick={() => props.onRemoveQueued?.(queuedTurn.id)} title="Remove queued message" aria-label={`Remove queued message ${index + 1}`}><Trash2 size={12} /></button>
@@ -806,6 +826,21 @@ export const Composer = forwardRef<ComposerHandle, {
         />
       )}
       {props.continuationNotice}
+      {editingCopy && (
+        <div className="composer-edit-banner" role="status">
+          <Pencil size={12} aria-hidden="true" />
+          <span>Editing a copy of an earlier message. Sending adds it as a new message.</span>
+          <button
+            type="button"
+            onClick={() => {
+              const previous = editingCopy.previous;
+              setEditingCopy(null);
+              setDraft(previous);
+              textareaRef.current?.focus();
+            }}
+          >Cancel</button>
+        </div>
+      )}
       {props.feedbackTray}
       {props.attachments.length > 0 && (
         <div className="composer-attachments" aria-label="Attached context">
@@ -823,7 +858,7 @@ export const Composer = forwardRef<ComposerHandle, {
           <span className="composer-workflow-chip"><Boxes size={12} /> {selectedWorkflow.name}
             <button type="button" onClick={removeWorkflow} disabled={workflowSubmitting} aria-label={`Remove workflow ${selectedWorkflow.name}`} title={`Remove workflow ${selectedWorkflow.name}`}><X size={11} /></button>
           </span>
-          {workflowBlockers && <small className="composer-workflow-hint">Recipe paused by {workflowBlockers}. Remove the recipe chip to use Send, or clear those items to run it.</small>}
+          {workflowBlockers && <small className="composer-workflow-hint">Workflow paused by {workflowBlockers}. Remove the workflow chip to use Send, or clear those items to run it.</small>}
         </div>
       )}
       {props.voiceInput && (
@@ -872,6 +907,12 @@ export const Composer = forwardRef<ComposerHandle, {
                 <em>{result.kind === "skill" ? "Skill" : "File"}</em>
               </button>
             ))}
+            {/* Visual key legend; the keys themselves are announced by the listbox pattern. */}
+            <div className="mention-menu-hint" aria-hidden="true">
+              <span><kbd>↑↓</kbd> Navigate</span>
+              <span><kbd>{formatKeys(["Enter"])}</kbd> or <kbd>Tab</kbd> Insert</span>
+              <span><kbd>Esc</kbd> Close</span>
+            </div>
           </div>
         )}
         {hasSkillMentions && (
@@ -940,25 +981,27 @@ export const Composer = forwardRef<ComposerHandle, {
                 return;
               }
             }
-            if (mentions.open) {
-              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                event.preventDefault();
-                setMentions((current) => ({
-                  ...current,
-                  index: (current.index + (event.key === "ArrowDown" ? 1 : current.results.length - 1)) % current.results.length,
-                }));
-                return;
-              }
-              if (event.key === "Enter" || event.key === "Tab") {
-                event.preventDefault();
-                insertMention(mentions.results[mentions.index]);
-                return;
-              }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                closeMentions();
-                return;
-              }
+            const mentionAction = mentionKeyAction(event, mentions.open, mentions.results.length);
+            if (mentionAction === "next" || mentionAction === "previous") {
+              event.preventDefault();
+              setMentions((current) => ({ ...current, index: nextMentionIndex(current.index, current.results.length, mentionAction) }));
+              return;
+            }
+            if (mentionAction === "accept") {
+              const result = mentions.results[mentions.index] ?? mentions.results[0];
+              event.preventDefault();
+              if (result) insertMention(result);
+              return;
+            }
+            if (mentionAction === "close") {
+              event.preventDefault();
+              closeMentions();
+              return;
+            }
+            if (mentionAction === "close-and-pass") {
+              // Shift+Tab: leave the draft exactly as typed and let focus move back.
+              closeMentions();
+              return;
             }
             if (inspector.handlers.onKeyDown(event)) {
               closeMentions();
@@ -972,6 +1015,7 @@ export const Composer = forwardRef<ComposerHandle, {
           }}
           onBlur={(event) => { closeMentions(); closeWorkflows(); inspector.handlers.onBlur(event); }}
           placeholder={props.placeholder}
+          aria-label="Message"
           rows={1}
         />
         {inspector.inspector}
@@ -984,24 +1028,28 @@ export const Composer = forwardRef<ComposerHandle, {
         <div className="composer-actions">
           {(props.running || props.childrenRunning) && (
             <button
+              type="button"
               className="stop-button"
               onClick={props.onStop}
-              title={props.running ? "Stop the active task and its sub-agents (Esc)" : `${props.stopLabel ?? "Stop the sub-agents still running for this thread"} (Esc)`}
-              aria-label={props.running ? "Stop the active task and its sub-agents" : props.stopLabel ?? "Stop the sub-agents still running for this thread"}
+              title={`${props.running ? "Stop the task and its sub-agents" : props.stopLabel ?? "Stop the sub-agents still running for this thread"} (${formatShortcut("stop")})`}
+              aria-label={props.running ? "Stop the task and its sub-agents" : props.stopLabel ?? "Stop the sub-agents still running for this thread"}
+              aria-keyshortcuts={isMacPlatform() ? "Meta+." : "Control+."}
             >
-              <CircleStop size={17} />
+              <CircleStop size={17} aria-hidden="true" />
             </button>
           )}
           {props.queueing && (
             <button
+              type="button"
               className="steer-button"
               onClick={() => void send("steer")}
               disabled={Boolean(selectedWorkflow) || submitting || !props.canSteer || (!draft.trim() && !props.hasFeedback)}
+              aria-label="Steer: send this into the current run now"
               title={props.canSteer
                 ? "Send this message into the active turn now"
                 : "The model is finishing its response. Queue this message as the next turn instead."}
             >
-              <CornerUpRight size={14} /> <span>Steer</span>
+              <CornerUpRight size={14} aria-hidden="true" /> <span>Steer</span>
             </button>
           )}
           {props.voiceInput && (
@@ -1031,7 +1079,7 @@ export const Composer = forwardRef<ComposerHandle, {
               aria-label="Schedule this prompt"
               title="Schedule this prompt for a later time"
             >
-              <CalendarClock size={15} />
+              <CalendarClock size={15} aria-hidden="true" />
             </button>
           )}
           {scheduleOpen && props.onSchedule && (
@@ -1045,15 +1093,16 @@ export const Composer = forwardRef<ComposerHandle, {
             />
           )}
           <button
+            type="button"
             className={`send-button ${willQueue ? "queue-button" : ""}`}
             onClick={() => void send("default")}
             disabled={selectedWorkflow
               ? !canLaunchWorkflow
               : submitting || (!draft.trim() && !props.hasFeedback) || (props.running && !props.queueing)}
-            aria-label={selectedWorkflow ? `Run workflow ${selectedWorkflow.name}` : willQueue ? "Queue" : props.hasFeedback ? "Send feedback and optional prompt" : "Send"}
+            aria-label={selectedWorkflow ? `Run workflow ${selectedWorkflow.name}` : willQueue ? "Queue: send after this run" : props.hasFeedback ? "Send feedback and optional prompt" : "Send"}
             title={selectedWorkflow ? `Run workflow ${selectedWorkflow.name}` : willQueue ? "Queue as the next turn" : props.running ? "Wait for the first turn to start" : props.hasFeedback ? "Send feedback and optional prompt" : "Send"}
           >
-            {willQueue ? <><ListPlus size={14} /><span>Queue</span></> : <ArrowUp size={18} />}
+            {willQueue ? <><ListPlus size={14} aria-hidden="true" /><span>Queue</span></> : <ArrowUp size={18} aria-hidden="true" />}
           </button>
         </div>
       </div>

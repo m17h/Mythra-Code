@@ -16,24 +16,47 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
-.app-shell[data-theme][data-color-scheme] ::selection { background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] ::selection { background: var(--accent-soft); }
 @supports (color: color-mix(in srgb, red, blue)) {
-  .app-shell[data-theme][data-color-scheme] ::selection { background: color-mix(in srgb, var(--green) 28%, transparent); }
+  .app-shell[data-theme][data-color-scheme] ::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
 }
 /* Keyboard focus also works on the supported WebKit versions that predate
    :focus-visible. Keep the enhancement selectors separate for Safari 13. */
 html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] button:focus,
 html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] [tabindex]:focus {
-  outline: 2px solid var(--green);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 .app-shell[data-theme][data-color-scheme] button:focus-visible {
-  outline: 2px solid var(--green);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 .app-shell[data-theme][data-color-scheme] [tabindex]:focus-visible {
-  outline: 2px solid var(--green);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+/* Disclosures, links and native checkboxes get the same ring (K13). */
+.app-shell[data-theme][data-color-scheme] summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.app-shell[data-theme][data-color-scheme] a[href]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.app-shell[data-theme][data-color-scheme] input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.app-shell[data-theme][data-color-scheme] input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* A menu opened with the mouse and closed with Escape hands focus back to its
+   trigger the way a native menu does: without a keyboard ring. useMenuKeyboard
+   marks that moment as pointer input; the next key press restores rings. */
+html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] button[aria-haspopup]:focus {
+  outline: none;
 }
 /* Outrank this theme's general focus rule only for mouse/touch-focused work
    history surfaces. Keyboard focus and every other control keep their rings. */
@@ -58,6 +81,10 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
   border-right: 1px solid var(--line);
   background: var(--sidebar);
 }
+/* O14: in light themes the tinted sidebar meets the white stage at a firmer
+   hairline. The tint itself stays: a deeper one would take the muted and
+   status inks on selected rows below 4.5:1. */
+.app-shell[data-theme][data-color-scheme="light"] .sidebar { border-right-color: var(--line-strong); }
 .app-shell[data-theme][data-color-scheme] .sidebar.closed {
   border-width: 0;
   box-shadow: none;
@@ -133,8 +160,6 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
 .app-shell[data-theme][data-color-scheme] .set-group > h4,
 .app-shell[data-theme][data-color-scheme] .set-group-head > h4,
 .app-shell[data-theme][data-color-scheme] .panel-label,
-.app-shell[data-theme][data-color-scheme] .rate-card span,
-.app-shell[data-theme][data-color-scheme] .metric-grid span,
 .app-shell[data-theme][data-color-scheme] .palette-group-label,
 .app-shell[data-theme][data-color-scheme] .model-menu-heading,
 .app-shell[data-theme][data-color-scheme] .openrouter-menu-meta,
@@ -153,9 +178,9 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
 .app-shell[data-theme][data-color-scheme] .sidebar-section-resize::after { left: 16px; right: 16px; background: var(--line-quiet); }
 .app-shell[data-theme][data-color-scheme] .sidebar-section-resize:hover::after,
 .app-shell[data-theme][data-color-scheme] .sidebar-section-resize:active::after { background: var(--line-strong); }
-.app-shell[data-theme][data-color-scheme] .sidebar-section-resize:focus-visible::after { background: var(--green-line); }
+.app-shell[data-theme][data-color-scheme] .sidebar-section-resize:focus-visible::after { background: var(--accent-line); }
 
-/* ---- Workspace rows: source-list rows ---- */
+/* ---- Tools rows: source-list rows ---- */
 .app-shell[data-theme][data-color-scheme] .workspace-list { gap: 1px; }
 .app-shell[data-theme][data-color-scheme] .workspace-list > .workspace-row { flex-basis: 30px; }
 .app-shell[data-theme][data-color-scheme] .workspace-row {
@@ -184,21 +209,8 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
 }
 .app-shell[data-theme][data-color-scheme] .workspace-row-wrap.active .workspace-row { background: transparent; box-shadow: none; font-weight: 550; }
 .app-shell[data-theme][data-color-scheme] .workspace-row.active { font-weight: 550; }
-.app-shell[data-theme][data-color-scheme] .workspace-row-wrap.active .workspace-icon { color: var(--green); background: transparent; }
-.app-shell[data-theme][data-color-scheme] .workspace-row.chat.active .workspace-icon { color: var(--green); background: transparent; }
-/* Counts are plain secondary numerals, as in Mail's sidebar. */
-.app-shell[data-theme][data-color-scheme] .workspace-thread-count {
-  min-width: 0;
-  padding: 0 2px;
-  border: 0;
-  border-radius: 0;
-  color: var(--muted-2);
-  background: transparent;
-  font-size: 11.5px;
-  font-weight: 450;
-  font-variant-numeric: tabular-nums;
-}
-.app-shell[data-theme][data-color-scheme] .workspace-row-wrap.active .workspace-thread-count { color: var(--ink-2); border-color: transparent; background: transparent; }
+.app-shell[data-theme][data-color-scheme] .workspace-row-wrap.active .workspace-icon { color: var(--accent); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .workspace-row.chat.active .workspace-icon { color: var(--accent); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .workspace-group.pinned {
   margin-bottom: 6px;
   padding-bottom: 6px;
@@ -208,7 +220,7 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
 .app-shell[data-theme][data-color-scheme] .workspace-group-toggle { height: 26px; border-radius: var(--r-sm); color: var(--muted-2); }
 .app-shell[data-theme][data-color-scheme] .workspace-group-toggle:hover { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .workspace-row-wrap.drop-before::after,
-.app-shell[data-theme][data-color-scheme] .workspace-row-wrap.drop-after::after { height: 2px; background: var(--green); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .workspace-row-wrap.drop-after::after { height: 2px; background: var(--accent); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .empty-project-button {
   margin-top: var(--s-2);
   min-height: 56px;
@@ -244,9 +256,9 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
 .app-shell[data-theme][data-color-scheme] .thread-kind-switch button.active {
   color: var(--text);
   background: var(--panel-3);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 0 0 .5px rgba(0, 0, 0, .2);
+  box-shadow: var(--lm-seg-shadow);
 }
-.app-shell[data-theme][data-color-scheme="light"] .thread-kind-switch button.active { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 0 0 .5px rgba(0, 0, 0, .08); }
+.app-shell[data-theme][data-color-scheme="light"] .thread-kind-switch button.active { background: var(--lm-seg-surface); box-shadow: var(--lm-seg-shadow); }
 .app-shell[data-theme][data-color-scheme] .thread-kind-switch button span { font-family: var(--font-sans); font-size: 10.5px; color: var(--muted-2); font-variant-numeric: tabular-nums; }
 
 /* ---- Thread search and bulk actions ---- */
@@ -258,8 +270,7 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
   border-radius: var(--r-control);
   background: var(--lm-hover);
 }
-.app-shell[data-theme][data-color-scheme] .thread-search input { font-size: 12.5px; }
-.app-shell[data-theme][data-color-scheme] .thread-search:focus-within { border-color: var(--green-line); background: var(--field); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .thread-search:focus-within { border-color: var(--accent-line); background: var(--field); box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .thread-bulk-button { height: 28px; padding: 0 9px; border: 0; border-radius: var(--r-control); color: var(--muted); background: transparent; font-size: 12px; font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .thread-bulk-button:hover:not(:disabled) { color: var(--text); background: var(--lm-hover); }
 
@@ -307,22 +318,22 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
 .app-shell[data-theme][data-color-scheme] .thread-row-wrap.active .thread-card-title,
 .app-shell[data-theme][data-color-scheme] .thread-card:hover .thread-card-title { color: var(--text); }
 .app-shell[data-theme][data-color-scheme] .thread-row-wrap.active .thread-card-title { font-weight: 550; }
-.app-shell[data-theme][data-color-scheme] .thread-card-workspace { gap: 4px; color: var(--muted-2); font-size: 11.5px; font-weight: 400; }
+.app-shell[data-theme][data-color-scheme] .thread-card-workspace { gap: 4px; color: var(--muted-2); font-weight: 400; }
 .app-shell[data-theme][data-color-scheme] .thread-card-workspace svg { width: 12px; height: 12px; opacity: .8; }
 .app-shell[data-theme][data-color-scheme] .thread-card-pin { color: var(--muted-2); opacity: 1; }
 /* Provider marks: small, untiled glyphs (Claude keeps its brand tile). */
 .app-shell[data-theme][data-color-scheme] .thread-card-provider { width: 16px; height: 16px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; }
-.app-shell[data-theme][data-color-scheme] .thread-card-provider.claude { width: 16px; height: 16px; border: 0; color: #fff; background: #d97757; }
+.app-shell[data-theme][data-color-scheme] .thread-card-provider.claude { width: 16px; height: 16px; border: 0; color: var(--brand-on-claude); background: var(--brand-claude); }
 /* Preserve the saved Anthropic logo treatment; the generic Claude rule above
    otherwise outranks the original preference selector in styles.css. */
-.app-shell[data-theme][data-color-scheme][data-claude-logo="anthropic"] .thread-card-provider.claude { color: #171714; background: #f1f0eb; }
+.app-shell[data-theme][data-color-scheme][data-claude-logo="anthropic"] .thread-card-provider.claude { color: var(--brand-on-anthropic); background: var(--brand-anthropic); }
 .app-shell[data-theme][data-color-scheme] .thread-card-provider.subagent-group-provider { width: 14px; height: 14px; border-radius: 4px; }
 /* The OpenAI mark ships white for dark tiles; untiled, it takes the ink. */
 .app-shell[data-theme][data-color-scheme] .thread-card-provider.openai { color: var(--muted); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .thread-card-provider .openai-logo-option { fill: currentColor; }
 /* Status: coloured secondary text, no pill. */
 .app-shell[data-theme][data-color-scheme] .thread-card-status { gap: 4px; font-size: 11px; font-weight: 500; background: transparent; }
-.app-shell[data-theme][data-color-scheme] .thread-card-pr { padding: 0 4px; border-radius: var(--r-chip); font-size: 10px; }
+.app-shell[data-theme][data-color-scheme] .thread-card-pr { padding: 0 4px; border-radius: var(--r-chip); }
 /* Lifecycle: no breathing glow, sweeps or coloured outlines. A running row
    says so in its status; one waiting on you gets a faint warm fill; an
    unread result reads in a heavier title, as in Mail. */
@@ -331,10 +342,12 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
 .app-shell[data-theme][data-color-scheme] .thread-card.settled { border-color: transparent; animation: none; }
 .app-shell[data-theme][data-color-scheme] .thread-card.settled::after { display: none; }
 .app-shell[data-theme][data-color-scheme] .thread-card.settled .thread-card-title { font-weight: 650; }
-.app-shell[data-theme][data-color-scheme] .thread-card.attention { border-color: transparent; background: rgba(232, 171, 104, .1); animation: none; }
+.app-shell[data-theme][data-color-scheme] .thread-card.attention { border-color: transparent; background: var(--orange-soft); animation: none; }
 
 .app-shell[data-theme][data-color-scheme] .thread-rename-row { height: 48px; padding: 0 8px; border: 0; border-radius: var(--r-md); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .thread-rename-row input { height: 28px; padding: 0 9px; border-radius: var(--r-control); font-size: var(--fs-ui); }
+/* G21: the rename field shows the standard field focus (accent hairline + ring). */
+.app-shell[data-theme][data-color-scheme] .thread-rename-row input:focus { border-color: var(--accent-line); box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .empty-threads {
   margin: 4px 0;
   padding: 16px 12px;
@@ -353,7 +366,6 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
 .app-shell[data-theme][data-color-scheme] .row-menu-trigger { width: 22px; height: 22px; border-radius: var(--r-sm); color: var(--muted); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .row-menu-trigger:hover,
 .app-shell[data-theme][data-color-scheme] .row-menu.open .row-menu-trigger { color: var(--text); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .thread-row-wrap:not(.archived) > .row-menu { top: 6px; right: 5px; }
 
 /* ---- Archived ---- */
 .app-shell[data-theme][data-color-scheme] .archived-threads {
@@ -362,8 +374,7 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
   border-top: 1px solid var(--line-quiet);
   background: none;
 }
-.app-shell[data-theme][data-color-scheme] .archived-toggle,
-.app-shell[data-theme][data-color-scheme] .archived-delete-all { border-radius: var(--r-sm); }
+.app-shell[data-theme][data-color-scheme] .archived-toggle { border-radius: var(--r-sm); }
 .app-shell[data-theme][data-color-scheme] .archived-toggle:hover { background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .thread-row { height: 30px; border-radius: var(--r-sm); }
 .app-shell[data-theme][data-color-scheme] .thread-row:hover { background: var(--lm-hover); }
@@ -395,7 +406,7 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
   left: 50%;
   width: 2px;
   border-radius: 0;
-  background: var(--green-line);
+  background: var(--accent-line);
   opacity: 0;
   transform: translateX(-50%);
 }
@@ -459,4 +470,194 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
   .app-shell[data-theme][data-color-scheme] .row-menu-trigger,
   .app-shell[data-theme][data-color-scheme] .sidebar-section-resize::after,
   .app-shell[data-theme][data-color-scheme] .pane-resize::after { transition: none; }
+}
+
+/* ---- Sidebar organisation (2026-11-17) ----
+   - The project list is only as tall as its rows. The divider's position is
+     now its maximum, so a short list no longer leaves a band of empty space
+     above Threads; a long one still scrolls inside that limit.
+   - Bulk actions ("Archive all", "Delete all archived") moved from beside the
+     search field into the "…" next to the Threads heading, so the search
+     field takes the whole row.
+   - Thread rows keep the inbox card (round 7, owner decision): title, pin
+     and provider mark on the first line; folder or branch and the live
+     status on the second (see "Thread rows" above). */
+.app-shell[data-theme][data-color-scheme] .workspaces-section {
+  flex: 0 1 auto;
+  min-height: 64px;
+  max-height: var(--sidebar-split, 30%);
+}
+.app-shell[data-theme][data-color-scheme] .workspace-list { min-height: 0; overflow-y: auto; }
+.app-shell[data-theme][data-color-scheme] .threads-section { flex: 1 1 0; }
+.app-shell[data-theme][data-color-scheme] .section-label-tools { display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .section-label-tools > .row-menu { position: static; opacity: 1; pointer-events: auto; }
+.app-shell[data-theme][data-color-scheme] .section-label-tools > .row-menu .row-menu-trigger { width: 24px; height: 24px; color: var(--muted); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .section-label-tools > .row-menu .row-menu-trigger:hover,
+.app-shell[data-theme][data-color-scheme] .section-label-tools > .row-menu.open .row-menu-trigger { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .thread-search-actions { display: flex; }
+.app-shell[data-theme][data-color-scheme] .thread-search-actions > .thread-search { flex: 1 1 auto; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .thread-search input { min-width: 0; font-size: var(--fs-ui); }
+.app-shell[data-theme][data-color-scheme] .thread-kind-switch button,
+.app-shell[data-theme][data-color-scheme] .thread-kind-switch button span { font-size: 11px; }
+
+.app-shell[data-theme][data-color-scheme] .thread-card > .thread-card-title { min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .thread-card-workspace { font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .thread-card-pr { font-size: 11px; }
+/* Sub-agent group badges: rounded squares, readable size. */
+.app-shell[data-theme][data-color-scheme] .subagent-group-tag,
+.app-shell[data-theme][data-color-scheme] .subagent-group-count { border-radius: var(--r-chip); font-size: 11px; }
+
+/* ---- Sidebar rows, round 2 (2026-11-17) ----
+   - The search term is marked in titles with an accent underline, no fill.
+   - Hover is a faint fill (--lm-hover, lowered in tokens.css); selection is
+     the press fill and a heavier title, so the two never read alike (D09).
+   - Keyboard focus on a row is the same ring as everywhere else, inset so
+     neighbouring rows don't clip it. */
+.app-shell[data-theme][data-color-scheme] .thread-card-title mark {
+  color: inherit;
+  background: transparent;
+  font-weight: 650;
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+}
+.app-shell[data-theme][data-color-scheme] .thread-row-wrap { position: relative; }
+.app-shell[data-theme][data-color-scheme] .thread-card { position: relative; }
+.app-shell[data-theme][data-color-scheme] .thread-row-wrap.active > .thread-card:hover { background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .thread-card:focus-visible { outline-offset: -2px; }
+.app-shell[data-theme][data-color-scheme] .workspace-row:focus-visible { outline-offset: -2px; }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .thread-card:focus { outline-offset: -2px; }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .workspace-row:focus { outline-offset: -2px; }
+/* Selected rows read secondary text in --muted, which keeps AA on the fill. */
+.app-shell[data-theme][data-color-scheme] .thread-row-wrap.active .thread-card-workspace,
+.app-shell[data-theme][data-color-scheme] .thread-row-wrap.active .thread-card-pin { color: var(--ink-2); }
+
+/* Settings shortcut hint, quiet, at the row's end. */
+.app-shell[data-theme][data-color-scheme] .sidebar-settings { display: flex; align-items: center; gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .sidebar-settings > span { flex: 1 1 auto; text-align: left; }
+.app-shell[data-theme][data-color-scheme] .sidebar-settings > kbd {
+  padding: 0;
+  border: 0;
+  color: var(--muted-2);
+  background: transparent;
+  font: 400 11.5px var(--font-sans);
+  letter-spacing: .02em;
+  opacity: 0;
+}
+.app-shell[data-theme][data-color-scheme] .sidebar-settings:hover > kbd,
+.app-shell[data-theme][data-color-scheme] .sidebar-settings:focus > kbd { opacity: 1; }
+
+/* L03: in light themes the search field is a real field (white, hairline). */
+.app-shell[data-theme][data-color-scheme="light"] .thread-search { border-color: var(--line); background: var(--field); }
+
+/* ---- Sidebar rows, round 3 (G12, G14, M02) / round 6 (I8) ---- */
+/* A project with work running shows the shared working mark (the same arc
+   as the thread row and the top bar), plus a count when more than one is
+   working. A project with a thread waiting on you shows only the amber hand
+   and count instead; both counts are in the tooltip and the row's name. */
+.app-shell[data-theme][data-color-scheme] .workspace-working-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 16px;
+  height: 16px;
+  color: var(--info);
+}
+.app-shell[data-theme][data-color-scheme] .workspace-working-count > b { color: var(--muted); font: 500 11px/1 var(--font-sans); font-variant-numeric: tabular-nums; }
+/* The "…" has its own 30px slot at the end of the title line (the card's
+   right padding), so hovering never covers the pin, provider or status. */
+.app-shell[data-theme][data-color-scheme] .thread-row-wrap:not(.archived) > .row-menu { top: 6px; right: 5px; transform: none; }
+.app-shell[data-theme][data-color-scheme] .thread-row-wrap:hover > .thread-card .thread-card-meta,
+.app-shell[data-theme][data-color-scheme] .thread-row-wrap:focus-within > .thread-card .thread-card-meta { visibility: visible; }
+/* Second line: the folder (or branch) gives way before the status does, so
+   "Working 12s" or "Needs approval" is never cut, down to the 230px sidebar.
+   The mark is the shared WorkingIndicator in the status ink. */
+.app-shell[data-theme][data-color-scheme] .thread-card > .thread-card-context { gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .thread-card-context > .thread-card-workspace { flex: 0 1 auto; }
+.app-shell[data-theme][data-color-scheme] .thread-card-context > .thread-card-status { flex: 0 0 auto; min-width: max-content; margin-left: auto; line-height: 15px; }
+.app-shell[data-theme][data-color-scheme] .thread-card-status .thread-card-working-mark { color: inherit; }
+.app-shell[data-theme][data-color-scheme] .thread-card-duration[hidden] { display: none; }
+.app-shell[data-theme][data-color-scheme] .thread-card-status.unavailable { color: var(--orange); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .thread-card.unavailable .thread-card-title { color: var(--ink-2); }
+/* Selected: the press fill and a heavier title, as the inbox card always
+   had (no edge mark). A thread that failed to open is still the selected
+   row while it is the one on screen (D3); only its title is dimmed. */
+
+/* ---- Floating sidebar over a tucked layout (B05) ----
+   901-1250px with the Tools panel open: the sidebar opens over the chat
+   instead of closing the Tools panel. */
+.app-shell[data-theme][data-color-scheme] .sidebar.peek {
+  position: absolute;
+  z-index: var(--z-peek);
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--sidebar-width, 264px);
+  flex-basis: auto;
+  opacity: 1;
+  transform: none;
+  border-right: 1px solid var(--line-strong);
+  box-shadow: var(--lm-pop-shadow);
+}
+.app-shell[data-theme][data-color-scheme] .sidebar-peek-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-peek-scrim);
+  background: var(--scrim);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .sidebar.peek { animation: lm-fade var(--lm-d-2) ease backwards; }
+}
+.app-shell[data-theme][data-color-scheme] .thread-card-status.done { color: var(--success); }
+
+/* ---- Sidebar attention, round 4 (M05) / round 5 (O2, M01) ----
+   A status is never truncated, in any row state (pinned, selected, hover,
+   running, menu open): it sits on the card's second line and only the folder
+   name beside it shrinks. The first line's badges keep their width; only the
+   title shrinks. The row's "…" has its own 30px slot. */
+.app-shell[data-theme][data-color-scheme] .thread-card { grid-template-columns: minmax(0, 1fr) max-content; }
+.app-shell[data-theme][data-color-scheme] .thread-card > .thread-card-meta { min-width: max-content; overflow: visible; }
+/* Project rows say how many threads wait on you (amber hand + number) and,
+   when more than one is working, how many are working. */
+.app-shell[data-theme][data-color-scheme] .workspace-attention-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-chip);
+  color: var(--orange);
+  background: var(--orange-soft);
+  font: 600 11px/1 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+}
+/* The "Needs you" filter says it's on and offers the way back. */
+.app-shell[data-theme][data-color-scheme] .thread-filter-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 4px;
+  padding: 4px 6px 4px 8px;
+  border-radius: var(--r-sm);
+  color: var(--orange);
+  background: var(--orange-soft);
+  font-size: var(--fs-meta);
+}
+.app-shell[data-theme][data-color-scheme] .thread-filter-note > span { flex: 1 1 auto; min-width: 0; color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .thread-filter-note > button {
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: transparent;
+  font: 500 var(--fs-meta) var(--font-sans);
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .thread-filter-note > button:hover { background: var(--lm-hover); }
+@media (forced-colors: active) {
+  .app-shell[data-theme][data-color-scheme] .workspace-attention-count,
+  .app-shell[data-theme][data-color-scheme] .thread-filter-note { border: 1px solid CanvasText; }
 }

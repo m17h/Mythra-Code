@@ -1,13 +1,13 @@
 /* Compact per-reference dependency map, anchored to an @skill token. */
 .skill-reference-inspector {
-  position: fixed; inset: auto; z-index: 60; margin: 0; padding: 0; box-sizing: border-box;
+  position: fixed; inset: auto; z-index: var(--z-popover); margin: 0; padding: 0; box-sizing: border-box;
   display: flex; flex-direction: column; min-width: 0; max-width: calc(100vw - 16px); overflow: hidden;
   border: 1px solid var(--line-strong); border-radius: var(--r-md, 8px);
   color: var(--text); background: var(--panel-2); box-shadow: var(--shadow);
   font-size: var(--fs-meta, 12px); line-height: 1.4; text-align: left; visibility: hidden;
   animation: sri-in 110ms ease-out;
 }
-.skill-reference-inspector.is-portaled { z-index: 140; }
+.skill-reference-inspector.is-portaled { z-index: var(--z-popover); }
 .skill-reference-inspector:focus { outline: none; }
 @keyframes sri-in { from { opacity: 0; transform: translateY(2px); } }
 @media (prefers-reduced-motion: reduce) { .skill-reference-inspector { animation: none; } }
@@ -45,13 +45,13 @@
    the start so the nearest folder stays readable. */
 .sri-name { display: flex; align-items: baseline; gap: 5px; min-width: 0; overflow: hidden; }
 .sri-label { flex: 0 1 auto; min-width: 2.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sri-where { flex: 0 10000 auto; min-width: 0; overflow: hidden; direction: rtl; text-align: left; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-2); font-family: var(--font-mono); font-size: var(--fs-micro, 10px); }
+.sri-where { flex: 0 10000 auto; min-width: 0; overflow: hidden; direction: rtl; text-align: left; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-2); font-family: var(--font-mono); font-size: var(--fs-meta, 11px); }
 .sri-where > bdi { direction: ltr; unicode-bidi: isolate; }
-.sri-status { display: inline-flex; align-items: center; gap: 3px; color: var(--muted-2); font-size: var(--fs-micro, 10px); white-space: nowrap; }
+.sri-status { display: inline-flex; align-items: center; gap: 3px; color: var(--muted-2); font-size: var(--fs-meta, 11px); white-space: nowrap; }
 .sri-item.is-failed > .sri-row { color: var(--red); }
 .sri-item.is-failed > .sri-row > svg, .sri-item.is-failed > .sri-row .sri-status { color: var(--red); font-weight: 600; }
 .sri-item.is-repeat:not(.is-failed) > .sri-row .sri-label { color: var(--muted); }
-.sri-reason, .sri-reference { margin: 0 0 5px 18px; font-size: var(--fs-micro, 10px); line-height: 1.45; overflow-wrap: anywhere; }
+.sri-reason, .sri-reference { margin: 0 0 5px 18px; font-size: var(--fs-meta, 11px); line-height: 1.45; overflow-wrap: anywhere; }
 .sri-reason { color: var(--red); }
 .sri-reference { display: block; margin-top: -3px; color: var(--muted-2); font-family: var(--font-mono); white-space: pre-wrap; }
 
@@ -60,9 +60,9 @@
 .sri-issues h4 { margin: 0 0 4px; color: var(--muted-2); font-size: var(--fs-meta, 11px); font-weight: 600; letter-spacing: 0; }
 .sri-issues ul { margin: 0; padding: 0; list-style: none; }
 .sri-issues li { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; color: var(--red); overflow-wrap: anywhere; }
-.sri-issues small { color: var(--muted-2); font-size: var(--fs-micro, 10px); }
+.sri-issues small { color: var(--muted-2); font-size: var(--fs-meta, 11px); }
 
-.sri-foot { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); color: var(--muted-2); font-size: var(--fs-micro, 10px); }
+.sri-foot { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); color: var(--muted-2); font-size: var(--fs-meta, 11px); }
 .sri-foot > span:first-child { flex: 1; min-width: 0; }
 .sri-keys { flex: 0 0 auto; white-space: nowrap; }
 .sri-keys kbd { padding: 0 4px; border: 1px solid var(--line-strong); border-radius: 3px; font-family: inherit; font-size: inherit; }

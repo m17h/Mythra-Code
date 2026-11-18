@@ -1,5 +1,5 @@
 import { memo, useMemo } from "react";
-import { Boxes, FileText } from "lucide-react";
+import { Boxes, FileText, ChevronRight } from "lucide-react";
 import type { SkillDependencyReport } from "../types";
 import type { SkillMentionSkill } from "../lib/skillMentions";
 import { hasBlockedSkillDependencies, isSkillDependencyPath, validSkillDependencyReport } from "../lib/skillDependencies";
@@ -59,7 +59,7 @@ export const SkillDependencyDetails = memo(function SkillDependencyDetails({ rep
     return node ? `${node.kind === "skill" ? "@" : ""}${node.name}` : id;
   };
   return <details className={`skill-dependency-details${turnBlocked ? " is-blocked" : ""}`}>
-    <summary>{label} · {skillCount} skill{skillCount === 1 ? "" : "s"}{documentCount > 0 && ` · ${documentCount} document${documentCount === 1 ? "" : "s"}`}{turnBlocked && " · blocked"}</summary>
+    <summary className="lm-summary"><ChevronRight size={12} aria-hidden="true" className="lm-chevron" />{label} · {skillCount} skill{skillCount === 1 ? "" : "s"}{documentCount > 0 && ` · ${documentCount} document${documentCount === 1 ? "" : "s"}`}{turnBlocked && " · blocked"}</summary>
     <div className="skill-dependency-detail-body" tabIndex={0} role="region" aria-label="Skill dependency graph">
       <p className="skill-dependency-roots">{report.roots.map((root, index) => <span key={`${root.channel}:${root.nodeId}:${index}`} className={blocked.has(root.nodeId) ? "is-blocked" : undefined}>{root.channel === "system" ? "System" : "Message"}: @{root.name}</span>)}</p>
       <ul className="skill-dependency-nodes">

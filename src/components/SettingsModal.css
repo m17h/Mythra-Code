@@ -14,7 +14,7 @@
    background instead of letting them escape behind it. */
 .slider-style-preview.astra { isolation: isolate; }
 .slider-style-preview.astra::before {
-  content: ""; position: absolute; inset: 3px 4px; z-index: 2; pointer-events: none;
+  content: ""; position: absolute; inset: 3px 4px; z-index: calc(var(--z-raised) + 1); pointer-events: none;
   background: radial-gradient(circle at 12% 28%, #fff 0 1px, transparent 1.4px), radial-gradient(circle at 53% 78%, #75e7ff 0 1px, transparent 1.4px), radial-gradient(circle at 89% 22%, #ff8ee1 0 1px, transparent 1.4px);
   opacity: .58; animation: astra-twinkle 4.8s ease-in-out infinite alternate;
 }
@@ -45,7 +45,7 @@
 }
 @keyframes astra-preview-wave { to { background-position: 46px 50%, -23px 50%; } }
 .slider-style-preview.astra .slider-style-thumb {
-  left: 70%; z-index: 3; width: 12px; height: 12px; border: 0; border-radius: 0;
+  left: 70%; z-index: calc(var(--z-raised) + 2); width: 12px; height: 12px; border: 0; border-radius: 0;
   clip-path: polygon(50% 0, 61% 36%, 100% 50%, 61% 64%, 50% 100%, 39% 64%, 0 50%, 39% 36%);
   background: radial-gradient(circle, #fff 0 24%, #bcefff 36%, #916cff 72%); filter: drop-shadow(0 0 4px #8d7bff);
 }
@@ -84,19 +84,15 @@
 /* Chat typeface cards reuse the slider-style card shape; only the specimen
    well and the two-up grid differ. Each specimen renders in the family it
    selects, so the card is its own preview — no sample image, nothing to load. */
-.chat-font-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-.slider-style-card, .chat-font-card { min-width: 0; min-height: 62px; display: grid; grid-template-columns: 60px minmax(0, 1fr) 16px; align-items: center; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: rgba(255,255,255,.014); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
-.chat-font-card { grid-template-columns: 44px minmax(0, 1fr) 16px; }
-.slider-style-card:hover, .chat-font-card:hover { color: var(--ink-2); border-color: var(--line-strong); background: rgba(255,255,255,.035); }
-.slider-style-card.selected, .chat-font-card.selected { color: var(--text); border-color: color-mix(in srgb, var(--green) 32%, var(--line)); background: var(--surface-selected); }
-.slider-style-card > span:nth-child(2), .chat-font-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.slider-style-card strong, .chat-font-card strong { font-size: var(--fs-meta); font-weight: 620; }
-.slider-style-card small, .chat-font-card small { overflow: hidden; display: -webkit-box; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.slider-style-card > svg, .chat-font-card > svg { color: var(--green); }
+.slider-style-card { min-width: 0; min-height: 62px; display: grid; grid-template-columns: 60px minmax(0, 1fr) 16px; align-items: center; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: var(--surface-quiet); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.slider-style-card:hover { color: var(--ink-2); border-color: var(--line-strong); background: var(--lm-hover); }
+.slider-style-card.selected { color: var(--text); border-color: color-mix(in srgb, var(--accent) 32%, var(--line)); background: var(--surface-selected); }
+.slider-style-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.slider-style-card strong { font-size: var(--fs-meta); font-weight: 620; }
+.slider-style-card small { overflow: hidden; display: -webkit-box; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.slider-style-card > svg { color: var(--accent); }
 .slider-style-preview { position: relative; width: 58px; height: 24px; display: block; border-radius: 6px; background: rgba(0,0,0,.24); }
-.chat-font-preview { width: 42px; height: 34px; display: grid; place-items: center; border-radius: 6px; color: var(--ink-2); background: rgba(0,0,0,.24); font-size: 17px; line-height: 1; letter-spacing: 0; }
-.chat-font-card.selected .chat-font-preview { color: var(--text); }
-.app-shell[data-color-scheme="light"] .slider-style-preview, .app-shell[data-color-scheme="light"] .chat-font-preview { background: rgba(0,0,0,.06); }
+.app-shell[data-color-scheme="light"] .slider-style-preview { background: rgba(0,0,0,.06); }
 .slider-style-rail { position: absolute; left: 6px; right: 6px; top: 50%; height: 4px; transform: translateY(-50%); border-radius: 99px; }
 .slider-style-thumb { position: absolute; top: 50%; width: 10px; height: 10px; border: 2px solid var(--panel); border-radius: 50%; transform: translate(-50%, -50%); }
 
@@ -185,37 +181,25 @@
 /* Terminal timeout: a minutes field under its switch, in the field-label idiom. */
 .terminal-timeout-row > .terminal-timeout-detail { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--s-2); margin: 0; color: var(--muted-2); font-size: var(--fs-meta); }
 .terminal-timeout-detail > input { width: 11ch; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease; }
-.terminal-timeout-detail > input:focus { border-color: var(--green-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 9%, transparent); }
+.terminal-timeout-detail > input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent); }
 .terminal-timeout-detail > input[aria-invalid="true"] { border-color: var(--red); }
 .terminal-timeout-detail > .terminal-timeout-error { flex-basis: 100%; margin: 0; color: var(--red); line-height: 1.5; }
 
 /* Global file presets keep long source paths and opt-in previews readable. */
-.global-instruction-presets > .set-group-head { flex-wrap: wrap; }
-.global-instruction-presets > .set-group-head > h4 { flex: 1 1 220px; min-width: 0; }
-.settings-content .profile-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
-.instruction-file-grid { display: grid; gap: var(--s-2); }
-.instruction-file-card { min-width: 0; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-quiet); }
-.instruction-file-card.selected { border-color: var(--green-line); background: var(--surface-selected); }
-.instruction-file-heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); }
-.instruction-file-heading > strong { color: var(--ink-2); font-size: var(--fs-ui); font-weight: 600; }
-.instruction-source-label { color: var(--muted-2); font-size: var(--fs-micro); }
-.instruction-source-path { display: block; margin-top: var(--s-2); color: var(--muted); font: var(--fs-meta) var(--font-mono); overflow-wrap: anywhere; }
-.instruction-file-card > .instruction-file-status { margin: var(--s-2) 0 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+
 .instruction-file-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-3); }
 .instruction-file-preview { margin-top: var(--s-3); }
 .instruction-file-preview > label { display: grid; gap: var(--s-2); color: var(--muted); font-size: var(--fs-meta); overflow-wrap: anywhere; }
 .instruction-file-preview textarea { width: 100%; min-width: 0; resize: vertical; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: var(--field); font: var(--fs-meta)/1.6 var(--font-mono); }
-.instruction-file-preview textarea:focus-visible { outline: 2px solid var(--green-line); outline-offset: 2px; }
-.saved-instruction-preview { grid-column: 1 / -1; min-width: 0; padding: var(--s-2); border-top: 1px solid var(--line); }
+.instruction-file-preview textarea:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+
 .instruction-discovery-error { margin-bottom: var(--s-3); color: var(--red); font-size: var(--fs-meta); line-height: 1.5; overflow-wrap: anywhere; }
-.instruction-profile-title { display: flex; align-items: center; gap: 7px; }
-.instruction-profile-title > svg, .instruction-file-heading > svg { flex: 0 0 auto; }
+
 .instruction-save-status { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--fs-meta); }
-.instruction-save-status > svg { color: var(--green); }
+.instruction-save-status > svg { color: var(--accent); }
 .instruction-save-status.failed, .instruction-save-error { color: var(--red); }
 .instruction-save-error, .instruction-editor-note { margin: var(--s-2) 0 0; font-size: var(--fs-meta); line-height: 1.5; }
 .instruction-editor-note { color: var(--muted); }
-.global-instruction-presets[hidden], .instruction-file-card[hidden] { display: none; }
 
 /* ---- Sidebar: unsaved markers, setting search results, pane tabs ---- */
 .settings-dirty-dot { position: absolute; top: 50%; right: 10px; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); transform: translateY(-50%); }
@@ -225,17 +209,17 @@
 .settings-row-result > span { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }
 .settings-row-highlight { animation: settings-row-flash 1.6s ease-out; border-radius: var(--r-md); }
 @keyframes settings-row-flash {
-  0%, 35% { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--green) 70%, transparent); background-color: var(--green-soft); }
+  0%, 35% { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent); background-color: var(--accent-soft); }
   100% { box-shadow: inset 0 0 0 2px transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .settings-row-highlight { animation: none; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--green) 70%, transparent); }
+  .settings-row-highlight { animation: none; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent); }
 }
 .settings-pane-tabs { display: inline-flex; gap: 2px; margin: 0 0 var(--s-4); padding: 2px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--field); }
 .settings-pane-tabs > button { min-height: 28px; padding: 0 12px; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-ui); font-weight: 600; cursor: pointer; }
 .settings-pane-tabs > button:hover { color: var(--text); }
 .settings-pane-tabs > button.selected { color: var(--text); background: var(--panel-3); box-shadow: var(--elev-1); }
-.settings-pane-tabs > button:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.settings-pane-tabs > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* A switch that sits level with its title instead of the row's centre, so
    text that wraps or appears below cannot move it. */

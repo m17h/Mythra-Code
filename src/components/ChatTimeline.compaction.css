@@ -1,6 +1,6 @@
 /* A provider compaction is a fold in the conversation, not another work card. */
 .context-compaction {
-  --compaction-accent: color-mix(in srgb, var(--green) 58%, var(--muted));
+  --compaction-accent: color-mix(in srgb, var(--accent) 58%, var(--muted));
   display: grid;
   grid-template-columns: minmax(8px, 1fr) minmax(0, auto) minmax(8px, 1fr);
   align-items: center;

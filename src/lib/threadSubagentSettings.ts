@@ -179,12 +179,12 @@ export function nativeSubagentUnavailableReason(provider: Provider, context: {
   if (optionsError) return optionsError;
   if (provider === "openai") {
     const preferred = context.nativeOptions?.codex;
-    if (preferred?.autoCompactTokens !== undefined) return "Codex currently shares the parent compaction setting with native workers. Reset child compaction to inherited, or use Mythra Code for independent worker windows.";
+    if (preferred?.autoCompactTokens !== undefined) return "The Codex CLI currently shares the parent compaction setting with native workers. Reset child compaction to inherited, or use Mythra Code for independent worker windows.";
     const model = preferred?.model?.trim() || context.nativeDefaultModel;
     const supported = model ? context.nativeReasoningEfforts?.[model] : undefined;
     if (preferred?.reasoningEffort && supported && !supported.includes(preferred.reasoningEffort)) return `The selected native sub-agent model does not support ${preferred.reasoningEffort} reasoning effort. Choose a supported effort or provider default.`;
-    if (!context.codexRuntime?.available || !context.readiness.codexRuntimeAvailable) return "Install the Codex runtime to use native sub-agents.";
-    if (!context.readiness.openAiSignedIn) return "Sign in to ChatGPT or use an OpenAI API key to use native sub-agents.";
+    if (!context.codexRuntime?.available || !context.readiness.codexRuntimeAvailable) return "Install Codex to use its built-in sub-agents.";
+    if (!context.readiness.openAiSignedIn) return "Sign in with ChatGPT or use an OpenAI API key to use native sub-agents.";
     if (!nativeSubagentVersionAtLeast(context.codexRuntime.runningVersion ?? context.codexRuntime.version, [0, 161, 0])) return "Native sub-agents require Codex 0.161.0 or newer; update or refresh the runtime.";
     return null;
   }
@@ -200,5 +200,5 @@ export function nativeSubagentUnavailableReason(provider: Provider, context: {
     if ((nativeModel === "haiku" || nativeModel?.startsWith("claude-haiku-5-5")) && !nativeSubagentVersionAtLeast(context.claudeRuntime.version, [2, 1, 293])) return "Haiku 5.5 native sub-agents require Claude Code 2.1.293 or newer; update Claude Code and refresh the runtime.";
     return null;
   }
-  return "Native sub-agents are available with Codex and Claude Code. Choose one of those providers.";
+  return "Native sub-agents are available with OpenAI (Codex CLI) and Claude Code. Choose one of those providers.";
 }

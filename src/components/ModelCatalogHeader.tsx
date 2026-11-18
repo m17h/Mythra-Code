@@ -1,6 +1,11 @@
 import { LoaderCircle, RefreshCw } from "lucide-react";
 
-/** Keep refresh discoverable even when the catalog is filtered or unavailable. */
+/**
+ * One quiet line: "OpenAI models · From your account", then refresh (kept
+ * discoverable even when the catalog is filtered or unavailable). The ⇧⌘M
+ * hint lives in the model chip's tooltip, not here, so it never reads as part
+ * of the source text (round 6, I14).
+ */
 export function ModelCatalogHeader({ provider, heading, description, loading, disabled, onRefresh }: {
   provider: string;
   heading: string;
@@ -11,8 +16,10 @@ export function ModelCatalogHeader({ provider, heading, description, loading, di
 }) {
   return (
     <div className="model-catalog-heading openrouter-menu-meta model-menu-heading">
-      <span title={heading}>{heading}</span>
-      <small title={description}>{description}</small>
+      <span className="model-catalog-title" title={`${heading} · ${description}`}>
+        <span className="model-catalog-name">{heading}</span>
+        <small className="model-catalog-source"><span aria-hidden="true"> · </span>{description}</small>
+      </span>
       {onRefresh && <button
         type="button"
         className="model-meta-refresh"

@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, ChevronDown, Gauge, Zap } from "lucide-react";
+import { withShortcut } from "../lib/shortcuts";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { ChevronDown, Gauge, Search, X, Zap } from "lucide-react";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
 import { ProviderLogo } from "./BrandLogos";
-import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
+import type { ModelFavoriteProps } from "./ModelFavoriteStar";
+import { ModelCatalogRow } from "./ModelCatalogRow";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 import { closesModelMenu } from "../lib/composerMenus";
 import { ModelCatalogHeader } from "./ModelCatalogHeader";
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
 
 export type ModelKind = "sol" | "terra" | "luna" | "astra" | "generic";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -27,10 +30,10 @@ export interface RuntimeModel {
  * stands in as the whole list when the runtime reports nothing at all.
  */
 export const OPENAI_MODELS: Array<{ kind: ModelKind; name: string; id: string; tagline: string; iconSrc: string }> = [
-  { kind: "sol", name: "Sol", id: "gpt-5.6-sol", tagline: "Detail & polish", iconSrc: "/model-icons/sol.png" },
-  { kind: "terra", name: "Terra", id: "gpt-5.6-terra", tagline: "Everyday power", iconSrc: "/model-icons/terra.png" },
-  { kind: "luna", name: "Luna", id: "gpt-5.6-luna", tagline: "Fast & focused", iconSrc: "/model-icons/luna.png" },
-  { kind: "astra", name: "Astra", id: "gpt-6-astra", tagline: "Frontier intelligence", iconSrc: "/model-icons/astra.png" },
+  { kind: "sol", name: "GPT-5.6 Sol", id: "gpt-5.6-sol", tagline: "Detail & polish", iconSrc: "/model-icons/sol.png" },
+  { kind: "terra", name: "GPT-5.6 Terra", id: "gpt-5.6-terra", tagline: "Everyday power", iconSrc: "/model-icons/terra.png" },
+  { kind: "luna", name: "GPT-5.6 Luna", id: "gpt-5.6-luna", tagline: "Fast & focused", iconSrc: "/model-icons/luna.png" },
+  { kind: "astra", name: "GPT-6 Astra", id: "gpt-6-astra", tagline: "Frontier intelligence", iconSrc: "/model-icons/astra.png" },
 ];
 
 function namedModelArtwork(id: string) {
@@ -122,18 +125,24 @@ export function ModelPowerControl({
   onFast: (enabled: boolean) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listId = useId();
   const catalog = useMemo(() => openAiModelOptions(runtimeModels), [runtimeModels]);
+  // A filter appears once the catalog is longer than a glance (G8).
+  const searchable = catalog.length > 6;
+  const normalizedQuery = searchable ? query.trim().toLowerCase() : "";
   const options = useMemo(
-    () => sortByFavorites(catalog, favorites, (entry) => entry.id),
-    [catalog, favorites],
+    () => sortByFavorites(catalog.filter((entry) => !normalizedQuery || `${entry.name} ${entry.id} ${entry.tagline}`.toLowerCase().includes(normalizedQuery)), favorites, (entry) => entry.id),
+    [catalog, favorites, normalizedQuery],
   );
+  useEffect(() => { if (!menuOpen) setQuery(""); }, [menuOpen]);
   const starredVisible = favoriteCount(options, favorites, (entry) => entry.id);
   // A saved model the runtime no longer lists stays selected and visible; the
   // menu never silently rewrites the user's choice.
-  const selectedModel = options.find((entry) => entry.id === model)
-    ?? (model ? { id: model, name: model, tagline: "Saved model", kind: modelKind(model), iconSrc: namedModelArtwork(model)?.iconSrc, isDefault: false } : options[0]);
+  const selectedModel = catalog.find((entry) => entry.id === model)
+    ?? (model ? { id: model, name: model, tagline: "Saved model", kind: modelKind(model), iconSrc: namedModelArtwork(model)?.iconSrc, isDefault: false } : catalog[0]);
   const kind = selectedModel?.kind ?? "generic";
   const effortIndex = Math.max(0, EFFORTS.findIndex((entry) => entry.value === (effort === "ultra" ? "max" : effort)));
   const reasoningFill = (effortIndex / (EFFORTS.length - 1)) * 100;
@@ -144,43 +153,30 @@ export function ModelPowerControl({
     function handlePointerDown(event: PointerEvent) {
       if (closesModelMenu(event, rootRef.current)) setMenuOpen(false);
     }
-    // Capture phase + stopPropagation: Escape closes only this menu and never
-    // reaches the app-level handler that stops the running turn.
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        setMenuOpen(false);
-        rootRef.current?.querySelector<HTMLButtonElement>(".model-picker-trigger")?.focus();
-      }
-    }
     document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("click", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown, true);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("click", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [menuOpen]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const frame = requestAnimationFrame(() => {
-      // Focus once on opening, not again when a refresh changes the catalog.
-      if (!rootRef.current?.querySelector(".model-menu")?.contains(document.activeElement)) {
-        const selected = optionRefs.current.find((option) => option?.getAttribute("aria-checked") === "true");
-        (selected ?? optionRefs.current[0])?.focus();
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [menuOpen]);
-
-  const moveOptionFocus = (direction: number) => {
-    const enabled = optionRefs.current.filter((entry): entry is HTMLButtonElement => Boolean(entry && entry.isConnected && !entry.disabled));
-    if (!enabled.length) return;
-    const current = enabled.indexOf(document.activeElement as HTMLButtonElement);
-    enabled[(current + direction + enabled.length) % enabled.length]?.focus();
-  };
+  // Shared menu contract: ↓/↑ open, focus lands on the selected model, ↑/↓
+  // wrap, Home/End, type-ahead, Escape returns to the trigger, ⇧⌘M opens.
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuKeys = useMenuKeyboard({
+    open: menuOpen,
+    setOpen: setMenuOpen,
+    menuRef,
+    triggerRef,
+    searchRef: searchable ? searchRef : undefined,
+    answersModelShortcut: !disabled,
+    canOpen: () => {
+      if (signedIn === false) { onSignInRequired?.(); return false; }
+      return !disabled;
+    },
+  });
 
   return (
     <div
@@ -196,19 +192,16 @@ export function ModelPowerControl({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-label={`OpenAI model: ${selectedModel?.name ?? "not selected"}`}
+          title={withShortcut(`Model: ${selectedModel?.name ?? "not selected"}`, "modelPicker")}
           disabled={disabled}
           aria-disabled={signedIn === false || undefined}
           onClick={() => {
             if (signedIn === false) { onSignInRequired?.(); return; }
             setMenuOpen((open) => !open);
           }}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-              event.preventDefault();
-              if (signedIn === false) { onSignInRequired?.(); return; }
-              setMenuOpen(true);
-            }
-          }}
+          ref={triggerRef}
+          onPointerDown={menuKeys.onTriggerPointerDown}
+          onKeyDown={menuKeys.onTriggerKeyDown}
         >
           {/* Keyed by model so a switch replays the arrival burst. */}
           <span className={`model-orb ${selectedModelIconSrc ? "named-model-art" : "provider-model-art"}`} key={selectedModel?.id ?? kind}>
@@ -232,47 +225,43 @@ export function ModelPowerControl({
           <ChevronDown className="model-picker-chevron" size={15} />
         </button>
 
-        <div className="model-menu" role="menu" aria-label="OpenAI model selector" onKeyDown={(event) => {
-          if (event.key === "ArrowDown") { event.preventDefault(); moveOptionFocus(1); }
-          if (event.key === "ArrowUp") { event.preventDefault(); moveOptionFocus(-1); }
-          if (event.key === "Home") { event.preventDefault(); optionRefs.current.find((entry) => entry && !entry.disabled)?.focus(); }
-          if (event.key === "End") { event.preventDefault(); [...optionRefs.current].reverse().find((entry) => entry && !entry.disabled)?.focus(); }
-        }}>
-          <ModelCatalogHeader provider="OpenAI" heading="Choose your model" description={runtimeModels.length ? `${options.length} from your OpenAI account` : "Built-in list — account catalog unavailable"} loading={loading} disabled={disabled} onRefresh={onRefresh} />
-          {options.map((entry, index) => {
-            const selected = selectedModel?.id === entry.id;
-            const modelIconSrc = entry.iconSrc;
-            return (
-              <div className="model-row" key={entry.id} role="none">
-                <button
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={selected}
-                  aria-label={`${entry.name}: ${entry.tagline}`}
-                  ref={(node) => { optionRefs.current[index] = node; }}
-                  className={`model-menu-option ${entry.kind} ${selected ? "selected" : ""}${starredVisible > 0 && index === starredVisible - 1 ? " favorite-group-end" : ""}`}
-                  style={{ "--option-accent": entry.kind === "generic" ? "var(--muted-2)" : undefined } as CSSProperties}
-                  disabled={disabled}
-                  aria-disabled={signedIn === false || undefined}
-                  onClick={() => {
-                    if (signedIn === false) { onSignInRequired?.(); return; }
-                    onModel(entry.id);
-                    setMenuOpen(false);
-                  }}
-                  title={`${entry.name}: ${entry.tagline}`}
-                >
-                  <span className={`menu-model-orb ${modelIconSrc ? "named-model-art" : "provider-model-art"}`}>
-                    {modelIconSrc
-                      ? <img src={modelIconSrc} alt="" aria-hidden="true" draggable={false} />
-                      : <ProviderLogo provider="openai" size={13} />}
-                  </span>
-                  <span><strong>{entry.name}</strong><small>{entry.tagline}</small></span>
-                  {selected && <Check size={14} />}
-                </button>
-                {onToggleFavorite && <ModelFavoriteStar model={entry.id} label={entry.name} favorite={favorites.includes(entry.id)} onToggle={onToggleFavorite} />}
-              </div>
-            );
-          })}
+        <div ref={menuRef} className="model-menu" role="menu" aria-label="OpenAI model selector" onKeyDown={menuKeys.onMenuKeyDown}>
+          <ModelCatalogHeader provider="OpenAI" heading="OpenAI models" description={runtimeModels.length ? "From your account" : "Built-in list"} loading={loading} disabled={disabled} onRefresh={onRefresh} />
+          {searchable && <div className="openrouter-search-row model-menu-search">
+            <Search size={14} aria-hidden="true" />
+            <input ref={searchRef} aria-label="Filter OpenAI models" aria-controls={listId} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter models…" />
+            {query && <button type="button" onClick={() => { setQuery(""); searchRef.current?.focus(); }} aria-label="Clear model filter"><X size={13} /></button>}
+          </div>}
+          <div className="model-menu-list" id={listId} role="presentation">
+          {options.map((entry, index) => (
+            <ModelCatalogRow
+              key={entry.id}
+              id={entry.id}
+              name={entry.name}
+              detail={entry.tagline}
+              art={<span className={`menu-model-orb ${entry.iconSrc ? "named-model-art" : "provider-model-art"}`}>
+                {entry.iconSrc
+                  ? <img src={entry.iconSrc} alt="" draggable={false} />
+                  : <ProviderLogo provider="openai" size={13} />}
+              </span>}
+              selected={selectedModel?.id === entry.id}
+              groupEnd={starredVisible > 0 && index === starredVisible - 1}
+              ariaLabel={`${entry.name}: ${entry.tagline}`}
+              title={`${entry.name}: ${entry.tagline}`}
+              className={`model-menu-option ${entry.kind}`}
+              style={{ "--option-accent": entry.kind === "generic" ? "var(--muted-2)" : undefined } as CSSProperties}
+              disabled={disabled}
+              ariaDisabled={signedIn === false}
+              favorite={onToggleFavorite ? favorites.includes(entry.id) : undefined}
+              onToggleFavorite={onToggleFavorite}
+              onSelect={() => {
+                if (signedIn === false) { onSignInRequired?.(); return; }
+                menuKeys.select(() => onModel(entry.id));
+              }}
+            />
+          ))}
+          {searchable && !options.length && <p className="model-menu-no-match" role="status">No models match “{query.trim()}”.</p>}
+          </div>
           {error && signedIn !== false && <div className="openrouter-catalog-warning" role={menuOpen ? "status" : undefined}>{error} · {runtimeModels.length ? "Showing the last loaded catalog." : "Showing the built-in list."}</div>}
         </div>
       </div>
@@ -289,7 +278,7 @@ export function ModelPowerControl({
           disabled={disabled}
           onIndex={(next) => onEffort(EFFORTS[next].value)}
         />
-        <div className="reasoning-labels">
+        <div className="reasoning-labels" aria-hidden="true">
           {EFFORTS.map((entry, index) => <span key={entry.value} className={index === effortIndex ? "active" : ""}>{entry.shortLabel}</span>)}
         </div>
       </div>

@@ -352,7 +352,7 @@ export function childAgentModel(target: Pick<ChildAgentTarget, "provider" | "mod
 
 /** A selection stays visible while its subscription or API key needs setup. */
 export function providerSignInIssue(provider: Provider, readiness: ChildAgentReadiness): string | null {
-  if (provider === "openai" && !readiness.openAiSignedIn) return "Sign in to ChatGPT or use an OpenAI API key in Settings → Models & accounts to use OpenAI.";
+  if (provider === "openai" && !readiness.openAiSignedIn) return "Sign in with ChatGPT or use an OpenAI API key in Settings → Models & accounts to use OpenAI.";
   if (provider === "claude" && !readiness.claudeReady) return "Sign in to Claude Code or add an Anthropic API key in Settings → Models & accounts to use Claude.";
   return null;
 }
@@ -400,7 +400,7 @@ export function childAgentTargetIssue(
   if (target.provider === "openai" || target.provider === "openrouter" || target.provider === "lmstudio") {
     if (!readiness.codexRuntimeAvailable) return "The OpenAI runtime is not installed.";
   }
-  if (target.provider === "openai" && !readiness.openAiSignedIn) return "Sign in to ChatGPT or use an OpenAI API key first.";
+  if (target.provider === "openai" && !readiness.openAiSignedIn) return "Sign in with ChatGPT or use an OpenAI API key first.";
   if (target.provider === "openrouter" && !readiness.openRouterReady) return "Add an OpenRouter API key first.";
   if (target.provider === "lmstudio" && !readiness.lmStudioReady) return "Start LM Studio's local server and refresh its models first.";
   if (target.provider === "claude" && !readiness.claudeReady) return "Install Claude Code, then sign in or add an Anthropic API key first.";

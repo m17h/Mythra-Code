@@ -19,6 +19,7 @@ import {
   Send,
   ShieldCheck,
   TriangleAlert,
+  ChevronRight,
 } from "lucide-react";
 import {
   CreateEditor,
@@ -430,7 +431,7 @@ function PullRequestDetails({ pr, access, onBack }: { pr: ProjectPullRequests; a
 
         {detail.body.trim() && (
           <details className="git-pr-body">
-            <summary>Description</summary>
+            <summary className="lm-summary"><ChevronRight size={12} aria-hidden="true" className="lm-chevron" />Description</summary>
             <div>{detail.body}</div>
           </details>
         )}

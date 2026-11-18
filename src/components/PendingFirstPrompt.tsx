@@ -1,5 +1,5 @@
 import type { PendingFirstPrompt as PendingPrompt } from "../lib/pendingFirstPrompt";
-import { PixelWorkingMark } from "./PixelWorkingMark";
+import { WorkingIndicator } from "./WorkingIndicator";
 import "./ActivityStatus.css";
 import "./PendingFirstPrompt.css";
 
@@ -20,7 +20,7 @@ export function PendingFirstPrompt({ prompt, accepted = false, activityStatus = 
       {activityStatus && <div className="timeline-entry timeline-entry-activity">
         <div className="activity-status state-running live" role="status">
           <span className="activity-status-pill">
-            <span className="activity-status-mark working"><PixelWorkingMark live={!stopping} /></span>
+            <span className="activity-status-mark working"><WorkingIndicator size={12} /></span>
             <span className="activity-status-text">{stopping ? "Stopping…" : activityStatus === "working" ? "Working…" : "Starting…"}</span>
           </span>
         </div>

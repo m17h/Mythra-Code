@@ -14,6 +14,18 @@ export function ConfirmDialogModal() {
   return request ? <ConfirmDialogContents key={request.id} request={request} /> : null;
 }
 
+/**
+ * A bare "Confirm" says nothing about what happens. When a caller left the
+ * default, name the action from the question instead ("Delete", "Archive").
+ */
+const ACTION_VERBS = ["delete", "remove", "archive", "discard", "revert", "restore", "reset", "replace", "overwrite", "stop", "cancel", "close", "leave", "merge", "push", "apply", "install", "restart", "sign out", "disconnect", "revoke", "clear"];
+function actionLabel(label: string, title: string): string {
+  if (label !== "Confirm") return label;
+  const lower = title.toLowerCase();
+  const verb = ACTION_VERBS.find((candidate) => new RegExp(`(^|\\s)${candidate}\\b`).test(lower));
+  return verb ? verb.charAt(0).toUpperCase() + verb.slice(1) : label;
+}
+
 function ConfirmDialogContents({ request }: { request: ConfirmRequest }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const [linkError, setLinkError] = useState("");
@@ -35,6 +47,7 @@ function ConfirmDialogContents({ request }: { request: ConfirmRequest }) {
 
   const [title, ...body] = request.message.split("\n\n");
   const destructive = /delete|remove|revert|discard|archive/i.test(request.message);
+  const confirmLabel = actionLabel(request.confirmLabel, title);
   return (
     <div
       className="modal-backdrop confirm-backdrop"
@@ -62,7 +75,7 @@ function ConfirmDialogContents({ request }: { request: ConfirmRequest }) {
             className={`primary-button ${destructive ? "confirm-danger" : ""}`}
             onClick={() => settleConfirm(request.id, true)}
           >
-            {request.confirmLabel}
+            {confirmLabel}
           </button>
         </div>
         {request.footer && <p className="confirm-dialog-footnote">{request.footer}</p>}

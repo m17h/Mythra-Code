@@ -116,7 +116,7 @@ export function gitActionUnavailableReason(
   permission: PermissionMode,
 ): string | null {
   if (permission !== "read-only" || action === "status" || action === "diff") return null;
-  return "Switch this thread from Read only to Ask or Full access before changing Git or contacting GitHub.";
+  return "Switch this thread from Read only to Ask to act or Full access before changing Git or contacting GitHub.";
 }
 
 export function gitPushCommand(status: GitHubRepoStatus | null): string[] | null {

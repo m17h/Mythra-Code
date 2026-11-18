@@ -23,7 +23,7 @@
    off, as requested; other platforms still honor their reduced-transparency
    preference. */
 .app-shell[data-theme][data-color-scheme] .modal-backdrop.settings-backdrop {
-  background: var(--lm-scrim);
+  background: var(--scrim);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
@@ -65,7 +65,7 @@
   background: var(--lm-hover);
 }
 .app-shell[data-theme][data-color-scheme] .settings-search input { font-size: 12.5px; }
-.app-shell[data-theme][data-color-scheme] .settings-search:focus-within { border-color: var(--green-line); background: var(--field); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .settings-search:focus-within { border-color: var(--accent-line); background: var(--field); box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .settings-search-clear { width: 20px; height: 20px; border-radius: var(--r-chip); }
 .app-shell[data-theme][data-color-scheme] .settings-search-clear:hover { background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 12px; padding: 0 10px 14px; }
@@ -101,9 +101,11 @@
   background-image: none;
   box-shadow: none;
 }
-.app-shell[data-theme][data-color-scheme] .settings-nav button.active > svg:first-child { color: var(--green); background: transparent; }
-.app-shell[data-theme][data-color-scheme] .settings-update-dot { background: var(--green); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .settings-nav button.active > svg:first-child { color: var(--accent); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .settings-update-dot { background: var(--accent); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .settings-row-result > small { font-size: var(--fs-meta); }
+/* M10: one ordered results list while searching; setting rows are two lines. */
+.app-shell[data-theme][data-color-scheme] .settings-search-results > button.settings-row-result-button { height: auto; min-height: 34px; padding-top: 5px; padding-bottom: 5px; }
 .app-shell[data-theme][data-color-scheme] .settings-nav-empty { padding: 0 8px; }
 
 /* ---- Pane ---- */
@@ -139,21 +141,29 @@
 .app-shell[data-theme][data-color-scheme] .settings-close:hover { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .settings-close:active { background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .settings-content { --settings-content-end: 28px; padding: 6px 28px var(--settings-content-end); }
-.app-shell[data-theme][data-color-scheme] .settings-content::after { background: linear-gradient(to bottom, rgba(0, 0, 0, 0), var(--bg)); }
+.app-shell[data-theme][data-color-scheme] .settings-content::after { background: linear-gradient(to bottom, var(--lm-clear), var(--bg)); }
 @supports (color: color-mix(in srgb, red, blue)) {
   .app-shell[data-theme][data-color-scheme] .settings-content::after { background: linear-gradient(to bottom, color-mix(in srgb, var(--bg) 0%, transparent), var(--bg)); }
 }
 
-/* Footer: a hairline, then Cancel and Save as 30px push buttons. */
-.app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer {
-  gap: 8px;
-  padding: 12px 28px;
-  border-top: 1px solid var(--line);
-  background: var(--bg);
+/* Settings saves as you go, so there is no footer. The one confirmation is
+   a quiet "Saved" beside the close button that fades after a moment. */
+.app-shell[data-theme][data-color-scheme] .settings-saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  margin-top: -2px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
 }
-.app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer .primary-button,
-.app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer .secondary-button { min-height: 30px; padding: 0 14px; font-size: var(--fs-ui); }
-.app-shell[data-theme][data-color-scheme] .unsaved-hint { font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .settings-saved.show { opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .settings-saved > svg { color: var(--accent); }
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .settings-saved { transition: opacity var(--lm-d-2) ease; }
+}
 
 /* Push buttons inside the pane share one compact size. */
 .app-shell[data-theme][data-color-scheme] .settings-content .primary-button,
@@ -203,11 +213,8 @@
 .app-shell[data-theme][data-color-scheme] .set-control-help { color: var(--muted); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .set-body { padding: 12px 14px; }
 .app-shell[data-theme][data-color-scheme] .set-card.bare > .set-body { padding: 0; }
-.app-shell[data-theme][data-color-scheme] .set-group > .manager-list,
 .app-shell[data-theme][data-color-scheme] .set-group > .inline-create,
-.app-shell[data-theme][data-color-scheme] .set-group > .stacked-create,
 .app-shell[data-theme][data-color-scheme] .set-group > .schedule-create,
-.app-shell[data-theme][data-color-scheme] .set-group > .compact-note,
 .app-shell[data-theme][data-color-scheme] .set-group > .github-clone-grid {
   padding: 10px;
   border: 1px solid var(--line);
@@ -217,21 +224,11 @@
 /* Memory nests its rows in fieldsets; give them the same hairlines. */
 .app-shell[data-theme][data-color-scheme] .preference-learning-controls > * + * { border-top: 1px solid var(--line); }
 .app-shell[data-theme][data-color-scheme] .preference-learning-disclosure { padding: 12px 14px; }
-.app-shell[data-theme][data-color-scheme] .preference-learning-unavailable { margin: 0; padding: 10px 14px; color: var(--muted); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .settings-section + .settings-section { border-top-color: var(--line); }
-.app-shell[data-theme][data-color-scheme] .settings-subgroup { border-top-color: var(--line); }
-.app-shell[data-theme][data-color-scheme] .settings-subgroup-label {
-  color: var(--muted-2);
-  font-size: var(--fs-meta);
-  font-weight: 600;
-  letter-spacing: 0;
-  text-transform: none;
-}
 .app-shell[data-theme][data-color-scheme] .field-label { gap: 6px; color: var(--ink-2); font-size: 12px; font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .field-label small { color: var(--muted); font-size: var(--fs-meta); }
 .app-shell[data-theme][data-color-scheme] .settings-footnote { color: var(--muted); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .settings-notice { border-radius: var(--r-md); font-size: 12px; }
-.app-shell[data-theme][data-color-scheme] .compact-note { color: var(--muted); font-size: 12px; }
 
 /* ---- Switches ----
    An accent track when on, with an --on-accent knob that keeps at least 3:1
@@ -244,32 +241,15 @@
   background: var(--panel-3);
   box-shadow: inset 0 0 0 1px var(--line);
 }
-.app-shell[data-theme][data-color-scheme] .toggle-switch span { width: 16px; height: 16px; background: #e6e6e9; box-shadow: 0 1px 2px rgba(0, 0, 0, .3); }
+.app-shell[data-theme][data-color-scheme] .toggle-switch span { width: 16px; height: 16px; background: var(--lm-knob); box-shadow: var(--lm-knob-shadow); }
 .app-shell[data-theme][data-color-scheme] .toggle-switch.on { background: var(--lm-fill); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .toggle-switch.on span { background: var(--on-accent); transform: translateX(14px); }
-.app-shell[data-theme][data-color-scheme="light"] .toggle-switch { background: rgba(0, 0, 0, .1); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .04); }
-.app-shell[data-theme][data-color-scheme="light"] .toggle-switch span { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .22), 0 0 0 .5px rgba(0, 0, 0, .06); }
+.app-shell[data-theme][data-color-scheme="light"] .toggle-switch { background: var(--lm-switch-off); box-shadow: inset 0 0 0 1px var(--lm-switch-off-edge); }
+.app-shell[data-theme][data-color-scheme="light"] .toggle-switch span { background: var(--lm-knob); box-shadow: var(--lm-knob-shadow); }
 .app-shell[data-theme][data-color-scheme="light"] .toggle-switch.on { background: var(--lm-fill); }
 /* Every light accent fill keeps at least 3:1 against white, so light themes
    use the native white knob. */
-.app-shell[data-theme][data-color-scheme="light"] .toggle-switch.on span { background: #fff; }
-.app-shell[data-theme][data-color-scheme] .mini-toggle,
-.app-shell[data-theme][data-color-scheme] .sa-tile-switch { background: var(--panel-3); }
-.app-shell[data-theme][data-color-scheme] .mini-toggle span,
-.app-shell[data-theme][data-color-scheme] .sa-tile-switch span { background: #e6e6e9; }
-.app-shell[data-theme][data-color-scheme="light"] .mini-toggle,
-.app-shell[data-theme][data-color-scheme="light"] .sa-tile-switch { background: rgba(0, 0, 0, .1); }
-.app-shell[data-theme][data-color-scheme="light"] .mini-toggle span,
-.app-shell[data-theme][data-color-scheme="light"] .sa-tile-switch span { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .22); }
-.app-shell[data-theme][data-color-scheme] .mini-toggle.on,
-.app-shell[data-theme][data-color-scheme] .sa-tile-switch.on,
-.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch { background: var(--lm-fill); box-shadow: none; }
-.app-shell[data-theme][data-color-scheme] .mini-toggle.on span,
-.app-shell[data-theme][data-color-scheme] .sa-tile-switch.on span,
-.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch i { background: var(--on-accent); }
-.app-shell[data-theme][data-color-scheme="light"] .mini-toggle.on span,
-.app-shell[data-theme][data-color-scheme="light"] .sa-tile-switch.on span,
-.app-shell[data-theme][data-color-scheme="light"] .project-prompt-layer-toggle.enabled .project-prompt-switch i { background: #fff; }
+.app-shell[data-theme][data-color-scheme="light"] .toggle-switch.on span { background: var(--lm-knob-on); }
 
 /* ---- Fields and pop-up buttons ---- */
 .app-shell[data-theme][data-color-scheme] .app-select-trigger {
@@ -280,8 +260,8 @@
   background: var(--field);
 }
 .app-shell[data-theme][data-color-scheme] .app-select-trigger:hover { border-color: var(--line-strong); background: var(--field); }
-.app-shell[data-theme][data-color-scheme] .app-select.open .app-select-trigger { border-color: var(--green-line); background: var(--field); box-shadow: var(--ring); }
-.app-shell[data-theme][data-color-scheme="light"] .app-select-trigger { border-color: var(--line-strong); box-shadow: 0 1px 1px rgba(0, 0, 0, .04); }
+.app-shell[data-theme][data-color-scheme] .app-select.open .app-select-trigger { border-color: var(--accent-line); background: var(--field); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme="light"] .app-select-trigger { border-color: var(--line-strong); box-shadow: var(--lm-control-lift); }
 .app-shell[data-theme][data-color-scheme] .number-stepper { height: 28px; border-color: var(--line); border-radius: var(--r-control); }
 .app-shell[data-theme][data-color-scheme] .number-stepper button:hover:not(:disabled) { background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .provider-status,
@@ -294,7 +274,6 @@
 .app-shell[data-theme][data-color-scheme] .key-input-row input,
 .app-shell[data-theme][data-color-scheme] .inline-create input,
 .app-shell[data-theme][data-color-scheme] .inline-create select,
-.app-shell[data-theme][data-color-scheme] .stacked-create input,
 .app-shell[data-theme][data-color-scheme] .schedule-create input,
 .app-shell[data-theme][data-color-scheme] .schedule-create select,
 .app-shell[data-theme][data-color-scheme] .worker-add input,
@@ -316,7 +295,6 @@
 .app-shell[data-theme][data-color-scheme="light"] .field-label input,
 .app-shell[data-theme][data-color-scheme="light"] .key-input-row input,
 .app-shell[data-theme][data-color-scheme="light"] .inline-create input,
-.app-shell[data-theme][data-color-scheme="light"] .stacked-create input,
 .app-shell[data-theme][data-color-scheme="light"] .schedule-create input,
 .app-shell[data-theme][data-color-scheme="light"] .worker-add input,
 .app-shell[data-theme][data-color-scheme="light"] .preset-create-card input,
@@ -325,8 +303,6 @@
 .app-shell[data-theme][data-color-scheme] .field-label input:focus,
 .app-shell[data-theme][data-color-scheme] .key-input-row input:focus,
 .app-shell[data-theme][data-color-scheme] .inline-create input:focus,
-.app-shell[data-theme][data-color-scheme] .stacked-create input:focus,
-.app-shell[data-theme][data-color-scheme] .stacked-create textarea:focus,
 .app-shell[data-theme][data-color-scheme] .schedule-create input:focus,
 .app-shell[data-theme][data-color-scheme] .schedule-create textarea:focus,
 .app-shell[data-theme][data-color-scheme] .worker-add input:focus,
@@ -335,15 +311,17 @@
 .app-shell[data-theme][data-color-scheme] .workflow-editor-grid input:focus,
 .app-shell[data-theme][data-color-scheme] .workflow-step input:focus,
 .app-shell[data-theme][data-color-scheme] .workflow-step textarea:focus,
+.app-shell[data-theme][data-color-scheme] .workflow-variable-row input:focus,
+.app-shell[data-theme][data-color-scheme] .preset-card-rename input:focus,
+.app-shell[data-theme][data-color-scheme] .skill-name-editor input:focus,
 .app-shell[data-theme][data-color-scheme] .terminal-timeout-detail > input:focus,
 .app-shell[data-theme][data-color-scheme] .skill-field input:focus,
 .app-shell[data-theme][data-color-scheme] .skill-field textarea:focus,
-.app-shell[data-theme][data-color-scheme] .model-guidance-note textarea:focus { border-color: var(--green-line); box-shadow: var(--ring); outline: none; }
+.app-shell[data-theme][data-color-scheme] .model-guidance-note textarea:focus { border-color: var(--accent-line); box-shadow: var(--ring); outline: none; }
 .app-shell[data-theme][data-color-scheme] .settings-modal textarea { border-radius: var(--r-md); }
 .app-shell[data-theme][data-color-scheme] .key-input-row { gap: 6px; }
 /* Add buttons beside inline fields: neutral push buttons, not accent ink. */
 .app-shell[data-theme][data-color-scheme] .inline-create button,
-.app-shell[data-theme][data-color-scheme] .stacked-create button,
 .app-shell[data-theme][data-color-scheme] .schedule-create > button,
 .app-shell[data-theme][data-color-scheme] .worker-add > button,
 .app-shell[data-theme][data-color-scheme] .project-default-add > button {
@@ -357,12 +335,10 @@
   font-weight: 500;
 }
 .app-shell[data-theme][data-color-scheme="light"] .inline-create button,
-.app-shell[data-theme][data-color-scheme="light"] .stacked-create button,
 .app-shell[data-theme][data-color-scheme="light"] .schedule-create > button,
 .app-shell[data-theme][data-color-scheme="light"] .worker-add > button,
-.app-shell[data-theme][data-color-scheme="light"] .project-default-add > button { border-color: var(--line-strong); background: var(--panel); box-shadow: 0 1px 1px rgba(0, 0, 0, .04); }
+.app-shell[data-theme][data-color-scheme="light"] .project-default-add > button { border-color: var(--line-strong); background: var(--panel); box-shadow: var(--lm-control-lift); }
 .app-shell[data-theme][data-color-scheme] .inline-create button:hover:not(:disabled),
-.app-shell[data-theme][data-color-scheme] .stacked-create button:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .schedule-create > button:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .worker-add > button:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .project-default-add > button:hover:not(:disabled) { border-color: var(--line-strong); }
@@ -406,13 +382,13 @@
 .app-shell[data-theme][data-color-scheme] .frontier-pricing-filter > button.active {
   color: var(--text);
   background: var(--panel-3);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 0 0 .5px rgba(0, 0, 0, .2);
+  box-shadow: var(--lm-seg-shadow);
 }
 .app-shell[data-theme][data-color-scheme="light"] .settings-pane-tabs > button.selected,
 .app-shell[data-theme][data-color-scheme="light"] .prompts-tabs > button.selected,
 .app-shell[data-theme][data-color-scheme="light"] .usage-segmented > button.selected,
 .app-shell[data-theme][data-color-scheme="light"] .usage-tabs > button.selected,
-.app-shell[data-theme][data-color-scheme="light"] .frontier-pricing-filter > button.active { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 0 0 .5px rgba(0, 0, 0, .08); }
+.app-shell[data-theme][data-color-scheme="light"] .frontier-pricing-filter > button.active { background: var(--lm-seg-surface); box-shadow: var(--lm-seg-shadow); }
 .app-shell[data-theme][data-color-scheme] .settings-pane-tabs { margin-bottom: 18px; }
 .app-shell[data-theme][data-color-scheme] .prompts-tabs { margin: 12px 14px 0; }
 .app-shell[data-theme][data-color-scheme] .prompts-tabs.compact { margin: 0 0 8px; }
@@ -422,15 +398,12 @@
    and a small text-coloured check badge. No accent colour, lift or glow. */
 .app-shell[data-theme][data-color-scheme] .theme-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 8px; }
 .app-shell[data-theme][data-color-scheme] .slider-style-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; }
-.app-shell[data-theme][data-color-scheme] .chat-font-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 8px; }
 .app-shell[data-theme][data-color-scheme] .provider-mark-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); }
 .app-shell[data-theme][data-color-scheme] .provider-cards { gap: 6px; }
 .app-shell[data-theme][data-color-scheme] .theme-card,
 .app-shell[data-theme][data-color-scheme] .slider-style-card,
-.app-shell[data-theme][data-color-scheme] .chat-font-card,
 .app-shell[data-theme][data-color-scheme] .provider-card,
 .app-shell[data-theme][data-color-scheme] .provider-logo-options > button,
-.app-shell[data-theme][data-color-scheme] .usage-display-options > button,
 .app-shell[data-theme][data-color-scheme] .provider-billing-options > button {
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
@@ -441,17 +414,13 @@
 }
 .app-shell[data-theme][data-color-scheme] .theme-card:hover,
 .app-shell[data-theme][data-color-scheme] .slider-style-card:hover,
-.app-shell[data-theme][data-color-scheme] .chat-font-card:hover,
 .app-shell[data-theme][data-color-scheme] .provider-card:hover,
 .app-shell[data-theme][data-color-scheme] .provider-logo-options > button:hover,
-.app-shell[data-theme][data-color-scheme] .usage-display-options > button:hover,
 .app-shell[data-theme][data-color-scheme] .provider-billing-options > button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .theme-card.selected,
 .app-shell[data-theme][data-color-scheme] .slider-style-card.selected,
-.app-shell[data-theme][data-color-scheme] .chat-font-card.selected,
 .app-shell[data-theme][data-color-scheme] .provider-card.selected,
 .app-shell[data-theme][data-color-scheme] .provider-logo-options > button.selected,
-.app-shell[data-theme][data-color-scheme] .usage-display-options > button.selected,
 .app-shell[data-theme][data-color-scheme] .provider-billing-options > button.selected {
   color: var(--text);
   border-color: var(--muted-2);
@@ -462,14 +431,11 @@
 .app-shell[data-theme][data-color-scheme] .theme-card strong,
 .app-shell[data-theme][data-color-scheme] .provider-card strong,
 .app-shell[data-theme][data-color-scheme] .provider-logo-options strong,
-.app-shell[data-theme][data-color-scheme] .usage-display-options strong,
 .app-shell[data-theme][data-color-scheme] .provider-billing-options strong { color: var(--text); font-family: var(--font-sans); font-size: var(--fs-ui); font-weight: 550; letter-spacing: 0; }
-.app-shell[data-theme][data-color-scheme] .slider-style-card strong,
-.app-shell[data-theme][data-color-scheme] .chat-font-card strong { color: var(--text); font-size: 12.5px; font-weight: 550; }
+.app-shell[data-theme][data-color-scheme] .slider-style-card strong { color: var(--text); font-size: 12.5px; font-weight: 550; }
 .app-shell[data-theme][data-color-scheme] .theme-card small,
 .app-shell[data-theme][data-color-scheme] .provider-card small,
 .app-shell[data-theme][data-color-scheme] .slider-style-card small,
-.app-shell[data-theme][data-color-scheme] .chat-font-card small,
 .app-shell[data-theme][data-color-scheme] .provider-logo-options small,
 .app-shell[data-theme][data-color-scheme] .provider-billing-options small { color: var(--muted); font-size: var(--fs-meta); }
 /* The check: a small neutral badge, the text colour with the card colour
@@ -478,10 +444,8 @@
    edge, a faint fill and this badge. */
 .app-shell[data-theme][data-color-scheme] .theme-card > svg,
 .app-shell[data-theme][data-color-scheme] .slider-style-card > svg,
-.app-shell[data-theme][data-color-scheme] .chat-font-card > svg,
 .app-shell[data-theme][data-color-scheme] .provider-card > svg,
 .app-shell[data-theme][data-color-scheme] .provider-logo-options > button > svg,
-.app-shell[data-theme][data-color-scheme] .usage-display-options > button > svg,
 .app-shell[data-theme][data-color-scheme] .provider-billing-options > button > svg {
   box-sizing: border-box;
   width: 16px;
@@ -508,22 +472,19 @@
   border-radius: var(--r-sm);
   box-shadow: none;
 }
-.app-shell[data-theme][data-color-scheme] .theme-preview-rail { inset: 0 auto 0 0; width: 16px; box-shadow: 1px 0 0 rgba(0, 0, 0, .14); }
-.app-shell[data-theme][data-color-scheme] .theme-preview-body { inset: 6px 6px 6px 22px; border-radius: 3px; box-shadow: 0 0 0 .5px rgba(0, 0, 0, .12); }
+.app-shell[data-theme][data-color-scheme] .theme-preview-rail { inset: 0 auto 0 0; width: 16px; box-shadow: 1px 0 0 var(--lm-preview-edge-strong); }
+.app-shell[data-theme][data-color-scheme] .theme-preview-body { inset: 6px 6px 6px 22px; border-radius: 3px; box-shadow: 0 0 0 .5px var(--lm-preview-edge); }
 .app-shell[data-theme][data-color-scheme] .theme-preview-active { left: 4px; top: 7px; width: 8px; height: 3px; border-radius: 1px; box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .theme-preview-accent { left: 27px; bottom: 11px; width: 14px; height: 3px; border-radius: 1px; opacity: 1; }
-.app-shell[data-theme][data-color-scheme] .slider-style-card,
-.app-shell[data-theme][data-color-scheme] .chat-font-card { min-height: 56px; padding: 8px 10px 8px 8px; }
-.app-shell[data-theme][data-color-scheme] .slider-style-preview,
-.app-shell[data-theme][data-color-scheme] .chat-font-preview { border-radius: var(--r-sm); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .chat-font-preview { color: var(--ink-2); }
+.app-shell[data-theme][data-color-scheme] .slider-style-card { min-height: 56px; padding: 8px 10px 8px 8px; }
+.app-shell[data-theme][data-color-scheme] .slider-style-preview { border-radius: var(--r-sm); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .provider-mark-group > span { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; text-transform: none; }
 
 /* Provider rows on Models & accounts and Voice input. */
 .app-shell[data-theme][data-color-scheme] .provider-card { min-height: 52px; padding: 8px 12px 8px 10px; }
 .app-shell[data-theme][data-color-scheme] .provider-logo { width: 30px; height: 30px; border-radius: var(--r-md); }
 /* The OpenAI mark ships white, so its tile stays dark in light themes too. */
-.app-shell[data-theme][data-color-scheme] .provider-logo.openai { color: #fff; background: #1a1d18; }
+.app-shell[data-theme][data-color-scheme] .provider-logo.openai { color: var(--brand-on-openai); background: var(--brand-openai); }
 .app-shell[data-theme][data-color-scheme] .provider-logo-preview { border-radius: var(--r-md); }
 .app-shell[data-theme][data-color-scheme] .provider-status {
   padding: 2px 6px;
@@ -533,10 +494,8 @@
   font-size: var(--fs-meta);
   font-weight: 500;
 }
-.app-shell[data-theme][data-color-scheme] .provider-status.on { color: var(--green); border: 0; background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .provider-status.on { border: 0; }
 .app-shell[data-theme][data-color-scheme] .provider-card.selected .provider-status:not(.on) { color: var(--muted); }
-.app-shell[data-theme][data-color-scheme] .connected-badge { padding: 2px 7px; color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .connected-badge.unverified { color: var(--muted); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .subagent-preview-badge { border: 0; color: var(--muted); background: var(--lm-hover); font-size: var(--fs-meta); }
 .app-shell[data-theme][data-color-scheme] .credential-panel {
   margin-top: 8px;
@@ -548,27 +507,26 @@
 .app-shell[data-theme][data-color-scheme] .credential-panel strong { font-weight: 550; }
 .app-shell[data-theme][data-color-scheme] .credential-panel small { color: var(--muted); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .credential-panel .icon-button { border: 1px solid var(--line); background: var(--lm-press); }
+/* M10 (round 6): Voice input with no key saved. The key panel is the next
+   step: an accent edge and the status line in the accent ink. */
+.app-shell[data-theme][data-color-scheme] .credential-panel.needs-key { border-color: var(--accent-line); }
+.app-shell[data-theme][data-color-scheme] .credential-panel.needs-key .credential-status small { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .preference-learning-remedy { white-space: nowrap; }
 
 /* ---- Lists and cards on the other pages ----
    One card language: --panel, a --line edge, 10px corners, no shadow. */
-.app-shell[data-theme][data-color-scheme] .manager-list { gap: 4px; }
+
 .app-shell[data-theme][data-color-scheme] .workflow-card,
 .app-shell[data-theme][data-color-scheme] .skill-card,
 .app-shell[data-theme][data-color-scheme] .skill-folder-card,
 .app-shell[data-theme][data-color-scheme] .skill-create-card,
-.app-shell[data-theme][data-color-scheme] .skill-notes,
-.app-shell[data-theme][data-color-scheme] .custom-agent-summary,
 .app-shell[data-theme][data-color-scheme] .preset-card,
 .app-shell[data-theme][data-color-scheme] .preset-create-card,
 .app-shell[data-theme][data-color-scheme] .worker-card,
 .app-shell[data-theme][data-color-scheme] .project-default-card,
-.app-shell[data-theme][data-color-scheme] .profile-card,
-.app-shell[data-theme][data-color-scheme] .instruction-file-card,
 .app-shell[data-theme][data-color-scheme] .prompt-file-row,
 .app-shell[data-theme][data-color-scheme] .scheduled-task-card,
 .app-shell[data-theme][data-color-scheme] .update-card,
-.app-shell[data-theme][data-color-scheme] .update-trust-row,
-.app-shell[data-theme][data-color-scheme] .workflow-safety-note,
 .app-shell[data-theme][data-color-scheme] .workflow-step,
 .app-shell[data-theme][data-color-scheme] .workflow-run-inspector {
   border: 1px solid var(--line);
@@ -579,31 +537,15 @@
 }
 /* A list inside a group card is an inset list: hairline-separated rows, not
    cards within the card. */
-.app-shell[data-theme][data-color-scheme] .set-group > .manager-list { gap: 0; padding: 0; overflow: hidden; }
-.app-shell[data-theme][data-color-scheme] .set-group > .manager-list > div {
-  min-height: 44px;
-  padding: 7px 10px 7px 12px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-.app-shell[data-theme][data-color-scheme] .set-group > .manager-list > div + div { border-top: 1px solid var(--line); }
-.app-shell[data-theme][data-color-scheme] .set-group > .manager-list > div:hover { border-color: var(--line); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .manager-delete { border-radius: var(--r-control); }
+
 /* A list and its add row join into one card (legacy squares the seam). */
-.app-shell[data-theme][data-color-scheme] .set-group > .manager-list + .inline-create,
-.app-shell[data-theme][data-color-scheme] .set-group > .manager-list + .stacked-create,
-.app-shell[data-theme][data-color-scheme] .set-group > .manager-list + .schedule-create { margin-top: -7px; }
-.app-shell[data-theme][data-color-scheme] .set-group.mcp-server-settings > .manager-list + .inline-create { margin-top: 2px; }
+
 .app-shell[data-theme][data-color-scheme] .workflow-card:hover,
 .app-shell[data-theme][data-color-scheme] .skill-card:hover,
-.app-shell[data-theme][data-color-scheme] .worker-card:hover,
-.app-shell[data-theme][data-color-scheme] .profile-card:hover,
-.app-shell[data-theme][data-color-scheme] .custom-agent-summary:hover { border-color: var(--line-strong); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .worker-card:hover { border-color: var(--line-strong); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .skill-card.enabled { border-color: var(--line); }
-.app-shell[data-theme][data-color-scheme] .skill-card:focus-within { border-color: var(--green-line); }
+.app-shell[data-theme][data-color-scheme] .skill-card:focus-within { border-color: var(--accent-line); }
 .app-shell[data-theme][data-color-scheme] .skill-folder-card.selected,
-.app-shell[data-theme][data-color-scheme] .instruction-file-card.selected,
 .app-shell[data-theme][data-color-scheme] .prompt-file-row.selected { border-color: var(--line); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .worker-card.expanded,
 .app-shell[data-theme][data-color-scheme] .preset-card.expanded { border-color: var(--line-strong); background: var(--panel); }
@@ -620,7 +562,7 @@
   background: var(--lm-press);
   box-shadow: none;
 }
-.app-shell[data-theme][data-color-scheme] .skill-add-button { min-height: 34px; border-radius: var(--r-lg); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .skill-add-button { font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .skill-search,
 .app-shell[data-theme][data-color-scheme] .frontier-pricing-search {
   min-height: 30px;
@@ -629,7 +571,7 @@
   background: var(--field);
 }
 .app-shell[data-theme][data-color-scheme] .skill-search:focus-within,
-.app-shell[data-theme][data-color-scheme] .frontier-pricing-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .frontier-pricing-search:focus-within { border-color: var(--accent-line); box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .skill-library-meta b { font-variant-numeric: tabular-nums; }
 .app-shell[data-theme][data-color-scheme] .workflow-card-actions button:first-child { color: var(--text); border-color: var(--line); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .workflow-card-actions button,
@@ -645,19 +587,27 @@
 .app-shell[data-theme][data-color-scheme] .update-progress > span { background: var(--lm-fill); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .update-notes { border-radius: var(--r-md); background: var(--bg); }
 .app-shell[data-theme][data-color-scheme] .recent-errors-list { border-radius: var(--r-md); }
-.app-shell[data-theme][data-color-scheme] .project-default-empty,
-.app-shell[data-theme][data-color-scheme] .worker-empty,
-.app-shell[data-theme][data-color-scheme] .preset-empty,
-.app-shell[data-theme][data-color-scheme] .skill-empty-state,
-.app-shell[data-theme][data-color-scheme] .scheduled-task-empty { border-radius: var(--r-lg); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .worker-empty { border-radius: var(--r-lg); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .scheduled-task-status { border-radius: var(--r-chip); }
-.app-shell[data-theme][data-color-scheme] .prompts-chip { border-radius: var(--r-control); }
-.app-shell[data-theme][data-color-scheme] .prompts-chip.on { border-color: var(--line-strong); background: var(--lm-press); }
 
 /* ---- Usage dashboard ----
-   Flat stat tiles with sentence-case labels and tabular figures; charts in
-   the theme accent with a neutral second series. */
-.app-shell[data-theme][data-color-scheme] .usage-dashboard { --usage-series-1: var(--green); --usage-series-2: var(--muted-2); }
+   Flat stat tiles with sentence-case labels and tabular figures. The accent
+   never fills large areas: columns are a softened accent that reaches full
+   strength only under the pointer, the second series is neutral, and the
+   heat map ramps from a quiet grey to a muted accent. */
+.app-shell[data-theme][data-color-scheme] .usage-dashboard {
+  --usage-series-1: color-mix(in srgb, var(--accent) 50%, var(--panel));
+  --usage-series-2: color-mix(in srgb, var(--muted-2) 62%, var(--panel));
+}
+.app-shell[data-theme][data-color-scheme] .usage-chart-slot.hovered .usage-chart-bar.series-1 { background: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .usage-chart-slot.hovered .usage-chart-bar.series-2 { background: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .usage-heat {
+  --heat-empty: color-mix(in srgb, var(--text) 6%, var(--field));
+  --heat-1: color-mix(in srgb, var(--muted-2) 45%, var(--field));
+  --heat-2: color-mix(in srgb, var(--accent) 30%, var(--field));
+  --heat-3: color-mix(in srgb, var(--accent) 50%, var(--field));
+  --heat-4: color-mix(in srgb, var(--accent) 72%, var(--field));
+}
 .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats {
   gap: 8px;
   overflow: visible;
@@ -742,15 +692,10 @@
   .app-shell[data-theme][data-color-scheme] .settings-pane-heading > div { animation: lm-fade var(--lm-d-2) var(--lm-ease-out) backwards; }
   .app-shell[data-theme][data-color-scheme] .settings-search { transition: border-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease, background-color var(--lm-d-2) ease; }
 
-  .app-shell[data-theme][data-color-scheme] .toggle-switch,
-  .app-shell[data-theme][data-color-scheme] .mini-toggle,
-  .app-shell[data-theme][data-color-scheme] .sa-tile-switch { transition: background-color var(--lm-d-2) ease; }
-  .app-shell[data-theme][data-color-scheme] .toggle-switch span,
-  .app-shell[data-theme][data-color-scheme] .mini-toggle span,
-  .app-shell[data-theme][data-color-scheme] .sa-tile-switch span { transition: transform var(--lm-d-2) var(--lm-ease-out), background-color var(--lm-d-2) ease; }
+  .app-shell[data-theme][data-color-scheme] .toggle-switch { transition: background-color var(--lm-d-2) ease; }
+  .app-shell[data-theme][data-color-scheme] .toggle-switch span { transition: transform var(--lm-d-2) var(--lm-ease-out), background-color var(--lm-d-2) ease; }
   .app-shell[data-theme][data-color-scheme] .theme-card,
   .app-shell[data-theme][data-color-scheme] .slider-style-card,
-  .app-shell[data-theme][data-color-scheme] .chat-font-card,
   .app-shell[data-theme][data-color-scheme] .provider-card { transition: color var(--lm-d-1) ease, border-color var(--lm-d-1) ease, box-shadow var(--lm-d-1) ease; }
   .app-shell[data-theme][data-color-scheme] .settings-pane-tabs > button,
   .app-shell[data-theme][data-color-scheme] .prompts-tabs > button,
@@ -802,13 +747,13 @@
 }
 .app-shell[data-theme][data-color-scheme] .account-row-toggle::after { content: ""; position: absolute; inset: 0; }
 .app-shell[data-theme][data-color-scheme] .account-row-toggle:focus-visible { outline: none; }
-.app-shell[data-theme][data-color-scheme] .account-row-toggle:focus-visible::after { border-radius: var(--r-md); box-shadow: inset 0 0 0 2px var(--green); }
+.app-shell[data-theme][data-color-scheme] .account-row-toggle:focus-visible::after { border-radius: var(--r-md); box-shadow: inset 0 0 0 2px var(--accent); }
 .app-shell[data-theme][data-color-scheme] .account-row-toggle .provider-logo { flex: 0 0 auto; width: 30px; height: 30px; }
 .app-shell[data-theme][data-color-scheme] .account-row-copy { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
 .app-shell[data-theme][data-color-scheme] .account-row-copy strong { color: var(--text); font-size: var(--fs-ui); font-weight: 550; }
 .app-shell[data-theme][data-color-scheme] .account-row-copy small { overflow: hidden; color: var(--muted); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
 .app-shell[data-theme][data-color-scheme] .account-row-toggle .provider-status { flex: 0 0 auto; }
-.app-shell[data-theme][data-color-scheme] .account-row-action { position: relative; z-index: 1; display: flex; flex: 0 0 auto; gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .account-row-action { position: relative; z-index: var(--z-raised); display: flex; flex: 0 0 auto; gap: 6px; }
 .app-shell[data-theme][data-color-scheme] .account-row-action button { min-height: 26px; padding: 0 11px; font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .account-row-action button svg { margin-right: 2px; }
 .app-shell[data-theme][data-color-scheme] .account-row-chevron { flex: 0 0 auto; color: var(--muted-2); pointer-events: none; }
@@ -822,9 +767,17 @@
   padding: 4px 14px 14px 52px;
   background: var(--lm-hover);
 }
-/* Author display rules override the browser's default [hidden] rule. Keep
-   collapsed panels out of layout and keyboard navigation while mounted. */
-.app-shell[data-theme][data-color-scheme] .account-row-detail[hidden] { display: none; }
+/* Opening and closing a row (SmoothDisclosure): the height eases between 0fr
+   and 1fr, and the content fades in while settling 4px. The clip hides the
+   overflow only while the size is moving; once open it lets focus rings and
+   inline popovers show. Author display rules override the browser's default
+   [hidden] rule, so a closed panel is restated as display: none. */
+.app-shell[data-theme][data-color-scheme] .smooth-disclosure { display: grid; grid-template-rows: 0fr; }
+.app-shell[data-theme][data-color-scheme] .smooth-disclosure.open { grid-template-rows: 1fr; }
+.app-shell[data-theme][data-color-scheme] .smooth-disclosure[hidden] { display: none; }
+.app-shell[data-theme][data-color-scheme] .smooth-disclosure-clip { min-height: 0; overflow: hidden; opacity: 0; transform: translateY(-4px); }
+.app-shell[data-theme][data-color-scheme] .smooth-disclosure.open > .smooth-disclosure-clip { opacity: 1; transform: none; }
+.app-shell[data-theme][data-color-scheme] .smooth-disclosure.settled > .smooth-disclosure-clip { overflow: visible; }
 .app-shell[data-theme][data-color-scheme] .account-row-detail .credential-panel {
   min-height: 0;
   margin: 0;
@@ -846,7 +799,376 @@
 .app-shell[data-theme][data-color-scheme] .account-row-detail .credential-panel > .provider-logo { display: none; }
 
 @media (prefers-reduced-motion: no-preference) {
-  .app-shell[data-theme][data-color-scheme] .account-row-chevron { transition: transform var(--lm-d-2) var(--lm-ease-out); }
+  /* The chevron turns over the same 240ms as the panel grows. */
+  .app-shell[data-theme][data-color-scheme] .account-row-chevron { transition: transform var(--lm-d-3) var(--lm-ease-out); }
   .app-shell[data-theme][data-color-scheme] .account-row-head { transition: background-color var(--lm-d-1) ease; }
-  .app-shell[data-theme][data-color-scheme] .account-row-detail { animation: lm-fade var(--lm-d-2) ease backwards; }
+  .app-shell[data-theme][data-color-scheme] .smooth-disclosure { transition: grid-template-rows var(--lm-d-3) var(--lm-ease-out); }
+  .app-shell[data-theme][data-color-scheme] .smooth-disclosure-clip { transition: opacity var(--lm-d-2) var(--lm-ease-out), transform var(--lm-d-3) var(--lm-ease-out); }
+  /* Closing: the content stays readable while the panel shrinks and fades
+     out at the end, instead of leaving an empty band behind. */
+  .app-shell[data-theme][data-color-scheme] .smooth-disclosure:not(.open) > .smooth-disclosure-clip { transition: opacity var(--lm-d-3) var(--lm-ease-in), transform var(--lm-d-3) var(--lm-ease-in); }
 }
+
+/* ---- One page layout: shared row parts (2026-11-17 reorganization) ---- */
+/* The info button after a one-line description opens the long version. */
+.app-shell[data-theme][data-color-scheme] .set-info { vertical-align: -3px; }
+.app-shell[data-theme][data-color-scheme] .set-info-trigger {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 1px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-chip);
+  color: var(--muted-2);
+  background: transparent;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .set-info-trigger:hover,
+.app-shell[data-theme][data-color-scheme] .set-info-trigger[aria-expanded="true"] { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .set-info-body { max-width: 300px; }
+.app-shell[data-theme][data-color-scheme] .set-group-message { margin: 2px 2px 0; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .set-group-message.error { color: var(--red); }
+
+/* A two- or three-way choice: the same recessed segmented track as the pane
+   tabs, sized for a row's control column. */
+.app-shell[data-theme][data-color-scheme] .settings-segmented {
+  display: inline-flex;
+  gap: 0;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--lm-press);
+}
+.app-shell[data-theme][data-color-scheme] .settings-segmented > button {
+  min-height: 24px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .settings-segmented > button:hover { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .settings-segmented > button.selected {
+  color: var(--text);
+  background: var(--panel-3);
+  box-shadow: var(--lm-seg-shadow);
+}
+.app-shell[data-theme][data-color-scheme="light"] .settings-segmented > button.selected { background: var(--lm-seg-surface); box-shadow: var(--lm-seg-shadow); }
+.app-shell[data-theme][data-color-scheme] .settings-segmented > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.app-shell[data-theme][data-color-scheme] .usage-display-preview { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 0 4px; color: var(--muted-2); font-size: var(--fs-meta); white-space: nowrap; }
+
+/* Small list editors (custom agents, quick actions, MCP servers): rows of
+   the inset list, then a labelled add form as the card's last section. */
+.app-shell[data-theme][data-color-scheme] .harness-row > .set-control { gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .harness-row-detail {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.app-shell[data-theme][data-color-scheme] .harness-row-detail code { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-2); }
+.app-shell[data-theme][data-color-scheme] .harness-delete { width: 28px; height: 28px; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .harness-delete:hover { color: var(--red); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .harness-create { display: grid; gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .harness-create.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 10px 12px; align-items: end; }
+.app-shell[data-theme][data-color-scheme] .harness-create.two > .harness-create-actions,
+.app-shell[data-theme][data-color-scheme] .harness-create.two > .harness-status { grid-column: 1 / -1; }
+.app-shell[data-theme][data-color-scheme] .harness-field { display: grid; gap: 6px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .harness-create .field-label { margin: 0; }
+.app-shell[data-theme][data-color-scheme] .harness-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: var(--field);
+  font: inherit;
+  font-size: 12.5px;
+}
+.app-shell[data-theme][data-color-scheme] textarea.harness-input { padding: 7px 9px; line-height: 1.5; resize: vertical; }
+.app-shell[data-theme][data-color-scheme] .harness-input.mono { font-family: var(--font-mono); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme="light"] .harness-input { border-color: var(--line-strong); }
+.app-shell[data-theme][data-color-scheme] .harness-input:focus { border-color: var(--accent-line); box-shadow: var(--ring); outline: none; }
+.app-shell[data-theme][data-color-scheme] .harness-create-actions { display: flex; justify-content: flex-end; }
+.app-shell[data-theme][data-color-scheme] .harness-status { margin: 0; color: var(--muted); font-size: 12px; }
+@media (max-width: 760px) {
+  .app-shell[data-theme][data-color-scheme] .harness-create.two { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Project overrides: a standard section, its cards in one column. */
+.app-shell[data-theme][data-color-scheme] .project-defaults-settings { gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .set-group + .project-defaults-settings { margin-top: 24px; }
+.app-shell[data-theme][data-color-scheme] .prompts-profiles-card { margin-bottom: 2px; }
+/* The usage report's title is a section heading like every other pane's. */
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-heading {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--muted-2);
+  font-family: var(--font-sans);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.app-shell[data-theme][data-color-scheme] .settings-content > .settings-pane-tabs[role="tablist"] + .set-group { margin-top: 0; }
+/* The "add a project" row closes the section as a card of its own. */
+.app-shell[data-theme][data-color-scheme] .project-default-add {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .project-default-add .project-default-field > span { color: var(--ink-2); font-size: 12px; font-weight: 500; }
+
+/* ---- Disclosures ----
+   One look for every "show more" in Settings: a muted chevron that turns
+   when open, never the browser's triangle. */
+.app-shell[data-theme][data-color-scheme] .set-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 24px;
+  list-style: none;
+  border-radius: var(--r-xs);
+  color: var(--text);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .set-disclosure::-webkit-details-marker { display: none; }
+.app-shell[data-theme][data-color-scheme] .set-disclosure::marker { content: ""; }
+.app-shell[data-theme][data-color-scheme] .set-disclosure:hover > .set-disclosure-chevron { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .set-disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.app-shell[data-theme][data-color-scheme] .set-disclosure-chevron { flex: none; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] details[open] > .set-disclosure > .set-disclosure-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .set-disclosure-chevron { transition: transform var(--lm-d-1) var(--lm-ease-out); }
+}
+
+/* Multi-select checkboxes (project, skill and import pickers) are drawn in
+   Lumen rather than left to the platform's native control. On/off settings
+   use the switch instead. */
+.app-shell[data-theme][data-color-scheme] .settings-content input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--field);
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .settings-content input[type="checkbox"]::after {
+  content: "";
+  width: 8px;
+  height: 4px;
+  border-bottom: 1.6px solid var(--on-accent);
+  border-left: 1.6px solid var(--on-accent);
+  transform: translateY(-1px) rotate(-45deg);
+  opacity: 0;
+}
+.app-shell[data-theme][data-color-scheme] .settings-content input[type="checkbox"]:checked { border-color: transparent; background: var(--lm-fill); }
+.app-shell[data-theme][data-color-scheme] .settings-content input[type="checkbox"]:checked::after { opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .settings-content input[type="checkbox"]:disabled { cursor: default; opacity: .5; }
+.app-shell[data-theme][data-color-scheme] .settings-content input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- Empty states ----
+   The shared EmptyState (primitives.css), laid out for Settings lists: icon
+   left, title over one line of help, optional action right, on a plain card
+   (or inline inside one). */
+.app-shell[data-theme][data-color-scheme] .lm-empty.set-empty {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  justify-items: start;
+  gap: 2px 12px;
+  min-height: 52px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  text-align: left;
+}
+.app-shell[data-theme][data-color-scheme] .lm-empty.set-empty.no-icon { grid-template-columns: minmax(0, 1fr) auto; }
+.app-shell[data-theme][data-color-scheme] .lm-empty.set-empty.inline { min-height: 0; padding: 4px 0; border: 0; border-radius: 0; background: none; }
+.app-shell[data-theme][data-color-scheme] .lm-empty.set-empty > .lm-empty-icon {
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: var(--lm-hover);
+}
+.app-shell[data-theme][data-color-scheme] .lm-empty.set-empty > .lm-empty-title { grid-column: -3; color: var(--ink-2); font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .lm-empty.set-empty > .lm-empty-text { grid-column: -3; max-width: none; padding: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.app-shell[data-theme][data-color-scheme] .lm-empty.set-empty > .set-empty-action { grid-column: -2; grid-row: 1 / span 2; }
+
+/* Skill rows: one labelled action plus an always-visible overflow menu. */
+.app-shell[data-theme][data-color-scheme] .skill-card-actions { gap: 4px; }
+.app-shell[data-theme][data-color-scheme] .skill-card-actions > .secondary-button {
+  width: auto;
+  height: 26px;
+  min-height: 26px;
+  display: inline-flex;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  background: var(--panel);
+  font-size: 12px;
+}
+.app-shell[data-theme][data-color-scheme] .skill-card-actions > .secondary-button:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .skill-card-actions > .row-menu { position: static; opacity: 1; pointer-events: auto; }
+.app-shell[data-theme][data-color-scheme] .skill-card-actions > .row-menu .row-menu-trigger { width: 26px; height: 26px; border: 0; color: var(--muted); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .skill-card-actions > .row-menu .row-menu-trigger:hover,
+.app-shell[data-theme][data-color-scheme] .skill-card-actions > .row-menu.open .row-menu-trigger { color: var(--text); background: var(--lm-hover); }
+/* "Add a new skill" is an ordinary button, not a dashed drop zone. */
+.app-shell[data-theme][data-color-scheme] .skill-add-button {
+  width: fit-content;
+  min-height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: var(--panel);
+  font-size: 12.5px;
+}
+.app-shell[data-theme][data-color-scheme] .skill-add-button:hover { border-color: var(--line-strong); color: var(--text); background: var(--lm-hover); }
+
+/* Pop-up menus put provider marks on a light surface in light themes; the
+   OpenAI and Claude marks are drawn white for their dark tiles, so they take
+   ink (OpenAI) and the Claude orange there instead of vanishing. */
+.app-shell[data-theme][data-color-scheme="light"] .app-select-trigger .openai-logo-option,
+.app-shell[data-theme][data-color-scheme="light"] .app-select-menu .openai-logo-option { fill: currentColor; }
+.app-shell[data-theme][data-color-scheme="light"] .app-select-trigger .claude-logo-option,
+.app-shell[data-theme][data-color-scheme="light"] .app-select-menu .claude-logo-option { fill: var(--brand-claude); }
+
+/* ---- Tour handoffs: opening something is not editing it (B01) ---- */
+/* "Use X as default" sits under the account it belongs to, after its sign-in. */
+.app-shell[data-theme][data-color-scheme] .account-default-line {
+  order: 9;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-height: 28px;
+}
+.app-shell[data-theme][data-color-scheme] .account-default-line small { color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .account-default-line .secondary-button { min-height: 26px; padding: 0 11px; font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .account-default-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+/* The tour's look, previewed but not saved. */
+.app-shell[data-theme][data-color-scheme] .settings-preview-offer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--info-line);
+  border-radius: var(--r-md);
+  background: var(--info-soft);
+}
+.app-shell[data-theme][data-color-scheme] .settings-preview-offer > svg { flex: 0 0 auto; color: var(--info); }
+.app-shell[data-theme][data-color-scheme] .settings-preview-offer-copy { display: grid; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.app-shell[data-theme][data-color-scheme] .settings-preview-offer-copy strong { color: var(--text); font-size: 13px; font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .settings-preview-offer-copy small { color: var(--ink-2); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .settings-preview-offer-actions { display: flex; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+
+/* ---- Round 3: statuses and values (G15, G16, M07) ---- */
+/* Connected is a success state, not the accent. */
+.app-shell[data-theme][data-color-scheme] .provider-status.on { color: var(--success); background: var(--success-soft); }
+/* Reachable but not usable yet (LM Studio with no model loaded). */
+.app-shell[data-theme][data-color-scheme] .provider-status.warn { color: var(--orange); border: 0; background: var(--orange-soft); }
+.app-shell[data-theme][data-color-scheme] .account-default-tag svg { color: var(--success); }
+/* Two-line select values: the chosen name leads (13px), its note follows (12px muted). */
+.app-shell[data-theme][data-color-scheme] .app-select-trigger .app-select-value strong { color: var(--text); font-size: 13px; font-weight: 500; line-height: 1.25; }
+.app-shell[data-theme][data-color-scheme] .app-select-trigger .app-select-value small { color: var(--muted); font-size: 12px; line-height: 1.25; }
+/* The search field and the category rows share one right edge (G15): the
+   nav no longer reserves a scrollbar gutter the search field doesn't have. */
+.app-shell[data-theme][data-color-scheme] .settings-nav-scroll { scrollbar-gutter: auto; scrollbar-width: thin; }
+
+/* M11: a project's card says plainly that its values are overrides. */
+.app-shell[data-theme][data-color-scheme] .project-default-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--r-chip);
+  color: var(--muted);
+  background: var(--lm-hover);
+  font: 500 var(--fs-micro) var(--font-sans);
+  font-style: normal;
+  vertical-align: 1px;
+}
+
+/* M12: "All activity" (the calendar, every range) and "Selected range"
+   (everything under the range picker) are named as different scopes. */
+.app-shell[data-theme][data-color-scheme] .usage-range-heading {
+  margin: 18px 0 -4px;
+  color: var(--text);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .usage-range-heading > span { color: var(--muted); font-weight: 450; font-variant-numeric: tabular-nums; }
+
+/* ---- In-page jump list for long panes (round 5, O10/M04) ----
+   Sticks to the top of the scrolling pane on the pane's own background;
+   quiet text buttons, the section in view gets the selection fill. Sections
+   leave room for it when scrolled to. */
+.app-shell[data-theme][data-color-scheme] .set-jump {
+  position: sticky;
+  top: -6px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: -6px -8px 14px;
+  padding: 8px 8px 8px;
+  border-bottom: 1px solid var(--line-quiet);
+  background: var(--bg);
+}
+.app-shell[data-theme][data-color-scheme] .set-jump > button {
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: transparent;
+  font: 500 var(--fs-meta) var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .set-jump > button:hover { color: var(--text); background: transparent; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 6px; }
+/* Opus R6 D10 / Sol M07: an anchor strip, not a segmented control. The
+   section in view is underlined in the accent; no pill fill. */
+.app-shell[data-theme][data-color-scheme] .set-jump > button.current { color: var(--text); background: transparent; box-shadow: inset 0 -2px 0 var(--accent); border-radius: 0; }
+.app-shell[data-theme][data-color-scheme] .set-jump > .set-jump-label {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 6px 0 1px;
+  color: var(--muted-2);
+  font: 500 var(--fs-meta) var(--font-sans);
+  white-space: nowrap;
+}
+.app-shell[data-theme][data-color-scheme] .subagent-settings > .set-group,
+.app-shell[data-theme][data-color-scheme] .set-group[id^="tools-"] { scroll-margin-top: 52px; }
+.app-shell[data-theme][data-color-scheme] .set-group h4[tabindex="-1"]:focus { outline: none; }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .set-group h4[tabindex="-1"]:focus { border-radius: var(--r-sm); box-shadow: var(--ring); }

@@ -2557,7 +2557,7 @@ pub(super) async fn query_launch(
             return Err(format!("{} language queries require Full access because its server may evaluate executable project configuration. Switch this thread to Full access to use it.",tool.name));
         }
         if !settings.enabled.get(tool.id).copied().unwrap_or(true) {
-            return Err(format!("The {} language tool is disabled. Enable it in Settings > Tools & MCP > Language tools.", tool.name));
+            return Err(format!("The {} language tool is disabled. Enable it in Settings > MCP & language servers > Language tools.", tool.name));
         }
         let launches = launches(tool, managed_prefix(&root, &settings, tool.id).as_deref());
         if let Some(launch) = launches.into_iter().find(|launch| {

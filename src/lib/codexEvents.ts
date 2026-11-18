@@ -1,5 +1,5 @@
 import { saveQuestionRequest } from "./agentQuestionRecords";
-import { agentMessagePhase, timelineFromTurns } from "./threadTimeline";
+import { agentMessagePhase, fileChangePaths, timelineFromTurns } from "./threadTimeline";
 import { isAuthenticationError } from "./errors";
 import type { CodexEvent, JsonObject } from "./codex";
 import type { Activity, ChatMessage, ThreadItem, Turn } from "../types";
@@ -250,6 +250,8 @@ export function handleThreadItem(
       kind: "file",
       workType: "files",
       title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`,
+      // The changed paths, one per line, so Activity can name the files.
+      detail: fileChangePaths(item.changes),
       itemCount: item.changes?.length,
       status: item.status,
     });
@@ -440,7 +442,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     if (isAuthenticationError(line)) {
       ctx.onAuthSuspected();
     } else if (line.includes("error")) {
-      ctx.onStatus("Runtime issue");
+      ctx.onStatus("Connection issue");
     }
     return;
   }
@@ -684,7 +686,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
       id: `unhandled-request-${String(event.id)}`,
       kind: "warning",
       title: "Unsupported runtime request",
-      detail: `The Codex runtime sent a \`${method}\` request this version of Mythra Code does not support. It was answered with an empty response; updating Mythra Code may be required.`,
+      detail: `The Codex CLI sent a \`${method}\` request this version of Mythra Code does not support. It was answered with an empty response; updating Mythra Code may be required.`,
     });
   }
 }

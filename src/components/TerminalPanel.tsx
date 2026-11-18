@@ -58,7 +58,7 @@ function TerminalPanelInner(props: TerminalPanelProps) {
       {props.readOnly && (
         <div className="history-warning terminal-notice">
           <ShieldCheck size={13} /> Read only: commands run without permission to write inside {props.scopeLabel}.
-          Switch this thread to Ask or Full access before running anything that edits files.
+          Switch this thread to Ask to act or Full access before running anything that edits files.
         </div>
       )}
       <section className={`terminal-window${props.running ? " running" : ""}`} aria-label={`Terminal for ${props.scopeLabel}`}>
@@ -89,7 +89,7 @@ function TerminalPanelInner(props: TerminalPanelProps) {
         ))}
         <XtermPanel
           outputStore={props.outputStore}
-          placeholder={`MYTHRA CODE terminal ready — ${props.scopeLabel} (${props.shell ?? shellLabel()})\n`}
+          placeholder={`${props.scopeLabel} · ${props.shell ?? shellLabel()}\n`}
           running={props.running}
           onInput={allowedToControl ? props.onInput : ignoreInput}
           onResize={props.onResize}

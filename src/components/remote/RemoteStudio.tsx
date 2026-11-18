@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from "react";
-import { Bot, Boxes, ChevronRight, CircleStop, CodeXml, FilePlus2, FolderGit2, Gauge, GitCommitHorizontal, Play, RefreshCw, SearchCode, ShieldCheck, TerminalSquare, Workflow as WorkflowIcon, Wrench } from "lucide-react";
+import { Bot, Boxes, ChevronRight, CircleStop, CodeXml, FolderTree, GitCommitHorizontal, Play, RefreshCw, ShieldCheck, Shrink, Workflow as WorkflowIcon, Wrench } from "lucide-react";
 import { DiffFileSections } from "../DiffView";
 import { FileBrowser, type FileBrowserSource } from "../FileBrowser";
 import { ChecksControl } from "../ChecksControl";
 import type { GitPathAction } from "../GitChangesView";
 import { GitPanel, type GitPanelAction, type GitPanelDraft } from "../GitPanel";
-import { ThreadUsagePanel } from "../ThreadUsagePanel";
+import { ThreadUsagePanel, threadUsageCanCompact } from "../ThreadUsagePanel";
 import { ThreadPullRequestPanel } from "../ThreadPullRequestPanel";
 import { useSessionThreadPullRequest } from "../../hooks/useThreadPullRequest";
 import { RemotePullRequestActivity } from "./RemotePullRequestActivity";
@@ -14,7 +14,7 @@ import { useRemoteDiscovery } from "./useRemoteDiscovery";
 import { useRemoteWorkers } from "./useRemoteWorkers";
 import { workerRuntime } from "../../lib/remote/workerReads";
 import { useRemoteOutbox } from "../../lib/remote/outbox";
-import { AgentsPanel, CheckpointsPanel, Empty, PanelHeader, StudioDockFrame, TerminalPanelHost, WorktreesPanel, type AgentRecord, type StudioTab } from "../StudioDock";
+import { AgentsPanel, CheckpointsPanel, DockNote, DockToolbar, Empty, HeaderAction, PanelHeader, SectionHeading, StudioDockFrame, TerminalPanelHost, WorktreesPanel, type AgentRecord, type StudioTab } from "../StudioDock";
 import { confirmDialog } from "../../lib/confirmDialog";
 import { mcpStatusLabel } from "../../lib/statusLabels";
 import type { CheckpointRecord, CheckpointRestoreTarget } from "../../lib/checkpoints";
@@ -106,7 +106,7 @@ function useHostData<T>(load: (() => Promise<T>) | null, key: string): { data: T
 }
 
 function Reason({ text }: { text: string | null | undefined }) {
-  return text ? <div className="worktree-note" role="status"><ShieldCheck size={13} aria-hidden="true" /><span>{text}</span></div> : null;
+  return text ? <DockNote tone="warning" icon={ShieldCheck} role="status">{text}</DockNote> : null;
 }
 
 const REVIEW_BASELINE = { baseline: "HEAD", source: "repository" } as const;
@@ -196,11 +196,10 @@ function HostChanges({ device, name, target, context, onOpenGit, onClose }: { de
     output: result.output, outputTruncated: result.outputTruncated,
   }, result.status === "error" ? "Investigate why this check could not run, fix the cause, and rerun it." : "Investigate and fix this failed check, then rerun it to verify the fix.");
   return <>
-    <PanelHeader icon={SearchCode} title="Review center" subtitle={`Inspect changes on ${name}`} onClose={onClose} />
+    <PanelHeader tab="changes" subtitle={`On ${name}`} actions={<HeaderAction icon={RefreshCw} label="Refresh changes" onClick={refresh} />} onClose={onClose} />
     {/* Read only still lets checks run, as it does here; it is a warning, not a block. */}
     {canCheck && !context?.processPolicy?.checksBlockedReason && context?.processPolicy?.readOnly && <Reason text={context.processPolicy.readOnlyReason ?? `This thread is Read only on ${name}. Checks can still run.`} />}
-    <div className="studio-actions wrap review-actions">
-      <button onClick={refresh}><RefreshCw size={13} /> Refresh</button>
+    <DockToolbar>
       <button onClick={review} disabled={!target.threadId || !context || reviewing} title={target.threadId ? `Ask the model on ${name} to review the working changes` : "Open a thread to request a review"}><Bot size={13} /> AI review</button>
       <ChecksControl command={context?.check?.command} running={Boolean(checking)} runningCommand={lastCheck?.command} startedAt={checking ? lastCheck?.createdAt ?? null : null} result={checkResult} onAddFeedback={addCheckNote}
         disabledReason={!canCheck ? accessReason(name, "run checks", "Terminal") : context?.processPolicy?.checksBlockedReason ?? undefined}
@@ -208,8 +207,8 @@ function HostChanges({ device, name, target, context, onOpenGit, onClose }: { de
         onRun={() => { void hostWrite<{ processHandle?: string }>(device, name, "checks.start", checkRevision).then((outcome) => { setNotice(outcome.message); if (outcome.ok) setChecking(outcome.result?.processHandle ?? "running"); }); }}
         onStop={() => { if (checking) void hostWrite(device, name, "checks.stop", { ...checkRevision, processHandle: checking }).then((outcome) => { setNotice(outcome.message); if (outcome.ok) setChecking(null); }); }}
         onSave={(command) => { void hostProjectWrite(device, name, target.workspaceId, "projects.check.set", { command }).then((outcome) => { setNotice(outcome.message); if (outcome.ok) void refreshRemoteContext(device, target.workspaceId, target.threadId); }); }} />
-      <button onClick={onOpenGit} title="Open Git Changes to see staged and unstaged files separately and commit them"><GitCommitHorizontal size={13} /> Stage &amp; commit in Git</button>
-    </div>
+      <button onClick={onOpenGit} title="Open Git to see staged and unstaged files separately and commit them"><GitCommitHorizontal size={13} /> Commit in Git</button>
+    </DockToolbar>
     <Reason text={notice} />
     <div className="diff-summary">
       <span><CodeXml size={13} /> {turnDiff?.source === "runtime" && !selected ? "Working changes" : "Repository changes"}</span>
@@ -273,10 +272,10 @@ function HostTerminal({ device, name, target, allowed, policy, onClose }: { devi
   const onStop = useCallback(() => session.stop(name), [name, session]);
   const onClear = useCallback(() => session.clear(), [session]);
   return <>
-    <PanelHeader icon={TerminalSquare} title="Terminal" subtitle={`Runs on ${name}`} onClose={onClose} />
+    <PanelHeader tab="terminal" subtitle={`On ${name}`} onClose={onClose} />
     <Reason text={reason} />
-    {reattachFailure && <div className="worktree-note" role="alert"><ShieldCheck size={13} aria-hidden="true" /><span>{reattachFailure}</span>
-      <button type="button" className="secondary-button" onClick={retryReattach}>Retry</button></div>}
+    {reattachFailure && <DockNote tone="error" icon={ShieldCheck} role="alert">{reattachFailure}{" "}
+      <button type="button" className="secondary-button" onClick={retryReattach}>Retry</button></DockNote>}
     <TerminalPanelHost outputStore={watching ? viewer.store : session.store} scope={`${device}/${target.workspaceId}${watching ? `/${watching}` : ""}`} scopeLabel={name} shell={platform === "windows" ? "Command Prompt" : platform === "macos" ? "zsh" : "shell"}
       running={watching ? Boolean(viewer.status?.running) : busy}
       runningCommand={watching ? viewer.status?.command ?? "" : view?.command ?? ""} runningElsewhere={NO_ELSEWHERE} readOnly={Boolean(policy?.readOnly)}
@@ -496,7 +495,7 @@ function HostGit({ device, name, target, revision, allowed, canWork, threadBusy,
     }
   };
   return <>
-    <PanelHeader icon={FolderGit2} title="Git" subtitle={`Changes on ${name}`} onClose={onClose} />
+    <PanelHeader tab="git" subtitle={`On ${name}`} onClose={onClose} />
     {recovery && <div className="worktree-note" role="alert"><ShieldCheck size={13} aria-hidden="true" />
       {recovery.kind === "unknown"
         ? <><span>We couldn't confirm whether the GitHub repository was created on {name}. Check this project before trying anything else.</span>
@@ -542,7 +541,7 @@ function HostCheckpoints({ device, name, target, revision, threadOpen, allowed, 
   };
   return <>
     <Reason text={failed ? `Mythra Code couldn't read checkpoints on ${name}. Try again.` : notice} />
-    <CheckpointsPanel activeThread={threadOpen} checkpoints={checkpoints} checkpointHead={data?.head} checkpointBusyId={busy} checkpointPreview={preview} onClose={onClose}
+    <CheckpointsPanel subtitle={`On ${name}`} activeThread={threadOpen} checkpoints={checkpoints} checkpointHead={data?.head} checkpointBusyId={busy} checkpointPreview={preview} onClose={onClose}
       onCheckpoint={() => run("manual", "checkpoint.create", { checkpointId: crypto.randomUUID(), label: "Manual checkpoint" })}
       forkSavedCheckpoints
       onFork={(checkpoint) => {
@@ -612,7 +611,7 @@ function HostWorktrees({ device, name, target, revision, allowed, onReview, onFi
   };
   return <>
     <Reason text={failed ? `Mythra Code couldn't read worktrees on ${name}. Try again.` : !allowed ? accessReason(name, "copy or merge worktree changes", "Terminal") : notice} />
-    <WorktreesPanel worktree={worktree} worktreeStatus={data?.status ?? undefined} worktreeBusy={busy} gitActionsReadOnly={!allowed} revealLabel="Show folder" onClose={onClose}
+    <WorktreesPanel subtitle={`On ${name}`} worktree={worktree} worktreeStatus={data?.status ?? undefined} worktreeBusy={busy} gitActionsReadOnly={!allowed} revealLabel="Show folder" onClose={onClose}
       onWorktreeReview={onReview} onWorktreeApply={() => run("worktree.apply", `Copy this worktree's changes into the shared project on ${name}?`)} onWorktreeMerge={() => run("worktree.merge", `Merge this branch into the shared project on ${name}?`)}
       // A window opened over there would be seen by nobody. Files shows this same folder here.
       onWorktreeReveal={onFiles}
@@ -635,19 +634,19 @@ function HostAgents({ device, name, target, revision, running, crew, onClose }: 
     const messages = mail?.mailboxes?.find((entry) => entry.agentId === id)?.messages;
     const worker = rows.find((entry) => entry.id === id);
     return <>
-      {messages?.length ? <details><summary>Messages</summary>{messages.map((message) => <div key={message.id}>
+      {messages?.length ? <details><summary className="lm-summary"><ChevronRight size={12} aria-hidden="true" className="lm-chevron" />Messages</summary>{messages.map((message) => <div key={message.id}>
         <small>{message.direction === "toParent" ? `From this agent · ${message.kind}` : "To this agent"}</small>
         <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{message.text}</p>
         {message.textTruncated && <small>Message preview shortened.</small>}
       </div>)}</details> : null}
-      {worker?.canStop && replacements.length > 0 && <details><summary>Replace on another model</summary>{replacements.map((entry) => <button key={entry.id} type="button" className="secondary-button" onClick={() => {
+      {worker?.canStop && replacements.length > 0 && <details><summary className="lm-summary"><ChevronRight size={12} aria-hidden="true" className="lm-chevron" />Replace on another model</summary>{replacements.map((entry) => <button key={entry.id} type="button" className="secondary-button" onClick={() => {
         void confirmDialog(`Stop “${worker.title}” on ${name} and restart its task with ${entry.label || entry.id}?`).then((confirmed) => { if (confirmed) run("agents.replace", id, { targetId: entry.id }); });
       }}>{entry.label || entry.id}</button>)}</details>}
     </>;
   };
   return <>
     <Reason text={notice} />
-    <AgentsPanel agents={agents} onClose={onClose} onOpenAgent={(id) => selectRemoteThread(device, id)} agentDetail={detail}
+    <AgentsPanel subtitle={`On ${name}`} agents={agents} onClose={onClose} onOpenAgent={(id) => selectRemoteThread(device, id)} agentDetail={detail}
       onStopAgent={(id) => run("agents.stop", id)} onAcceptAgent={(id) => run("agents.accept", id)} />
   </>;
 }
@@ -676,19 +675,25 @@ function HostUsage({ device, target, context, name, provider, title, busy, onClo
     void hostWrite(device, name, "thread.compact", { ...target, revision: context?.revision ?? "" }).then((outcome) => setNotice(outcome.message));
   };
   return <>
-    <PanelHeader icon={Gauge} title="Thread usage" subtitle={`As reported by ${name}`} onClose={onClose} />
+    <PanelHeader tab="usage" subtitle={`On ${name}`} actions={threadTarget ? <HeaderAction icon={RefreshCw} label="Refresh prices" onClick={refreshPrices} /> : undefined} onClose={onClose} />
+    {threadTarget && <DockToolbar>
+      <button onClick={busy ? noop : compact} disabled={busy || !threadUsageCanCompact(provider)} title={threadUsageCanCompact(provider) ? "Summarize older turns to free context" : "This provider manages its own context compaction"}><Shrink size={13} /> Compact context</button>
+    </DockToolbar>}
     <Reason text={notice || (failed ? `Mythra Code couldn't read usage on ${name}. Try again.` : "")} />
     <ThreadUsagePanel activeThread={Boolean(threadTarget)} threadId={target?.threadId} provider={provider} threadTitle={title} nativeLinks={NO_LINKS} managedLinks={NO_MANAGED_LINKS} hostSummary={summary}
       context={usage?.contextTokens !== undefined ? { totalTokens: usage.totalTokens, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens, reasoningOutputTokens: usage.reasoningOutputTokens, contextTokens: usage.contextTokens, contextWindow: usage.contextWindow } : null}
-      onRefresh={threadTarget ? refreshPrices : undefined} onCompact={busy ? noop : compact} />
+      hideToolbar onRefresh={threadTarget ? refreshPrices : undefined} onCompact={busy ? noop : compact} />
   </>;
 }
 
-function HostTools({ device, name, target, context, onOpenThread, onTab, onClose }: { device: string; name: string; target: StudioTarget | null; context: HostContextResult | undefined; onOpenThread: (id: string) => void; onTab: (tab: StudioTab) => void; onClose: () => void }) {
+/** The Actions tab (workflows and quick actions) or the Skills & MCP tab, read from the host. */
+function HostTools({ section, device, name, target, context, onOpenThread, onTab, onClose }: { section: "actions" | "skills"; device: string; name: string; target: StudioTarget | null; context: HostContextResult | undefined; onOpenThread: (id: string) => void; onTab: (tab: StudioTab) => void; onClose: () => void }) {
   const [notice, setNotice] = useState("");
-  const { data: workflows, reload: reloadWorkflows } = useHostData(target ? () => hostRead<WireResourceResult>(device, "workflows.view", { ...target }) : null, target ? panelKey(device, "workflows.view", target) : "tools:none");
-  const { data: actions, reload: reloadActions } = useHostData(target ? () => hostRead<WireResourceResult>(device, "actions.list", { ...target }) : null, target ? panelKey(device, "actions.list", target) : "actions:none");
-  const { data: inventory, reload: reloadInventory } = useHostData(target ? () => hostRead<WireResourceResult>(device, "tools.mcp.list", { ...target }) : null, target ? panelKey(device, "tools.mcp.list", target) : "mcp:none");
+  const actionsTarget = section === "actions" ? target : null;
+  const skillsTarget = section === "skills" ? target : null;
+  const { data: workflows, reload: reloadWorkflows } = useHostData(actionsTarget ? () => hostRead<WireResourceResult>(device, "workflows.view", { ...actionsTarget }) : null, actionsTarget ? panelKey(device, "workflows.view", actionsTarget) : "tools:none");
+  const { data: actions, reload: reloadActions } = useHostData(actionsTarget ? () => hostRead<WireResourceResult>(device, "actions.list", { ...actionsTarget }) : null, actionsTarget ? panelKey(device, "actions.list", actionsTarget) : "actions:none");
+  const { data: inventory, reload: reloadInventory } = useHostData(skillsTarget ? () => hostRead<WireResourceResult>(device, "tools.mcp.list", { ...skillsTarget }) : null, skillsTarget ? panelKey(device, "tools.mcp.list", skillsTarget) : "mcp:none");
   const revision = context?.revision ?? "";
   const canRun = Boolean(context?.capabilities.terminal);
   const finish = (outcome: { ok: boolean; message: string }) => { setNotice(outcome.message); if (outcome.ok) reloadWorkflows(); };
@@ -700,10 +705,17 @@ function HostTools({ device, name, target, context, onOpenThread, onTab, onClose
   const { review, dialog } = useRemoteWorkflowLaunch({ device, name, workspaceId: target?.workspaceId, threadId: target?.threadId, revision, projects, onNotice: setNotice });
   return <>
     {dialog}
-    <PanelHeader icon={Wrench} title="Tools & skills" subtitle={`Available on ${name}`} onClose={onClose} />
-    <div className="studio-actions"><button onClick={() => { reloadWorkflows(); reloadActions(); reloadInventory(); if (target) void refreshRemoteContext(device, target.workspaceId, target.threadId); }}><RefreshCw size={13} /> Rescan</button></div>
+    <PanelHeader tab={section} subtitle={`On ${name}`} actions={<HeaderAction icon={RefreshCw} label="Rescan" onClick={() => { if (section === "actions") { reloadWorkflows(); reloadActions(); } else reloadInventory(); if (target) void refreshRemoteContext(device, target.workspaceId, target.threadId); }} />} onClose={onClose} />
     <Reason text={notice} />
-    <h3 className="panel-label">Agent workflows</h3><div className="studio-list compact">{workflows?.workflows?.length ? workflows.workflows.map((workflow) => {
+    {section === "actions" && <>
+    <SectionHeading>Quick actions</SectionHeading><div className="studio-list compact">{actions?.actions?.length ? actions.actions.map((action) => <div className="studio-list-row" key={action.id}><Play size={14} /><div><strong>{action.name}</strong><small>{action.command}</small></div>
+      <button disabled={!canRun} title={canRun ? `Run ${action.name} on ${name}` : accessReason(name, "run actions", "Terminal") ?? undefined} aria-label={`Run ${action.name}`} onClick={() => {
+        if (!scoped || !target) return;
+        onTab("terminal");
+        void hostWrite<{ processHandle?: string }>(device, name, "actions.run", { ...scoped, actionId: action.id }).then((outcome) => { setNotice(outcome.message); if (outcome.ok && outcome.result?.processHandle) expectRemoteRun(device, target.workspaceId, outcome.result.processHandle); });
+      }}><Play size={13} /></button></div>)
+      : <Empty compact icon={Play} title="No quick actions" text={target ? `${name} has no quick actions for this project.` : `Choose a project on ${name}.`} />}</div>
+    <SectionHeading>Agent workflows</SectionHeading><div className="studio-list compact">{workflows?.workflows?.length ? workflows.workflows.map((workflow) => {
       const latest = workflow.runs[workflow.runs.length - 1];
       const running = latest?.status === "running";
       const asks = workflow.variables.some((variable) => variable.promptOnRun);
@@ -711,25 +723,23 @@ function HostTools({ device, name, target, context, onOpenThread, onTab, onClose
         {running ? <button className="danger-action" title="Stop workflow" aria-label={`Stop ${workflow.name}`} onClick={() => { if (scoped) void hostWrite(device, name, "workflows.stop", { ...scoped, workflowId: workflow.id, runId: latest.id }).then(finish); }}><CircleStop size={13} /></button>
           : <button title={asks ? "Review this workflow's inputs, then run it" : "Run workflow"} aria-label={`Run ${workflow.name}`} onClick={() => { void review(workflow.id).then((started) => { if (started) reloadWorkflows(); }); }}><Play size={13} /></button>}
         {latest?.threadId && <button title="Open workflow thread" aria-label={`Open ${workflow.name} thread`} onClick={() => onOpenThread(latest.threadId!)}><ChevronRight size={13} /></button>}</div>;
-    }) : <span className="tool-empty-line">{target ? `No agent workflows on ${name}.` : `Choose a project on ${name}.`}</span>}</div>
-    <h3 className="panel-label">Project actions</h3><div className="studio-list compact">{actions?.actions?.length ? actions.actions.map((action) => <div className="studio-list-row" key={action.id}><Play size={14} /><div><strong>{action.name}</strong><small>{action.command}</small></div>
-      <button disabled={!canRun} title={canRun ? `Run ${action.name} on ${name}` : accessReason(name, "run actions", "Terminal") ?? undefined} aria-label={`Run ${action.name}`} onClick={() => {
-        if (!scoped || !target) return;
-        onTab("terminal");
-        void hostWrite<{ processHandle?: string }>(device, name, "actions.run", { ...scoped, actionId: action.id }).then((outcome) => { setNotice(outcome.message); if (outcome.ok && outcome.result?.processHandle) expectRemoteRun(device, target.workspaceId, outcome.result.processHandle); });
-      }}><Play size={13} /></button></div>)
-      : <span className="tool-empty-line">{`No project actions on ${name}.`}</span>}</div>
-    <h3 className="panel-label">Skills</h3><div className="studio-list compact">{skills.length ? skills.map((skill) => <div className={`studio-list-row ${skill.enabled === false ? "disabled-tool" : ""}`} key={skill.id}><Boxes size={14} /><div><strong>@{skill.name}</strong><small>{skill.description || "Reusable workflow"}</small></div></div>)
-      : <Empty icon={Boxes} title="No skills" text={`${name} has no skills to show here.`} />}</div>
-    <h3 className="panel-label">MCP servers</h3><div className="studio-list compact">{inventory?.tools?.length ? inventory.tools.map((server) => <div className="studio-list-row" key={server.name}><span className={`status-orb ${server.status}`} /><div><strong>{server.name}</strong><small>{mcpStatusLabel(server.status)} · {server.tools} tool{server.tools === 1 ? "" : "s"}</small></div></div>)
-      : <span className="tool-empty-line">{inventory?.toolsAvailability === "ready" ? `No MCP servers on ${name}.` : `${name} shows these while this project is open there.`}</span>}</div>
+    }) : <Empty compact icon={WorkflowIcon} title="No agent workflows" text={target ? `${name} has no agent workflows for this project.` : `Choose a project on ${name}.`} />}</div>
+    </>}
+    {section === "skills" && <>
+    <SectionHeading>Skills</SectionHeading><div className="studio-list compact">{skills.length ? skills.map((skill) => <div className={`studio-list-row ${skill.enabled === false ? "disabled-tool" : ""}`} key={skill.id}><Boxes size={14} /><div><strong>@{skill.name}</strong><small>{skill.description || "Reusable workflow"}</small></div></div>)
+      : <Empty compact icon={Boxes} title="No skills" text={`${name} has no skills to show here.`} />}</div>
+    <SectionHeading>MCP servers</SectionHeading><div className="studio-list compact">{inventory?.tools?.length ? inventory.tools.map((server) => <div className="studio-list-row" key={server.name}><span className={`status-orb ${server.status}`} /><div><strong>{server.name}</strong><small>{mcpStatusLabel(server.status)} · {server.tools} tool{server.tools === 1 ? "" : "s"}</small></div></div>)
+      : <Empty compact icon={Wrench} title="No MCP servers" text={inventory?.toolsAvailability === "ready" ? `${name} has no MCP servers set up.` : `${name} shows these while this project is open there.`} />}</div>
+    </>}
   </>;
 }
 
 /** The real dock and panels, reading this machine's project through the host. */
-export function RemoteStudio({ device, open, rootRef, onResizeStart, onResizeKeyDown, resizeValue, tab, gitRoute, onTab, onClose, onFork }: {
+export function RemoteStudio({ device, open, covered, rootRef, onResizeStart, onResizeKeyDown, resizeValue, tab, gitRoute, onTab, onClose, onFork }: {
   device: string;
   open: boolean;
+  /** A modal (Settings, onboarding, voice input) covers the app. */
+  covered?: boolean;
   rootRef?: Ref<HTMLElement>;
   onResizeStart?: (event: PointerEvent) => void;
   onResizeKeyDown?: (event: KeyboardEvent) => void;
@@ -763,20 +773,21 @@ export function RemoteStudio({ device, open, rootRef, onResizeStart, onResizeKey
   useEffect(() => { if (gitRoute) setGitView(gitRoute.view); }, [gitRoute]);
   const capabilities = context?.capabilities;
   const revision = context?.revision ?? "";
-  const empty = <Empty icon={FilePlus2} title="No project selected" text={`Choose a project on ${name}.`} />;
-  return <StudioDockFrame open={open} rootRef={rootRef} onResizeStart={onResizeStart} onResizeKeyDown={onResizeKeyDown} resizeValue={resizeValue} tab={tab} onTab={onTab}>
+  const empty = <Empty icon={FolderTree} title="No project selected" text={`Choose a project on ${name}.`} />;
+  return <StudioDockFrame open={open} covered={covered} rootRef={rootRef} onResizeStart={onResizeStart} onResizeKeyDown={onResizeKeyDown} resizeValue={resizeValue} tab={tab} onTab={onTab}>
     {tab === "files" && <>
-      <PanelHeader icon={FilePlus2} title="Project files" subtitle={`Search and preview files on ${name}`} onClose={onClose} />
+      <PanelHeader tab="files" subtitle={`On ${name}`} onClose={onClose} />
       {files ? <FileBrowser key={targetKey} root={`/${workspaceName ?? name}`} source={files} onAttach={(path) => { const fileId = files.fileId(path); if (fileId) machineActions()?.attachHostFile(fileId); }} /> : empty}
     </>}
-    {!target && tab !== "files" && tab !== "usage" && tab !== "tools" && <><PanelHeader icon={FolderGit2} title="Thread tools" subtitle={name} onClose={onClose} />{empty}</>}
-    {target && tab === "review" && <HostChanges key={targetKey} device={device} name={name} target={target} context={context} onOpenGit={() => { setGitView("changes"); onTab("git"); }} onClose={onClose} />}
+    {!target && tab !== "files" && tab !== "usage" && tab !== "actions" && tab !== "skills" && <><PanelHeader tab={tab} subtitle={`On ${name}`} onClose={onClose} />{empty}</>}
+    {target && tab === "changes" && <HostChanges key={targetKey} device={device} name={name} target={target} context={context} onOpenGit={() => { setGitView("changes"); onTab("git"); }} onClose={onClose} />}
     {target && tab === "terminal" && <HostTerminal key={`${device}:${target.workspaceId}`} device={device} name={name} target={target} allowed={Boolean(capabilities?.terminal)} policy={context?.processPolicy} onClose={onClose} />}
     {target && tab === "git" && <HostGit key={targetKey} device={device} name={name} target={target} revision={revision} allowed={Boolean(capabilities?.gitWrite && capabilities.terminal)} canWork={Boolean(capabilities)} threadBusy={threadBusy} draft={gitDrafts[targetKey]} onDraft={saveGitDraft} view={gitView} route={gitRoute} onView={setGitView} onTab={onTab} onClose={onClose} />}
     {target && tab === "checkpoints" && <HostCheckpoints key={targetKey} device={device} name={name} target={target} revision={revision} threadOpen={Boolean(threadId)} allowed={Boolean(capabilities?.checkpointRestore && capabilities.terminal)} onFork={onFork} onClose={onClose} />}
-    {target && tab === "worktrees" && <HostWorktrees key={targetKey} device={device} name={name} target={target} revision={revision} allowed={Boolean(capabilities?.terminal)} onReview={() => onTab("review")} onFiles={() => onTab("files")} onClose={onClose} />}
+    {target && tab === "worktrees" && <HostWorktrees key={targetKey} device={device} name={name} target={target} revision={revision} allowed={Boolean(capabilities?.terminal)} onReview={() => onTab("changes")} onFiles={() => onTab("files")} onClose={onClose} />}
     {target && tab === "agents" && <HostAgents key={targetKey} device={device} name={name} target={target} revision={revision} running={threadBusy} crew={context?.execution?.subagents?.crew ?? NO_CREW} onClose={onClose} />}
     {tab === "usage" && <HostUsage device={device} target={target} context={context} name={name} provider={threadProvider} title={threadTitle} busy={threadBusy} onClose={onClose} />}
-    {tab === "tools" && <HostTools device={device} name={name} target={target} context={context} onOpenThread={(id) => selectRemoteThread(device, id)} onTab={onTab} onClose={onClose} />}
+    {tab === "actions" && <HostTools key="actions" section="actions" device={device} name={name} target={target} context={context} onOpenThread={(id) => selectRemoteThread(device, id)} onTab={onTab} onClose={onClose} />}
+    {tab === "skills" && <HostTools key="skills" section="skills" device={device} name={name} target={target} context={context} onOpenThread={(id) => selectRemoteThread(device, id)} onTab={onTab} onClose={onClose} />}
   </StudioDockFrame>;
 }

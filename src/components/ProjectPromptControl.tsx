@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, NotebookPen, Settings } from "lucide-react";
+import { SwitchTrack } from "./Switch";
+import { Check, ChevronDown, NotebookPen, Settings, ChevronRight } from "lucide-react";
 import { usePopoverFade } from "../hooks/usePopoverFade";
+import { useModalFocus } from "../hooks/useModalFocus";
 import type { ProjectPromptMode, ProjectPromptProfile, Provider, SkillDependencyReport } from "../types";
 import { MAX_PROJECT_PROMPT_PROFILES, MAX_PROJECT_PROMPT_PROFILE_NAME, MAX_PROJECT_PROFILE_PROMPT, mergeProjectPromptProfileDrafts, sanitizeProjectPromptProfiles, type ProjectPromptProfileState } from "../lib/projectPromptProfiles";
 import { resolveSystemPrompt } from "../lib/systemPrompt";
@@ -23,6 +25,10 @@ export function ProjectPromptControl({
   openRequest,
   skills,
   onAnalyzeSkillDependencies,
+  hideTrigger = false,
+  align = "start",
+  returnFocusTo,
+  onStateLabel,
 }: {
   projectName: string;
   projectPrompt?: string;
@@ -37,6 +43,14 @@ export function ProjectPromptControl({
   openRequest?: { name: string; nonce: number } | null;
   skills?: readonly SkillMentionSkill[];
   onAnalyzeSkillDependencies?: (message: string, systemPrompt: string) => Promise<SkillDependencyReport>;
+  /** Opened only through `openRequest` (the top bar's thread menu); no toolbar button of its own. */
+  hideTrigger?: boolean;
+  /** Which edge of the anchor the popover lines up with. */
+  align?: "start" | "end";
+  /** Where focus goes when the popover closes, if the trigger is hidden. */
+  returnFocusTo?: () => HTMLElement | null | undefined;
+  /** Reports the current state word ("Inherited", "Custom", "Layered") for the menu that opens it. */
+  onStateLabel?: (label: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const { ref: panelRef, present } = usePopoverFade(open);
@@ -67,14 +81,24 @@ export function ProjectPromptControl({
       const rect = root.getBoundingClientRect();
       const zoom = effectiveZoom(root);
       setAvailableHeight(Math.max(0, (window.innerHeight - rect.bottom - 8) / zoom - 8));
-      setAvailableWidth(Math.max(0, Math.min(430, (window.innerWidth - rect.left - 16) / zoom)));
+      setAvailableWidth(Math.max(0, Math.min(430, (align === "end" ? rect.right - 16 : window.innerWidth - rect.left - 16) / zoom)));
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(root);
     window.addEventListener("resize", update);
     return () => { observer.disconnect(); window.removeEventListener("resize", update); };
-  }, [open, profiles]);
+  }, [align, open, profiles]);
+
+  const focusReturnTarget = useCallback(() => {
+    if (!hideTrigger) return triggerRef.current;
+    return returnFocusTo?.() ?? null;
+  }, [hideTrigger, returnFocusTo]);
+
+  // Shared focus contract (B04): focus moves in on open, Tab and Shift+Tab
+  // cycle inside, and focus returns to the opener. A popover, so the app
+  // behind stays live (a click outside closes it).
+  useModalFocus(panelRef, open, { inertOutside: false, returnFocus: focusReturnTarget });
 
   useEffect(() => {
     if (!openRequest || openRequest.nonce === seenOpenRequest.current) return;
@@ -137,7 +161,7 @@ export function ProjectPromptControl({
         // Escape closes only this popover — never the app-level stop-turn handler.
         event.stopPropagation();
         setOpen(false);
-        triggerRef.current?.focus();
+        focusReturnTarget()?.focus();
       }
     };
     document.addEventListener("pointerdown", close);
@@ -146,7 +170,7 @@ export function ProjectPromptControl({
       document.removeEventListener("pointerdown", close);
       document.removeEventListener("keydown", escape, true);
     };
-  }, [open]);
+  }, [focusReturnTarget, open]);
 
   const inheritedSummary = appPrompt.trim() ? `Uses the ${appPrompt.trim().length}-character app-wide prompt` : "The app-wide prompt is currently empty";
   const profilesOverLimit = draftProfiles.length > MAX_PROJECT_PROMPT_PROFILES;
@@ -158,10 +182,17 @@ export function ProjectPromptControl({
   const profileModified = selectedProfile && (selectedProfile.prompt.trim() !== draft.trim() || selectedProfile.mode !== mode);
   const hasAppPrompt = Boolean(appPrompt.trim());
   const promptState = hasProjectPrompt ? (promptMode === "append" && hasAppPrompt ? "Layered" : "Custom") : "Inherited";
+  // The primary action only lights up when saving would change something.
+  const sameProfiles = (a: readonly ProjectPromptProfile[], b: readonly ProjectPromptProfile[]) => a.length === b.length
+    && a.every((profile, index) => profile.id === b[index]?.id && profile.name === b[index]?.name && profile.prompt === b[index]?.prompt && profile.mode === b[index]?.mode);
+  const changed = custom !== hasProjectPrompt
+    || (custom && (draft.trim() !== (projectPrompt ?? "").trim() || mode !== promptMode))
+    || (profiles !== undefined && !sameProfiles(draftProfiles, savedProfiles));
+  useEffect(() => { onStateLabel?.(promptState); }, [onStateLabel, promptState]);
 
   return (
-    <div className="project-prompt-control" ref={rootRef}>
-      <button
+    <div className={`project-prompt-control ${hideTrigger ? "menu-anchored" : ""} ${align === "end" ? "align-end" : ""}`} ref={rootRef}>
+      {!hideTrigger && <button
         ref={triggerRef}
         className={`project-prompt-trigger ${hasProjectPrompt ? "custom" : ""}`}
         onClick={() => setOpen((value) => !value)}
@@ -173,29 +204,37 @@ export function ProjectPromptControl({
         <span>Project instructions</span>
         <small>{promptState}</small>
         <ChevronDown size={12} />
-      </button>
+      </button>}
 
       {present && (
         <div ref={panelRef} className="project-prompt-popover" style={{ opacity: 0, maxHeight: availableHeight, width: availableWidth }} aria-hidden={!open || undefined} inert={!open || undefined} role="dialog" aria-label={`Project instructions for ${projectName}`}>
-          <div className="project-prompt-heading">
-            <span className="project-prompt-icon"><NotebookPen size={16} /></span>
+          <div className="project-prompt-heading compact">
             <div>
               <strong>Project instructions</strong>
-              <small>Instructions used by threads in {projectName}.</small>
+              <small>For every thread in {projectName}</small>
             </div>
           </div>
 
           {externalChangeNotice && <small role="status">Project instructions changed while you were editing. Your draft is retained. Cancel and reopen to load the update, or save to apply your draft.</small>}
 
-          <div className="project-prompt-modes" role="radiogroup" aria-label="Project instruction source">
-            <button className={!custom ? "selected" : ""} role="radio" aria-checked={!custom} onClick={() => { setCustom(false); setProfileId(""); }}>
+          <div className="project-prompt-modes compact" role="radiogroup" aria-label="Project instruction source" onKeyDown={(event) => {
+            // Arrow keys move the choice, as in any radio group (K7).
+            if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+            event.preventDefault();
+            const group = event.currentTarget;
+            const nextCustom = !custom;
+            setCustom(nextCustom);
+            if (!nextCustom) setProfileId("");
+            requestAnimationFrame(() => group.querySelectorAll<HTMLElement>("[role='radio']")[nextCustom ? 1 : 0]?.focus());
+          }}>
+            <button className={!custom ? "selected" : ""} role="radio" aria-checked={!custom} tabIndex={custom ? -1 : 0} title={inheritedSummary} onClick={() => { setCustom(false); setProfileId(""); }}>
               <span>
                 <strong>Inherit app prompt</strong>
                 <small>{inheritedSummary}</small>
               </span>
               {!custom && <Check size={15} />}
             </button>
-            <button className={custom ? "selected" : ""} role="radio" aria-checked={custom} onClick={() => setCustom(true)}>
+            <button className={custom ? "selected" : ""} role="radio" aria-checked={custom} tabIndex={custom ? 0 : -1} onClick={() => setCustom(true)}>
               <span>
                 <strong>Use a project prompt</strong>
                 <small>Replace the app prompt or layer on top of it</small>
@@ -204,9 +243,9 @@ export function ProjectPromptControl({
             </button>
           </div>
 
-          {profiles !== undefined && (
+          {profiles !== undefined && custom && (
             <details className="project-prompt-profiles" open={draftProfiles.length ? true : undefined}>
-              <summary>Saved project profiles{draftProfiles.length ? ` (${draftProfiles.length})` : ""}</summary>
+              <summary className="lm-summary"><ChevronRight size={12} aria-hidden="true" className="lm-chevron" />Saved project profiles{draftProfiles.length ? ` (${draftProfiles.length})` : ""}</summary>
               <small>Save named instructions for {projectName}. Changes apply when you save below.</small>
               {profilesOverLimit && <small role="alert">Incoming updates and your drafts exceed the {MAX_PROJECT_PROMPT_PROFILES}-profile limit. Delete a profile before saving so no profiles are discarded.</small>}
               <div className="inline-create">
@@ -240,7 +279,7 @@ export function ProjectPromptControl({
                   setDraftProfiles((current) => [...current, profile]);
                   setProfileId(profile.id);
                   setProfileName(profile.name);
-                }}>Save as profile</button>
+                }}>Save a copy as profile</button>
               </div>
               {selectedProfile && <div className="project-prompt-profile-actions">
                 <button className="secondary-button" type="button" disabled={!canSaveProfile || !profileModified} onClick={() => {
@@ -275,7 +314,7 @@ export function ProjectPromptControl({
                 aria-label="Run the app-wide prompt first"
                 onClick={() => setMode((current) => (current === "append" ? "replace" : "append"))}
               >
-                <span className="project-prompt-switch" aria-hidden="true"><i /></span>
+                <SwitchTrack on={mode === "append"} size="sm" />
                 <span>
                   <strong>Run the app-wide prompt first</strong>
                   <small>
@@ -295,32 +334,33 @@ export function ProjectPromptControl({
             </div>
           )}
 
-          <button
-            className="project-prompt-global-link"
-            onClick={() => {
-              setOpen(false);
-              onAppPromptSettings();
-            }}
-          >
-            <Settings size={13} />
-            Edit the app-wide prompt in Settings
-          </button>
-
           <div className="project-prompt-actions">
-            <button className="secondary-button" onClick={() => { setOpen(false); triggerRef.current?.focus(); }}>Cancel</button>
+            <button
+              className="project-prompt-global-link"
+              onClick={() => {
+                setOpen(false);
+                onAppPromptSettings();
+              }}
+              title="Edit the app-wide prompt in Settings"
+            >
+              <Settings size={13} />
+              App prompt…
+            </button>
+            <button className="secondary-button" onClick={() => { setOpen(false); focusReturnTarget()?.focus(); }}>Cancel</button>
             <button
               className="primary-button"
-              disabled={saveDisabled}
+              disabled={saveDisabled || !changed}
+              title={!changed ? "Nothing has changed" : undefined}
               onClick={() => {
                 const prompt = custom ? draft.trim() : undefined;
                 const nextMode = custom ? mode : "replace";
                 if (profiles !== undefined) onSave(prompt, nextMode, { profiles: draftProfiles, selectedProfileId: custom ? selectedProfile?.id : undefined });
                 else onSave(prompt, nextMode);
                 setOpen(false);
-                triggerRef.current?.focus();
+                focusReturnTarget()?.focus();
               }}
             >
-              {custom ? "Save project prompt" : "Use app prompt"}
+              {custom ? "Save" : "Use app prompt"}
             </button>
           </div>
         </div>

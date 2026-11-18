@@ -14,21 +14,21 @@ export function onboardingProviderReadiness(input: {
   lmStudioReady: boolean;
 }): Record<Provider, OnboardingProviderStatus> {
   const codexIssue = !input.runtimeStatus
-    ? "Checking Codex runtime…"
+    ? "Checking Codex CLI…"
     : !input.runtimeStatus.available
       ? "Install Codex CLI"
       : !input.runtimeStatus.compatible
-        ? "Update Codex runtime"
+        ? "Update Codex CLI"
         : null;
 
   return {
     openai: codexIssue
       ? { ready: false, detail: codexIssue }
       : input.account?.type === "chatgpt"
-        ? { ready: true, detail: "ChatGPT ready" }
+        ? { ready: true, detail: "Signed in with ChatGPT" }
         : input.account?.type === "apiKey"
           ? { ready: true, detail: "OpenAI API key ready" }
-          : { ready: false, detail: "Sign in to ChatGPT or add an API key" },
+          : { ready: false, detail: "Sign in with ChatGPT or add an API key" },
     openrouter: codexIssue
       ? { ready: false, detail: codexIssue }
       : input.openRouterReady

@@ -300,7 +300,7 @@ export function GlobalInstructionFileEditor({ file, visible, currentSource, onSa
     publish();
     let confirmed = false;
     try {
-      confirmed = state.draft === state.base?.content || await confirmDialog("Reload the original instruction file and discard this editor draft? Saved file edits and prompt copies are not undone.");
+      confirmed = state.draft === state.base?.content || await confirmDialog("Reload the original instruction file and discard this editor draft? Saved file edits and prompt copies are not undone.", { confirmLabel: "Reload file", cancelLabel: "Keep editing" });
     } finally {
       state.confirming = false;
     }
@@ -342,7 +342,7 @@ export function GlobalInstructionFileEditor({ file, visible, currentSource, onSa
     publish();
     let confirmed = false;
     try {
-      confirmed = await confirmDialog("Discard this editor’s draft? Changes already saved to the original file and saved prompt copies are not undone. File reload or recovery requirements remain.");
+      confirmed = await confirmDialog("Discard this editor’s draft? Changes already saved to the original file and saved prompt copies are not undone.", { confirmLabel: "Discard draft", cancelLabel: "Keep editing" });
     } finally {
       state.confirming = false;
     }
@@ -373,7 +373,7 @@ export function GlobalInstructionFileEditor({ file, visible, currentSource, onSa
       {dirty && <button type="button" className="secondary-button" disabled={view.saving || view.reloading || view.confirming} onClick={() => { void discardDraft(); }}>Discard editor draft</button>}
     </div>}
     {expanded && visible && <div className="instruction-file-preview" id={editorId}>
-      <label>Edit original {file.name}<textarea aria-label={`Edit original ${file.provider === "codex" ? "Codex" : "Claude"} ${file.name}`} value={view.draft} readOnly={view.reloading || view.confirming || view.requiresReload || !currentSource} onChange={(event) => change(event.target.value)} onBlur={() => { void flush(true).catch(() => {}); }} rows={8} spellCheck={false} /></label>
+      <label>Edit original {file.name}<textarea aria-label={`Edit original ${file.provider === "codex" ? "Codex CLI" : "Claude Code"} ${file.name}`} value={view.draft} readOnly={view.reloading || view.confirming || view.requiresReload || !currentSource} onChange={(event) => change(event.target.value)} onBlur={() => { void flush(true).catch(() => {}); }} rows={8} spellCheck={false} /></label>
       <p className="instruction-editor-note">Edits save automatically to the original file. Settings Cancel does not undo file edits. App-specific provider prompts and saved copies change only when you choose a preset.</p>
     </div>}
   </div>;

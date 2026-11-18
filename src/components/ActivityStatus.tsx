@@ -1,7 +1,7 @@
 import { memo, useEffect, useState } from "react";
 import { Check, ChevronRight, CircleDashed, CircleDot, ListChecks, ShieldAlert, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { latestCompactActivity, type CompactWorkEntry, type CompactWorkState } from "../lib/compactActivity";
-import { PixelWorkingMark } from "./PixelWorkingMark";
+import { WorkingIndicator } from "./WorkingIndicator";
 import "./ActivityStatus.css";
 
 export type ActivityStatusCategory =
@@ -12,6 +12,18 @@ export interface LiveActivityDescriptor {
   label: string;
   /** Only generic waiting may borrow an occasional light-hearted phrase. */
   playful: boolean;
+  /** The concrete step in progress (a command line, a file), from the provider's own event. */
+  detail?: string;
+}
+
+/** Calm, plain verbs for the live line. */
+const LIVE_VERBS: Record<string, string> = { research: "Reading", files: "Editing", commands: "Running", thinking: "Thinking" };
+
+function liveDetail(activity: { kind: string; title: string }): string | undefined {
+  if (activity.kind !== "command" && activity.kind !== "file") return undefined;
+  const line = activity.title.split("\n").find((part) => part.trim())?.trim() ?? "";
+  if (!line) return undefined;
+  return line.length > 96 ? `${line.slice(0, 95)}…` : line;
 }
 
 /**
@@ -32,7 +44,7 @@ export function describeLiveActivity(
     if (activity.kind === "compaction") return { category: "compaction", label: "Compacting context", playful: false };
     if (activity.kind === "agent" && !activity.workType) return { category: "agents", label: "Coordinating agents", playful: false };
     if (activity.kind === "reasoning") return { category: "thinking", label: "Thinking", playful: true };
-    return { category: latest.category, label: latest.label, playful: false };
+    return { category: latest.category, label: LIVE_VERBS[latest.category] ?? latest.label, playful: false, detail: liveDetail(activity) };
   }
   const last = entries.at(-1);
   if (last?.kind === "message" && last.value.role === "assistant" && last.value.streaming) {
@@ -55,6 +67,12 @@ export const ACTIVITY_STATUS_PHRASES = [
   "Mulling it over",
   "Polishing the plan",
 ] as const;
+
+/**
+ * Calm by default (2026-11-17): the live line names the real operation and
+ * never rotates through light-hearted phrases. Kept switchable in one place.
+ */
+const PLAYFUL_PHRASES = false as boolean;
 
 /** Generic waiting must last this long before a phrase may appear. */
 export const ACTIVITY_PHRASE_DELAY_MS = 3_000;
@@ -115,6 +133,8 @@ export interface ActivityStatusProps {
   state: CompactWorkState;
   /** Live: the semantic operation. Settled: optional override of the outcome label. */
   label?: string;
+  /** Live only: the step in progress, shown after the verb in code type. */
+  detail?: string;
   category?: ActivityStatusCategory;
   /** Quiet trailing context: step count while live, the work summary once settled. */
   summary?: string;
@@ -127,6 +147,8 @@ export interface ActivityStatusProps {
   /** Identifies the logical run so focus can return after a row remounts. */
   runKey?: string;
   open?: boolean;
+  /** Set when the pill expands an inline summary (this id) instead of opening the dialog. */
+  controls?: string;
   onOpen: (opener: HTMLButtonElement) => void;
 }
 
@@ -136,29 +158,31 @@ export interface ActivityStatusProps {
  * keep a static semantic icon so long histories never animate or tick.
  */
 export const ActivityStatus = memo(function ActivityStatus({
-  state, label, category = "working", summary, playful = false, unconfirmed = false, seed = "", searchMatches = 0, runKey, open = false, onOpen,
+  state, label, detail, category = "working", summary, playful = false, unconfirmed = false, seed = "", searchMatches = 0, runKey, open = false, controls, onOpen,
 }: ActivityStatusProps) {
   const live = state === "running";
   const waiting = live && category === "approval";
   const pending = !live && unconfirmed;
   const semanticLabel = live ? label || "Working" : label || (pending ? UNCONFIRMED_ACTIVITY_LABEL : SETTLED_ACTIVITY_LABELS[state]);
-  const shownLabel = usePlayfulLabel(semanticLabel, live && playful && !waiting, seed);
+  const shownLabel = usePlayfulLabel(semanticLabel, PLAYFUL_PHRASES && live && playful && !waiting, seed);
+  const shownDetail = live && !waiting ? detail : undefined;
   const Icon = waiting ? ShieldAlert : live ? null : pending ? CircleDashed : SETTLED_ICONS[state];
   const matchText = searchMatches > 0 ? `${searchMatches} match${searchMatches === 1 ? "" : "es"}` : "";
   const accessibleSummary = [summary, matchText].filter(Boolean).join(", ");
   return (
     <div
-      className={`activity-status state-${state}${live ? " live" : " settled"}${waiting ? " waiting" : ""}${pending ? " unconfirmed" : ""}${searchMatches ? " search-hit" : ""}`}
+      className={`activity-status state-${state}${live ? " live" : " settled"}${controls ? " discloses" : ""}${waiting ? " waiting" : ""}${pending ? " unconfirmed" : ""}${searchMatches ? " search-hit" : ""}`}
       data-category={live ? category : undefined}
     >
       {/* Announce real operations only; decorative phrases stay visual. */}
-      {live && <span className="sr-only" role="status">{semanticLabel}</span>}
+      {live && <span className="sr-only" role="status">{semanticLabel}{shownDetail ? ` ${shownDetail}` : ""}</span>}
       <button
         type="button"
         className="activity-status-pill"
-        aria-haspopup="dialog"
+        aria-haspopup={controls ? undefined : "dialog"}
         aria-expanded={open}
-        aria-label={`${semanticLabel}. View activity${accessibleSummary ? `: ${accessibleSummary}` : ""}`}
+        aria-controls={controls && open ? controls : undefined}
+        aria-label={`${semanticLabel}${shownDetail ? ` ${shownDetail}` : ""}. ${controls ? open ? "Hide summary" : "Show summary" : "View activity"}${accessibleSummary ? `: ${accessibleSummary}` : ""}`}
         data-activity-run={runKey}
         onClick={(event) => {
           // WebKit does not focus buttons on pointer activation; the dialog
@@ -168,11 +192,13 @@ export const ActivityStatus = memo(function ActivityStatus({
         }}
       >
         <span className={`activity-status-mark${Icon ? "" : " working"}`} aria-hidden="true">
-          {Icon ? <Icon size={11} strokeWidth={2.2} /> : <PixelWorkingMark />}
+          {Icon ? <Icon size={11} strokeWidth={2.2} /> : <WorkingIndicator size={12} />}
         </span>
         <span className="activity-status-text" aria-hidden="true">
           <span className={`activity-status-label${shownLabel !== semanticLabel ? " playful" : ""}`} key={shownLabel}>{shownLabel}</span>
-          {live && !waiting && <span className="activity-status-ellipsis">…</span>}
+          {shownDetail
+            ? <code className="activity-status-detail" title={shownDetail}>{shownDetail}</code>
+            : live && !waiting && <span className="activity-status-ellipsis">…</span>}
         </span>
         {(summary || matchText) && (
           <span className="activity-status-meta" aria-hidden="true">

@@ -33,7 +33,7 @@ const COPY: Record<DiscoveryPurpose, { region: string; find: string; finding: st
   },
   checks: {
     region: "Find a check command",
-    find: "Find checks",
+    find: "Find check command",
     finding: "Finding checks…",
     intro: "Finds and saves this project’s test or check command. Nothing runs until you press Run checks.",
     saved: "Saved to Run checks",

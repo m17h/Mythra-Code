@@ -1,4 +1,4 @@
-import "./SettingsModal.legacy.css";
+import "./SettingsModal.base.css";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { open as openFolderDialog, save } from "@tauri-apps/plugin-dialog";
 import { ChatFontSettings, chatFontName, chatFontOptions } from "./ChatFontPicker";
@@ -9,10 +9,8 @@ import { skillMentionRanges } from "../lib/skillMentions";
 import { mergePromptProfileDrafts } from "../lib/instructionFiles";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  BadgeDollarSign,
-  Boxes,
   BookOpenCheck,
-  CalendarClock,
+  Keyboard,
   Check,
   ChevronRight,
   Copy,
@@ -22,27 +20,21 @@ import {
   Gauge,
   GitFork,
   Info,
-  KeyRound,
   LoaderCircle,
-  Mic,
-  NotebookPen,
   Palette,
   PanelRight,
   Pencil,
-  Play,
   Plus,
   RotateCcw,
   Search,
   ShieldCheck,
   Trash2,
   UsersRound,
-  Wrench,
   X,
-  Brain,
   CornerDownRight,
-  Cpu,
-  MonitorSmartphone,
 } from "lucide-react";
+import { formatShortcut } from "../lib/shortcuts";
+import { orderSettingsResults, searchWords } from "../lib/searchMatch";
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
 import { cancelClaudeLogin, isClaudeDefaultModel, isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
 import { claudeUsesApiKey, codexAccountReady } from "../lib/providerAuth";
@@ -55,6 +47,7 @@ import { formatGitError, friendlyError } from "../lib/errors";
 import { resolveProviderSystemPrompt } from "../lib/systemPrompt";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { useSettingsSheetResize } from "../hooks/useSettingsSheetResize";
+import { SETTINGS_PANE_ICONS } from "./settingsPaneIcons";
 import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo, ProviderLogo } from "./BrandLogos";
 import type { LMStudioModel } from "../lib/lmStudio";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
@@ -75,7 +68,10 @@ import type { InstructionFileDescriptor } from "../lib/instructionFiles";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { SubagentPolicyEditor } from "./SubagentPolicyEditor";
 import { SubagentModelGuidanceEditor, subagentModelGuidanceDraftChanged, type SubagentModelGuidanceDraft } from "./SubagentModelGuidanceEditor";
-import { HarnessSettings } from "./HarnessSettings";
+import { CustomAgentsSettings, EMPTY_HARNESS_DRAFTS, McpServerSettings, QuickActionsSettings, type HarnessDrafts } from "./HarnessSettings";
+import { EmptyState, rovingChoiceKeyDown, SettingInfo, SettingsJumpList, Switch } from "./SettingsBits";
+import { WorkflowManager } from "./WorkflowManager";
+import { ScheduledTasksSettings } from "./ScheduledTasksSettings";
 import { PreferenceLearningSettings } from "./PreferenceLearningSettings";
 import { LanguageToolsSettings } from "./LanguageToolsSettings";
 import { DevicesSettings } from "./remote/DevicesSettings";
@@ -125,7 +121,8 @@ import type { ChildAgentModelCatalogs } from "./subAgentModelOptions";
 import type { ClaudeModel } from "../lib/claude";
 import type { OpenRouterModel } from "./OpenRouterModelControl";
 import { sanitizeProjectDefaultOverrides } from "../lib/projectDefaults";
-import { settingsWithDefaultProvider, settingsWithOnboardingDraft, type OnboardingSettingsDraft } from "../lib/onboardingSettings";
+import { SmoothDisclosure } from "./SmoothDisclosure";
+import { onboardingHandoff, settingsWithAppearance, settingsWithDefaultProvider, type OnboardingAppearance, type OnboardingSettingsDraft } from "../lib/onboardingSettings";
 import { cachedDeveloperRuntimeUpdates, checkDeveloperRuntimeUpdates, updateDeveloperRuntime, type DeveloperRuntimeTarget, type DeveloperRuntimeTargetStatus, type DeveloperRuntimeUpdater } from "../lib/runtimeUpdates";
 
 /**
@@ -151,125 +148,137 @@ type SettingsNavItem = {
   parent?: SettingsPane;
 };
 
-// Grouped by what someone is trying to do, not by implementation.
+// Grouped by what someone is trying to do, not by implementation. The
+// "Connections" group name and the Devices, Models & accounts, Voice input and
+// Updates labels are quoted by Rust and remote strings ("Settings → Connections
+// → Devices"); keep them exactly as they are.
 const SETTINGS_NAV: ReadonlyArray<{ group: string; items: ReadonlyArray<SettingsNavItem> }> = [
+  {
+    group: "App",
+    items: [
+      { id: "general", label: "General", icon: SETTINGS_PANE_ICONS["general"], detail: "How Mythra Code behaves day to day.", keywords: "general behavior behaviour keyboard shortcut escape esc stop cancel active run notification notifications alert menu bar tray status thread title titles naming rename luna onboarding guided setup getting started help tour" },
+      { id: "appearance", label: "Appearance", icon: SETTINGS_PANE_ICONS["appearance"], detail: "Theme, size and fonts.", keywords: "appearance theme dark light colour color scheme font typeface text size scale zoom density effort slider logo logos icon mark marks look custom fonts" },
+      { id: "voice", label: "Voice input", icon: SETTINGS_PANE_ICONS["voice"], detail: "Dictate into the message box with its own transcription key.", keywords: "voice input dictation dictate microphone mic speech to text speech-to-text transcription transcribe whisper audio record recording api key openai openrouter model" },
+    ],
+  },
   {
     group: "AI",
     items: [
-      { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Choose the default provider, connect your accounts, and pick a default model.", keywords: "model provider account sign in login api key openai chatgpt codex anthropic claude cursor openrouter lm studio subscription credentials token default" },
-      { id: "voice", label: "Voice input", icon: Mic, detail: "Dictate into the message box. Uses its own transcription API key, separate from your chat accounts.", keywords: "voice input dictation dictate microphone mic speech to text speech-to-text transcription transcribe whisper audio record recording api key openai openrouter model" },
-      { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "What every agent is told before your message.", keywords: "prompt system instructions agents.md claude.md guidance context profile profiles preset global codex claude layer" },
-      { id: "memory", label: "Memory", icon: Brain, detail: "Optionally learn how you like to work from your conversations.", keywords: "memory learning learned preferences history personalize personalization remember experimental" },
-      { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Sub-agent workflows, thread cleanup, and reusable setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew mythra v2 preview conversation steering review model guidance notes" },
+      { id: "models", label: "Models & accounts", icon: SETTINGS_PANE_ICONS["models"], detail: "Connect your accounts and choose the default provider and model.", keywords: "model provider account accounts sign in login api key openai chatgpt codex anthropic claude cursor openrouter lm studio subscription credentials token default service tier speed fast priority max reasoning warning" },
+      { id: "prompts", label: "Instructions", icon: SETTINGS_PANE_ICONS["prompts"], detail: "What every agent is told before your message.", keywords: "prompt prompts system instructions agents.md claude.md guidance context profile profiles preset global codex claude layer" },
+      { id: "memory", label: "Memory", icon: SETTINGS_PANE_ICONS["memory"], detail: "Optionally learn how you like to work from your conversations.", keywords: "memory learning learned preferences history personalize personalization remember experimental" },
+    ],
+  },
+  {
+    group: "Agents",
+    items: [
+      { id: "agents", label: "Sub-agents", icon: SETTINGS_PANE_ICONS["agents"], detail: "How agents split work across helper agents.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset presets archive cleanup crew mythra v2 preview conversation steering review model guidance notes follow-up custom agents specialist" },
+      { id: "skills", label: "Skills", icon: SETTINGS_PANE_ICONS["skills"], detail: "Markdown skills in a local folder that models can call by name.", keywords: "skill skills markdown folder library import capability" },
+      { id: "tools", label: "MCP & language servers", icon: SETTINGS_PANE_ICONS["tools"], detail: "Local MCP servers and language tools.", keywords: "mcp tool tools server servers stdio model context protocol integration workspace language languages lsp install automatic setup" },
+    ],
+  },
+  {
+    group: "Projects & automation",
+    items: [
+      { id: "projects", label: "Projects", icon: SETTINGS_PANE_ICONS["projects"], detail: "Git setup and per-project overrides.", keywords: "profile export import copy share project folder workspace default override overrides per-project repository repo git init initialize initialization" },
+      { id: "workflows", label: "Workflows", icon: SETTINGS_PANE_ICONS["workflows"], detail: "Multi-step agent workflows and one-click quick actions.", keywords: "workflow automation recipe steps pipeline action actions quick command run trigger" },
+      { id: "scheduled-tasks", label: "Scheduled tasks", icon: SETTINGS_PANE_ICONS["scheduled-tasks"], detail: "Prompts that run on their own in a chat or a project.", keywords: "schedule scheduled cron timer interval recurring unattended background task reminder" },
     ],
   },
   {
     group: "Connections",
     items: [
-      { id: "github", label: "GitHub", icon: GitFork, detail: "Connect your GitHub account and clone repositories into new projects.", keywords: "github git clone repository repo account sign in gh cli remote" },
-      { id: "devices", label: "Devices", icon: MonitorSmartphone, detail: "Use this computer from your other computers on the same network, or let them use this one.", keywords: "device devices remote nearby pair pairing paired lan local network host viewer machine switcher another computer pc mac access revoke invitation" },
-      { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Language tools, local MCP servers, and live tool controls.", keywords: "mcp tool tools server stdio model context protocol integration workspace language languages lsp install automatic setup" },
-      { id: "skills", label: "Skills", icon: Boxes, detail: "Markdown skills in a local folder that models can call by name.", keywords: "skill skills markdown folder library import capability" },
+      { id: "github", label: "GitHub", icon: SETTINGS_PANE_ICONS["github"], detail: "Connect your GitHub account and clone repositories into new projects.", keywords: "github git clone repository repo account sign in gh cli remote" },
+      { id: "devices", label: "Devices", icon: SETTINGS_PANE_ICONS["devices"], detail: "Use this computer from your others on the same network, or the other way round.", keywords: "device devices remote nearby pair pairing paired lan local network host viewer machine switcher another computer pc mac access revoke invitation" },
     ],
   },
   {
-    group: "Automation",
+    group: "System",
     items: [
-      { id: "workflows", label: "Workflows", icon: Play, detail: "Multi-step agent recipes and one-click project actions.", keywords: "workflow automation recipe steps pipeline action command run trigger" },
-      { id: "scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock, detail: "Prompts that run on their own in a chat or a project.", keywords: "schedule scheduled cron timer interval recurring unattended background task reminder" },
-    ],
-  },
-  {
-    group: "Usage",
-    items: [
-      { id: "usage", label: "Usage", icon: Gauge, detail: "How quotas are shown, plus everything this device has used.", keywords: "usage quota limit tokens cost price pricing spend billing rate percentage remaining consumed" },
-      { id: "pricing", label: "Model pricing", icon: BadgeDollarSign, parent: "usage", detail: "Official OpenAI and Anthropic API list prices per 1M tokens. Reference only; subscriptions aren’t billed at these rates.", keywords: "pricing price prices rate rates cost api list per million mtok token tokens input output cache read write cached long context openai anthropic claude gpt opus sonnet haiku" },
-    ],
-  },
-  {
-    group: "App",
-    items: [
-      { id: "general", label: "Interface", icon: Palette, detail: "Appearance and keyboard shortcuts. Appearance previews instantly; save to keep your changes.", keywords: "theme dark light appearance colour color scheme font typeface text size scale zoom density effort slider logo icon mark look keyboard shortcut escape esc stop cancel active run" },
-      { id: "projects", label: "Projects", icon: FolderCog, detail: "Set up Git, name new threads automatically, and give each project its own provider, model, and look.", keywords: "profile export import copy project folder workspace default override per-project repository repo git init initialize initialization automatic thread title titles naming rename luna" },
-      { id: "system", label: "Runtime", icon: Cpu, detail: "Onboarding, notifications, service tier, terminal memory and timeout, and diagnostics.", keywords: "runtime notification alert service tier terminal scrollback memory timeout time limit stop kill command local server dev server long-running minutes diagnostics logs errors performance onboarding getting started" },
-      { id: "updates", label: "Updates", icon: Download, detail: "Mythra Code, Claude Code, and Codex updates in one place, always from their official channels.", keywords: "update upgrade version release install download changelog notes" },
+      { id: "usage", label: "Usage", icon: SETTINGS_PANE_ICONS["usage"], detail: "Everything this device has used, and how quotas are shown.", keywords: "usage spending quota limit tokens cost price pricing spend billing rate percentage remaining consumed" },
+      { id: "pricing", label: "Model pricing", icon: SETTINGS_PANE_ICONS["pricing"], parent: "usage", detail: "Official API list prices per 1M tokens, for reference.", keywords: "pricing price prices rate rates cost api list per million mtok token tokens input output cache read write cached long context openai anthropic claude gpt opus sonnet haiku" },
+      { id: "updates", label: "Updates", icon: SETTINGS_PANE_ICONS["updates"], detail: "Mythra Code, Claude Code and the Codex CLI.", keywords: "update upgrade version release install download changelog notes" },
+      { id: "system", label: "Advanced", icon: SETTINGS_PANE_ICONS["system"], detail: "Terminal limits, privacy records and diagnostics.", keywords: "advanced runtime terminal scrollback history memory timeout time limit stop kill command local server dev server long-running minutes privacy instruction records receipts diagnostics logs errors performance overlay" },
     ],
   },
 ];
 
 type SettingsRow = {
+  /** Stable id: never derived from the label at runtime, so renaming a label
+   * can't break links. Markup may carry it as `data-settings-row`. */
+  id: string;
   pane: SettingsPane;
   label: string;
   keywords?: string;
   /** Stable target for controls outside the shared setting-row markup. */
-  target?: "openrouter-key" | "lmstudio-server" | "transcription-key" | "openai-api-key" | "claude-billing";
+  target?: "openrouter-key" | "lmstudio-server" | "transcription-key" | "openai-api-key" | "claude-billing" | "general-shortcuts";
   accountProvider?: Provider;
 };
 
-/** Individual settings that search can jump to. Most use the visible title;
- * provider-specific controls also name their disclosure and stable target. */
+/** Individual settings that search can jump to. Most use the visible title
+ * (an `h4`, a `.set-row strong` or a `summary`, matched on its exact text), so
+ * a renamed label must be renamed here too. Provider-specific controls also
+ * name their disclosure and stable target. */
 const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
-  { pane: "usage", label: "Record last-turn instructions", keywords: "privacy instruction records receipts context delete history" },
-  { pane: "general", label: "Escape stops the active run", keywords: "esc keyboard shortcut cancel" },
-  { pane: "general", label: "Warn before using Max reasoning", keywords: "reasoning effort warning" },
-  { pane: "general", label: "Theme", keywords: "dark light colour color appearance" },
-  { pane: "general", label: "App scale", keywords: "zoom size interface text bigger smaller" },
-  { pane: "general", label: "Chat typeface", keywords: "font serif mono" },
-  { pane: "general", label: "Effort slider style", keywords: "reasoning slider" },
-  { pane: "general", label: "Provider marks", keywords: "logo icon openai claude cursor" },
-  { pane: "projects", label: "Automatically initialize Git for new project threads", keywords: "git init repository" },
-  { pane: "projects", label: "Automatic thread titles", keywords: "name rename title luna" },
-  { pane: "projects", label: "Project profiles", keywords: "export import copy share project settings profile differs defaults" },
-  { pane: "models", label: "Accounts & connections", keywords: "sign in login account" },
-  { pane: "models", label: "OpenAI API key and billing", keywords: "openai api key billing subscription chatgpt codex pay as you go", target: "openai-api-key", accountProvider: "openai" },
-  { pane: "models", label: "Claude API key and billing", keywords: "anthropic claude api key billing subscription console", target: "claude-billing", accountProvider: "claude" },
-  { pane: "models", label: "OpenRouter API key", keywords: "key token openrouter", target: "openrouter-key", accountProvider: "openrouter" },
-  { pane: "models", label: "LM Studio local server", keywords: "lm studio local url token", target: "lmstudio-server", accountProvider: "lmstudio" },
-  { pane: "models", label: "Defaults for new threads", keywords: "default provider model" },
-  { pane: "voice", label: "Transcription provider", keywords: "voice dictation speech openai openrouter" },
-  { pane: "voice", label: "Transcription API key", keywords: "voice dictation speech key token credential", target: "transcription-key" },
-  { pane: "voice", label: "Transcription model", keywords: "voice dictation speech whisper gpt transcribe" },
-  { pane: "prompts", label: "Your instructions", keywords: "system prompt global codex claude profile" },
-  { pane: "prompts", label: "Project files", keywords: "agents.md claude.md discovery" },
-  { pane: "prompts", label: "What the agent receives", keywords: "preview combined layers" },
-  { pane: "memory", label: "Learned preferences", keywords: "learning history scope" },
-  { pane: "agents", label: "Sub-agent defaults", keywords: "concurrency parallel delegate" },
-  { pane: "agents", label: "Model guidance", keywords: "model notes when to use sub-agent preferences" },
-  { pane: "agents", label: "Automatic parent follow-ups", keywords: "follow-up follow up followup limit unlimited continue resume review parent turns budget" },
-  { pane: "agents", label: "Archive sub-agent threads automatically", keywords: "cleanup archive" },
-  { pane: "agents", label: "Sub-agent presets", keywords: "preset crew setup" },
-  { pane: "agents", label: "Custom agents", keywords: "specialist instructions" },
-  { pane: "devices", label: "Let my other computers use this one", keywords: "remote host lan local network turn on allow access nearby" },
-  { pane: "devices", label: "Use another computer", keywords: "request access pair nearby code approve allow decline" },
-  { pane: "devices", label: "Show this name to nearby devices", keywords: "privacy device name announcement" },
-  { pane: "tools", label: "MCP servers", keywords: "mcp server stdio" },
-  { pane: "tools", label: "Live tool controls", keywords: "thread tools" },
-  { pane: "workflows", label: "Quick project actions", keywords: "action command button" },
-  { pane: "usage", label: "Provider quota display", keywords: "remaining consumed percentage" },
-  { pane: "system", label: "Guided setup", keywords: "onboarding tour getting started" },
-  { pane: "system", label: "Desktop notifications", keywords: "notify alert" },
-  { pane: "system", label: "Status in the menu bar", keywords: "tray menu bar notification area icon running" },
-  { pane: "system", label: "Performance overlay", keywords: "fps frame rate memory heap debug" },
-  { pane: "system", label: "OpenAI service tier", keywords: "fast priority" },
-  { pane: "system", label: "Terminal scrollback", keywords: "terminal memory buffer" },
-  { pane: "system", label: "Terminal and local-server timeout", keywords: "terminal timeout minutes dev server" },
-  { pane: "system", label: "Export a diagnostic bundle", keywords: "diagnostics logs support" },
+  { id: "general.escape-stops-the-active-run", pane: "general", label: "Escape stops the active run", keywords: "esc keyboard shortcut cancel" },
+  { id: "general.desktop-notifications", pane: "general", label: "Desktop notifications", keywords: "notify alert" },
+  { id: "general.status-in-the-menu-bar", pane: "general", label: "Status in the menu bar", keywords: "tray menu bar notification area icon running" },
+  { id: "general.automatic-thread-titles", pane: "general", label: "Automatic thread titles", keywords: "name rename title luna" },
+  { id: "general.guided-setup", pane: "general", label: "Guided setup", keywords: "onboarding tour getting started help" },
+  { id: "general.keyboard-shortcuts", pane: "general", label: "Keyboard shortcuts", keywords: "keys hotkeys keyboard cheat sheet help", target: "general-shortcuts" },
+  { id: "appearance.theme", pane: "appearance", label: "Theme", keywords: "dark light colour color appearance" },
+  { id: "appearance.app-scale", pane: "appearance", label: "App scale", keywords: "zoom size interface text bigger smaller" },
+  { id: "appearance.chat-font", pane: "appearance", label: "Chat font", keywords: "font typeface serif mono" },
+  { id: "appearance.custom-fonts", pane: "appearance", label: "Custom fonts", keywords: "font file installed typeface add" },
+  { id: "appearance.effort-slider", pane: "appearance", label: "Effort slider", keywords: "reasoning slider style" },
+  { id: "appearance.provider-logos", pane: "appearance", label: "Provider logos", keywords: "logo icon mark openai claude cursor" },
+  { id: "voice.transcription-provider", pane: "voice", label: "Transcription provider", keywords: "voice dictation speech openai openrouter" },
+  { id: "voice.transcription-api-key", pane: "voice", label: "Transcription API key", keywords: "voice dictation speech key token credential", target: "transcription-key" },
+  { id: "voice.transcription-model", pane: "voice", label: "Transcription model", keywords: "voice dictation speech whisper gpt transcribe" },
+  { id: "models.accounts", pane: "models", label: "Accounts", keywords: "sign in login account connections" },
+  { id: "models.openai-api-key-and-billing", pane: "models", label: "OpenAI API key and billing", keywords: "openai api key billing subscription chatgpt codex pay as you go", target: "openai-api-key", accountProvider: "openai" },
+  { id: "models.claude-api-key-and-billing", pane: "models", label: "Claude API key and billing", keywords: "anthropic claude api key billing subscription console", target: "claude-billing", accountProvider: "claude" },
+  { id: "models.openrouter-api-key", pane: "models", label: "OpenRouter API key", keywords: "key token openrouter", target: "openrouter-key", accountProvider: "openrouter" },
+  { id: "models.lm-studio-local-server", pane: "models", label: "LM Studio local server", keywords: "lm studio local url token", target: "lmstudio-server", accountProvider: "lmstudio" },
+  { id: "models.defaults-for-new-threads", pane: "models", label: "Defaults for new threads", keywords: "default provider model" },
+  { id: "models.openai-speed", pane: "models", label: "OpenAI speed", keywords: "service tier fast priority standard" },
+  { id: "models.warn-before-using-max-reasoning", pane: "models", label: "Warn before using Max reasoning", keywords: "reasoning effort warning" },
+  { id: "prompts.your-instructions", pane: "prompts", label: "Your instructions", keywords: "system prompt global codex claude profile" },
+  { id: "prompts.project-files", pane: "prompts", label: "Project files", keywords: "agents.md claude.md discovery" },
+  { id: "prompts.what-the-agent-receives", pane: "prompts", label: "What the agent receives", keywords: "preview combined layers" },
+  { id: "memory.learned-preferences", pane: "memory", label: "Learned preferences", keywords: "learning history scope provider model" },
+  { id: "agents.default-sub-agent-setup", pane: "agents", label: "Default sub-agent setup", keywords: "defaults concurrency parallel delegate" },
+  { id: "agents.presets", pane: "agents", label: "Presets", keywords: "preset crew setup" },
+  { id: "agents.when-to-use-each-model", pane: "agents", label: "When to use each model", keywords: "model guidance notes parent preferences" },
+  { id: "agents.automatic-follow-ups", pane: "agents", label: "Automatic follow-ups", keywords: "follow-up follow up followup limit unlimited continue resume review parent turns budget" },
+  { id: "agents.archive-sub-agent-threads-automatically", pane: "agents", label: "Archive sub-agent threads automatically", keywords: "cleanup archive" },
+  { id: "agents.custom-agents", pane: "agents", label: "Custom agents", keywords: "specialist instructions profiles" },
+  { id: "agents.preview-features", pane: "agents", label: "Preview features", keywords: "mythra code sub-agents v2 preview conversation steering messaging" },
+  { id: "skills.your-skills", pane: "skills", label: "Your skills", keywords: "skill list enable disable edit rename" },
+  { id: "tools.mcp-servers", pane: "tools", label: "MCP servers", keywords: "mcp server stdio" },
+  { id: "tools.language-tools", pane: "tools", label: "Language tools", keywords: "lsp language server install automatic setup" },
+  { id: "tools.skills-mcp-in-workspace", pane: "tools", label: "Tools → Skills & MCP", keywords: "in this thread live tools thread tools panel workspace dock skills mcp" },
+  { id: "workflows.agent-workflows", pane: "workflows", label: "Agent workflows", keywords: "workflow recipe steps" },
+  { id: "workflows.quick-actions", pane: "workflows", label: "Quick actions", keywords: "action command button project" },
+  { id: "scheduled-tasks.scheduled-tasks", pane: "scheduled-tasks", label: "Your tasks", keywords: "scheduled tasks schedule task new add recurring" },
+  { id: "projects.set-up-git-automatically", pane: "projects", label: "Set up Git automatically", keywords: "git init initialize repository" },
+  { id: "projects.project-overrides", pane: "projects", label: "Project overrides", keywords: "per-project defaults provider model theme font" },
+  { id: "projects.copy-and-share", pane: "projects", label: "Copy and share", keywords: "export import copy share project settings profile profiles differs defaults" },
+  { id: "github.github-account", pane: "github", label: "GitHub account", keywords: "sign in login gh cli" },
+  { id: "github.clone-a-repository", pane: "github", label: "Clone a repository", keywords: "clone repo download" },
+  { id: "devices.let-my-other-computers-use-this-one", pane: "devices", label: "Let my other computers use this one", keywords: "remote host lan local network turn on allow access nearby" },
+  { id: "devices.use-another-computer", pane: "devices", label: "Use another computer", keywords: "request access pair nearby code approve allow decline" },
+  { id: "devices.show-this-name-to-nearby-computers", pane: "devices", label: "Show this name to nearby computers", keywords: "privacy device name announcement" },
+  { id: "usage.read-limits-as", pane: "usage", label: "Read limits as", keywords: "quota display remaining consumed percentage" },
+  { id: "updates.developer-runtimes", pane: "updates", label: "Developer runtimes", keywords: "claude code codex update install" },
+  { id: "system.terminal-history", pane: "system", label: "Terminal history", keywords: "terminal scrollback memory buffer" },
+  { id: "system.stop-long-running-commands-after", pane: "system", label: "Stop long-running commands after", keywords: "terminal timeout minutes dev server local server" },
+  { id: "system.record-last-turn-instructions", pane: "system", label: "Record last-turn instructions", keywords: "privacy instruction records receipts context history" },
+  { id: "system.delete-instruction-records", pane: "system", label: "Delete instruction records", keywords: "privacy instruction records delete remove" },
+  { id: "system.export-a-diagnostic-bundle", pane: "system", label: "Export a diagnostic bundle", keywords: "diagnostics logs support" },
+  { id: "system.performance-overlay", pane: "system", label: "Performance overlay", keywords: "fps frame rate memory heap debug" },
 ];
 
-/** Which pane edits each saved setting, for the sidebar's unsaved markers. */
-const SETTING_PANES: Partial<Record<keyof AppSettings, SettingsPane>> = {
-  provider: "models", model: "models", defaultModelExplicit: "models", lmStudioBaseUrl: "models", reasoningEffort: "models", ultra: "models", permission: "models",
-  openAiLogo: "general", claudeLogo: "general", cursorLogo: "general", theme: "general", effortSlider: "general", chatFont: "general",
-  escapeStopsRun: "general", warnOnMaxReasoning: "general", uiScale: "general",
-  systemPrompt: "prompts", codexSystemPrompt: "prompts", claudeSystemPrompt: "prompts", promptProfileId: "prompts",
-  projectInstructionsEnabled: "prompts", projectClaudeInstructionsEnabled: "prompts",
-  subagentsEnabled: "agents", subagentMax: "agents", subagentEngine: "agents", nativeSubagentMax: "agents", nativeSubagentOptions: "agents",
-  autoCompactTokens: "agents", autoArchiveSubagentThreads: "agents", childAgents: "agents", childAgentPresets: "agents", managedSubagentV2: "agents", subagentModelGuidance: "agents", parentFollowUpLimit: "agents",
-  automaticGitInitialization: "projects", automaticThreadTitles: "projects", threadTitleProvider: "projects", threadTitleModel: "projects",
-  serviceTier: "system", notificationsEnabled: "system", terminalScrollback: "system", terminalTimeoutMinutes: "system",
-  usageDisplay: "usage",
-  transcription: "voice",
-};
 
 /** Does a pane match what someone typed into the sidebar's search field? */
 function settingsNavMatches(item: { label: string; detail: string; keywords: string }, query: string): boolean {
@@ -279,6 +288,12 @@ function settingsNavMatches(item: { label: string; detail: string; keywords: str
   // Every word has to land somewhere, so "claude key" reaches Models & accounts
   // without dragging in every pane that merely mentions Claude.
   return needle.split(/\s+/).every((word) => haystack.includes(word));
+}
+
+/** "general" used to be the appearance page. Links that still open it with an
+ * onboarding appearance draft land on Appearance, where that draft is shown. */
+function resolveInitialSection(section: SettingsSection, draft?: OnboardingSettingsDraft): SettingsPane {
+  return section === "general" && draft?.appearance ? "appearance" : section;
 }
 
 const SETTINGS_PANES = new Map(SETTINGS_NAV.flatMap((section) => section.items.map((item) => [item.id, item] as const)));
@@ -308,7 +323,7 @@ const INTERFACE_SIZE_OPTIONS: AppSelectOption[] = [
 
 const SERVICE_TIER_OPTIONS: AppSelectOption[] = [
   { value: "", label: "Standard", detail: "Regular processing" },
-  { value: "priority", label: "Fast / priority", detail: "When supported · API pricing or plan limits may differ" },
+  { value: "priority", label: "Fast · Priority processing", detail: "Faster replies when supported · may cost more or use limits faster" },
 ];
 
 const TERMINAL_SCROLLBACK_OPTIONS: AppSelectOption[] = [
@@ -318,7 +333,7 @@ const TERMINAL_SCROLLBACK_OPTIONS: AppSelectOption[] = [
 ];
 
 const PROJECT_PROVIDER_OPTIONS: AppSelectOption[] = [
-  { value: "openai", label: "OpenAI", detail: "Codex · subscription or API key", icon: <ProviderLogo provider="openai" size={15} /> },
+  { value: "openai", label: "OpenAI", detail: "ChatGPT plan or API key", icon: <ProviderLogo provider="openai" size={15} /> },
   { value: "claude", label: "Claude", detail: "Claude Code · subscription or API key", icon: <ProviderLogo provider="claude" size={15} /> },
   { value: "cursor", label: "Cursor", detail: "Cursor subscription", icon: <ProviderLogo provider="cursor" size={15} /> },
   { value: "openrouter", label: "OpenRouter", detail: "API model routing", icon: <ProviderLogo provider="openrouter" size={15} /> },
@@ -340,7 +355,7 @@ function savedClaudeModelDisplay(provider: Provider, selectedModel: string, cata
   if (provider !== "claude" || !isClaudeModelSuperseded(catalogs.claudeModels, selectedModel)) return undefined;
   return {
     label: "Superseded Claude model",
-    detail: "Choose a current model before saving",
+    detail: "Choose a current model",
     icon: <ProviderLogo provider="claude" size={15} />,
   };
 }
@@ -393,14 +408,37 @@ function modelOptionsForProvider(provider: Provider, selectedModel: string, cata
   return options.map((option) => ({ ...option, icon: <ProviderLogo provider={provider} size={15} /> }));
 }
 
-/** An ordinary account read reports Codex's local sign-in, not service health. */
-const OPENAI_SIGNED_IN_NOTE = "Signed in according to Codex on this device. OpenAI service status is not checked.";
+/** The Sub-agents pane's sections, in page order, for its jump list. */
+const SUBAGENT_SECTIONS = [
+  { id: "subagents-defaults", label: "Defaults" },
+  { id: "subagents-presets", label: "Presets" },
+  { id: "subagents-guidance", label: "Model guidance" },
+  { id: "subagents-behavior", label: "Behavior" },
+  { id: "subagents-custom", label: "Custom agents" },
+  { id: "subagents-preview", label: "Preview" },
+] as const;
 
-function accountConnectionLabel(check: string | undefined, connected: boolean, available: boolean, missing: string, signedInLabel = "Connected"): string {
+const TOOLS_SECTIONS = [
+  { id: "tools-mcp", label: "MCP servers" },
+  { id: "tools-language", label: "Language tools" },
+  { id: "tools-live", label: "In this thread" },
+] as const;
+
+/** An ordinary account read reports Codex's local sign-in, not service health. */
+const OPENAI_SIGNED_IN_NOTE = "Connected through the Codex CLI on this device. OpenAI’s service status isn’t checked.";
+
+/** "max" → "Max": plan names arrive as lowercase ids. */
+function sentenceCase(value: string): string {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+}
+
+/** One status vocabulary for every account: Connected, Needs sign-in,
+ * Not set up, Couldn’t verify, plus the two transient states. */
+function accountConnectionLabel(check: string | undefined, connected: boolean, available: boolean): string {
   if (check === "Checking connection…") return "Checking…";
   if (check === "Waiting for sign-in…") return "Signing in…";
-  if (check && check !== "Sign-in required") return "Unverified";
-  return connected ? signedInLabel : available ? "Not signed in" : missing;
+  if (check && check !== "Needs sign-in") return "Couldn’t verify";
+  return connected ? "Connected" : available ? "Needs sign-in" : "Not set up";
 }
 
 export function useDeveloperRuntimeUpdater(
@@ -445,7 +483,7 @@ export function useDeveloperRuntimeUpdater(
       if (requestRef.current !== request) return;
       setStatus(result.status);
       setMessage(result.restartRequired
-        ? `${result.message}\n\nRestart Mythra Code when convenient to use the updated Codex runtime.`
+        ? `${result.message}\n\nRestart Mythra Code when convenient to use the updated Codex CLI.`
         : result.message);
       if (target === "claude" && onClaudeRefresh) {
         try {
@@ -587,6 +625,8 @@ export function SettingsModal({
   onRemoveSkill,
   onRestoreSkill,
   onOpenOnboarding,
+  onOpenShortcuts,
+  projectInstructionsTarget,
   onLearnPastConversations,
   onCancelPreferenceLearning,
   preferenceHistoryProgress,
@@ -629,7 +669,7 @@ export function SettingsModal({
   onDiscoverOpenRouterModels?: (query: string) => void;
   /** Which providers a cross-provider child could be started on right now. */
   childAgentReadiness: ChildAgentReadiness;
-  /** Live workflow-change lock; draft edits are retained until saving. */
+  /** Live workflow-change lock; a V2 switch waits while it is set. */
   managedSubagentV2LockedReason?: string;
   githubStatus: GitHubAccountStatus | null;
   githubBusy?: boolean;
@@ -645,7 +685,7 @@ export function SettingsModal({
   onThemePreview: (theme: ThemeName) => void;
   onEffortSliderPreview: (style: EffortSliderStyle) => void;
   onChatFontPreview: (font: ChatFont) => void;
-  /** Interface size previews like the other appearance choices; save to keep. */
+  /** Interface size applies at once, like the other appearance choices. */
   onUiScalePreview?: (scale: number) => void;
   onSignIn: () => Promise<void>;
   /** Signs the ChatGPT account out; defaults to a bare `account/logout`. */
@@ -720,6 +760,10 @@ export function SettingsModal({
   onRemoveSkill: (path: string, deleteSource: boolean) => Promise<boolean>;
   onRestoreSkill: (path: string) => Promise<boolean>;
   onOpenOnboarding: () => void;
+  /** Closes Settings and opens the keyboard shortcuts sheet. */
+  onOpenShortcuts?: () => void;
+  /** Closes Settings and opens the open project's instructions editor. */
+  projectInstructionsTarget?: { name: string; open: () => void };
   onLearnPastConversations?: (scopeKey: string) => Promise<void>;
   onCancelPreferenceLearning?: (scopeKey: string) => void;
   preferenceHistoryProgress?: PreferenceHistoryProgress | null;
@@ -735,9 +779,16 @@ export function SettingsModal({
   const [accountProvider, setAccountProvider] = useState<Provider>(settings.provider);
   // Accounts list: one provider row is expanded inline at a time; rows start collapsed.
   const [accountExpanded, setAccountExpanded] = useState(false);
+  // Clicking a row animates it open or shut. A search result or the tour's
+  // hand-off lands straight on the open panel, so its target is already in
+  // place when the pane scrolls to it.
+  const [accountMotion, setAccountMotion] = useState(false);
   // Keep visited panels mounted while browsing this pane, so collapsing a row
   // preserves a pasted key and the result of an in-flight account operation.
   const [mountedAccounts, setMountedAccounts] = useState<Provider[]>([]);
+  const appCustomFonts = useCustomFonts();
+  /** A look carried from the tour, previewed but not saved until applied. */
+  const [appearanceOffer, setAppearanceOffer] = useState<OnboardingAppearance | null>(null);
   const [openAiBilling, setOpenAiBilling] = useState<"subscription" | "apiKey" | null>(null);
   const openAiAuthOperation = useProviderAuthOperation();
   const claudeAuthOperation = useProviderAuthOperation();
@@ -754,6 +805,7 @@ export function SettingsModal({
   // The open model guidance entry, kept here so leaving the Sub-agents pane
   // does not drop it. Only its Save writes `local`.
   const [guidanceDraft, setGuidanceDraft] = useState<SubagentModelGuidanceDraft | null>(null);
+  const guidanceAddRef = useRef<(() => void) | null>(null);
   const guidanceDraftChanged = subagentModelGuidanceDraftChanged(guidanceDraft);
   // Minutes as typed. null mirrors the draft setting; while disabled it keeps
   // the last limit so switching back on restores it.
@@ -763,17 +815,22 @@ export function SettingsModal({
   const followUpLimitId = useId();
   const subagentPanelId = useId();
   const managedSubagentV2Id = useId();
-  const managedSubagentV2DraftLocked = Boolean(managedSubagentV2LockedReason)
+  // Set when the app turned down a V2 switch (a run is still preparing); the
+  // switch keeps showing the choice until it can be applied or is undone.
+  const [v2Held, setV2Held] = useState(false);
+  const managedSubagentV2DraftLocked = (Boolean(managedSubagentV2LockedReason) || v2Held)
     && (local.managedSubagentV2 === true) !== (settings.managedSubagentV2 === true);
   const terminalTimeoutId = useId();
   const escapeStopsRunId = useId();
+  const usageTabsId = useId();
   const maxReasoningWarningId = useId();
   const automaticGitInitializationId = useId();
   const [apiKey, setApiKey] = useState("");
   const [lmStudioToken, setLmStudioToken] = useState("");
   const [lmStudioConnectionMessage, setLmStudioConnectionMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsPane>(initialSection);
+  const [settingsSection, setSettingsSection] = useState<SettingsPane>(() => resolveInitialSection(initialSection, initialDraft));
+  const [harnessDrafts, setHarnessDrafts] = useState<HarnessDrafts>(EMPTY_HARNESS_DRAFTS);
   const globalPromptRef = useRef<HTMLTextAreaElement>(null);
   const codexPromptRef = useRef<HTMLTextAreaElement>(null);
   const claudePromptRef = useRef<HTMLTextAreaElement>(null);
@@ -792,7 +849,7 @@ export function SettingsModal({
   const githubRefreshRequestedRef = useRef(false);
   const refreshAccountsRef = useRef(onRefreshAccounts);
   refreshAccountsRef.current = onRefreshAccounts;
-  const settingsEntryRef = useRef({ open: false, section: initialSection as SettingsPane });
+  const settingsEntryRef = useRef({ open: false, section: resolveInitialSection(initialSection, initialDraft) });
   const updatesRef = useRef({ appUpdater, developerRuntimeUpdater });
   updatesRef.current = { appUpdater, developerRuntimeUpdater };
 
@@ -872,37 +929,77 @@ export function SettingsModal({
   );
   const anyUpdateAvailable = appUpdater.phase === "available" || developerUpdateAvailable;
 
-  // Buffered edits (theme, prompt, toggles) are discarded on close — warn
-  // before silently throwing away work like a hand-written system prompt.
+  // Settings save as you go: each edit is written a moment after it is made
+  // (see `commitDrafts`). Only input that cannot be saved yet (a half-typed
+  // number, a project override without a model) is held back, shown inline,
+  // and asked about on close; nothing is ever dropped silently.
   // Settings saved before the timeout existed read as the five-minute default.
   const terminalTimeoutMinutes = sanitizeTerminalTimeoutMinutes(local.terminalTimeoutMinutes);
   const terminalTimeoutEnabled = terminalTimeoutMinutes > 0;
   const terminalTimeoutTyped = terminalTimeoutEnabled && terminalTimeoutText !== null
     ? parseTerminalTimeoutMinutes(terminalTimeoutText) : terminalTimeoutMinutes;
-  // Invalid text never reaches the draft, so it blocks Save instead of being
+  // Invalid text never reaches the draft, so it is held back instead of being
   // silently replaced by the previous limit or read as "disabled".
   const terminalTimeoutInvalid = terminalTimeoutTyped === null;
   // Null is Unlimited. Missing or malformed saved values read as the default.
   const followUpLimit = sanitizeParentFollowUpLimit(local.parentFollowUpLimit);
   const followUpLimited = followUpLimit !== null;
-  // Like the timeout, an unparsable limit blocks Save rather than reading as Unlimited.
+  // Like the timeout, an unparsable limit is held back rather than read as Unlimited.
   const followUpLimitInvalid = followUpLimited && followUpLimitText !== null && parseParentFollowUpLimit(followUpLimitText) === null;
   // Keep unrelated drafts out of each keystroke's comparison. In particular,
   // editing a prompt must not serialize every project and profile again.
   const settingsDraftChanged = useMemo(() => open && local !== settings && JSON.stringify(local) !== JSON.stringify(settings), [open, local, settings]);
   const projectsDraftChanged = useMemo(() => open && localProjects !== projects && JSON.stringify(localProjects) !== JSON.stringify(projects), [open, localProjects, projects]);
   const profilesDraftChanged = useMemo(() => open && localProfiles !== profiles && JSON.stringify(localProfiles) !== JSON.stringify(profiles), [open, localProfiles, profiles]);
-  const dirty = open && (settingsDraftChanged || projectsDraftChanged || profilesDraftChanged || terminalTimeoutTyped !== terminalTimeoutMinutes || followUpLimitInvalid || guidanceDraftChanged);
+  const pendingChanges = open && (settingsDraftChanged || projectsDraftChanged || profilesDraftChanged || terminalTimeoutInvalid || followUpLimitInvalid);
   const activeProjectAppearance = localProjects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
   const activeProjectHasAppearanceOverride = Boolean(activeProjectAppearance?.theme || activeProjectAppearance?.chatFont || activeProjectAppearance?.effortSlider);
   const projectDefaultsComplete = localProjects.every((project) => !project.overrides?.defaults || Boolean(project.overrides.defaults.model.trim()));
+  /** Where the first edit that can't be saved yet lives, with why. */
+  const heldBack: { pane: SettingsPane; reason: string } | null = terminalTimeoutInvalid
+    ? { pane: "system", reason: "The command time limit in Advanced isn’t a valid number of minutes." }
+    : followUpLimitInvalid
+      ? { pane: "agents", reason: "The automatic follow-up limit in Sub-agents isn’t a valid number." }
+      : !projectDefaultsComplete
+        ? { pane: "projects", reason: "A project override in Projects has no model selected." }
+        : null;
+  /** Saves what can be saved, then asks before anything is left behind.
+   * Resolves false when the person chose to keep editing. */
+  const settleBeforeLeaving = async (): Promise<boolean> => {
+    if (guidanceDraftChanged) {
+      if (!await confirmDialog("Discard your model guidance note?\n\nYou started a note in Sub-agents but haven’t added it.", { confirmLabel: "Discard note", cancelLabel: "Keep editing" })) {
+        const guidanceRow = SETTINGS_ROWS.find((row) => row.id === "agents.when-to-use-each-model");
+        if (guidanceRow) goToRow(guidanceRow);
+        else setSettingsSection("agents");
+        return false;
+      }
+    }
+    if (pendingChanges) {
+      const { heldV2 } = commitDrafts();
+      if (heldV2 && !await confirmDialog(`Close without switching Sub-agents V2 ${local.managedSubagentV2 === true ? "on" : "off"}?\n\nIt can’t change right now${managedSubagentV2LockedReason ? `: ${managedSubagentV2LockedReason}` : "."} Everything else is saved.`, { confirmLabel: "Close without switching", cancelLabel: "Keep editing" })) {
+        setSettingsSection("agents");
+        return false;
+      }
+    }
+    if (pendingChanges && heldBack) {
+      if (!await confirmDialog(`Close without this change?\n\n${heldBack.reason} Everything else is saved.`, { confirmLabel: "Discard change", cancelLabel: "Keep editing" })) {
+        setSettingsSection(heldBack.pane);
+        return false;
+      }
+    }
+    return true;
+  };
   const requestClose = async () => {
-    if (dirty && !await confirmDialog("Discard unsaved settings changes?")) return;
+    if (!await settleBeforeLeaving()) return;
     onClose();
   };
   const requestOnboarding = async () => {
-    if (dirty && !await confirmDialog("Discard unsaved settings changes?")) return;
+    if (!await settleBeforeLeaving()) return;
     onOpenOnboarding();
+  };
+  const requestShortcuts = async () => {
+    if (!onOpenShortcuts || !await settleBeforeLeaving()) return;
+    onOpenShortcuts();
   };
 
   // Snapshot of the props the current drafts were seeded from, so external
@@ -910,22 +1007,39 @@ export function SettingsModal({
   // "still the value we started with".
   const draftBaselineRef = useRef({ settings, projects, profiles });
   const wasOpenRef = useRef(false);
+  /** The drafts as last written, so the echo of our own save is adopted. */
+  const committedRef = useRef<{ local: string; projects: string; profiles: string } | null>(null);
+  /** Fingerprint of the last write; an identical payload is never resent. */
+  const lastWrittenRef = useRef("");
+  const flushOnCloseRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (!open) {
+      // Closed from outside Settings (a workflow run, Tools, onboarding):
+      // write what was still waiting for its autosave.
+      if (wasOpenRef.current) flushOnCloseRef.current?.();
+      flushOnCloseRef.current = null;
       wasOpenRef.current = false;
       return;
     }
     if (!wasOpenRef.current) {
+      committedRef.current = null;
+      lastWrittenRef.current = "";
+      setV2Held(false);
       // Seed drafts only on the closed→open transition — reseeding on every
       // prop change wiped in-progress edits (e.g. cloning a repo from the
       // GitHub pane updates `projects` and used to discard a drafted prompt).
       wasOpenRef.current = true;
       draftBaselineRef.current = { settings, projects, profiles };
-      const seeded = settingsWithOnboardingDraft(settings, initialDraft, lmStudioModels[0]?.id);
+      // The tour only opens things: the saved settings stay the draft, so
+      // entering and leaving without an explicit action writes nothing.
+      const handoff = onboardingHandoff(settings, initialDraft);
+      const seeded = handoff.local;
       setLocal(seeded);
-      setAccountProvider(seeded.provider);
-      setAccountExpanded(false);
-      setMountedAccounts([]);
+      setAccountProvider(handoff.accountProvider);
+      setAccountExpanded(handoff.accountExpanded);
+      setAccountMotion(false);
+      setMountedAccounts(handoff.accountExpanded ? [handoff.accountProvider] : []);
+      setAppearanceOffer(handoff.appearancePreview);
       setOpenAiBilling(null);
       setLocalProjects(projects);
       setLocalProfiles(profiles);
@@ -938,11 +1052,12 @@ export function SettingsModal({
       setTerminalTimeoutText(null);
       setFollowUpLimitText(null);
       const activeDefaults = projects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
-      onThemePreview(initialDraft?.appearance ? seeded.theme : activeDefaults?.theme ?? seeded.theme);
-      onEffortSliderPreview(initialDraft?.appearance ? seeded.effortSlider : activeDefaults?.effortSlider ?? seeded.effortSlider);
-      onChatFontPreview(initialDraft?.appearance ? seeded.chatFont : activeDefaults?.chatFont ?? seeded.chatFont);
+      const shown = handoff.appearancePreview;
+      onThemePreview(shown ? shown.theme : activeDefaults?.theme ?? seeded.theme);
+      onEffortSliderPreview(shown ? shown.effortSlider : activeDefaults?.effortSlider ?? seeded.effortSlider);
+      onChatFontPreview(shown ? shown.chatFont : activeDefaults?.chatFont ?? seeded.chatFont);
       onUiScalePreview(settings.uiScale ?? 100);
-      setSettingsSection(initialSection);
+      setSettingsSection(resolveInitialSection(initialSection, initialDraft));
       return;
     }
     const baseline = draftBaselineRef.current;
@@ -950,7 +1065,12 @@ export function SettingsModal({
       // Adopt external settings changes only when the draft is untouched, so
       // the dirty check keeps meaning "you have unsaved edits". Invalid number
       // input is still an edit even though it does not reach the draft.
-      if (terminalTimeoutTyped === terminalTimeoutMinutes && !followUpLimitInvalid && JSON.stringify(local) === JSON.stringify(baseline.settings)) {
+      // A write of our own comes back here too: adopt it when nothing was
+      // edited since, keeping a Sub-agents V2 change that is still waiting.
+      const localJson = JSON.stringify(local);
+      if (committedRef.current && localJson === committedRef.current.local) {
+        setLocal((local.managedSubagentV2 === true) !== (settings.managedSubagentV2 === true) ? { ...settings, managedSubagentV2: local.managedSubagentV2 } : settings);
+      } else if (terminalTimeoutTyped === terminalTimeoutMinutes && !followUpLimitInvalid && localJson === JSON.stringify(baseline.settings)) {
         setLocal(settings);
         setTerminalTimeoutText(null);
         setFollowUpLimitText(null);
@@ -961,7 +1081,8 @@ export function SettingsModal({
       // disappear, and per-project drafts survive only where the user
       // actually diverged from the snapshot they started editing.
       const baselineById = new Map(baseline.projects.map((project) => [project.id, project]));
-      setLocalProjects((current) => {
+      if (committedRef.current && JSON.stringify(localProjects) === committedRef.current.projects) setLocalProjects(projects);
+      else setLocalProjects((current) => {
         const draftsById = new Map(current.map((project) => [project.id, project]));
         return projects.map((incoming) => {
           const draft = draftsById.get(incoming.id);
@@ -971,16 +1092,17 @@ export function SettingsModal({
       });
     }
     if (profiles !== baseline.profiles) {
-      setLocalProfiles((current) => mergePromptProfileDrafts(baseline.profiles, current, profiles));
+      if (committedRef.current && JSON.stringify(localProfiles) === committedRef.current.profiles) setLocalProfiles(profiles);
+      else setLocalProfiles((current) => mergePromptProfileDrafts(baseline.profiles, current, profiles));
     }
     draftBaselineRef.current = { settings, projects, profiles };
-  }, [activeProjectId, followUpLimitInvalid, initialDraft, initialSection, lmStudioModels, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, local, open, projects, profiles, settings, terminalTimeoutMinutes, terminalTimeoutTyped]);
+  }, [activeProjectId, followUpLimitInvalid, initialDraft, initialSection, lmStudioModels, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, local, localProfiles, localProjects, open, projects, profiles, settings, terminalTimeoutMinutes, terminalTimeoutTyped]);
 
   useEffect(() => {
     const previous = settingsEntryRef.current;
     // On reopening, the old pane is retained until the draft-seeding effect
     // updates it. Use the requested pane to avoid a spurious or double check.
-    let section = open && !previous.open ? initialSection : settingsSection;
+    let section = open && !previous.open ? resolveInitialSection(initialSection, initialDraft) : settingsSection;
     if (open && !previous.open && section === "general" && !initialDraft?.appearance
       && updatesRef.current.appUpdater.phase === "available") {
       section = "updates";
@@ -1003,7 +1125,7 @@ export function SettingsModal({
         void Promise.resolve().then(() => runtimes.checkForUpdates()).catch(() => undefined);
       }
     }
-  }, [initialDraft?.appearance, initialSection, open, settingsSection]);
+  }, [initialDraft, initialSection, open, settingsSection]);
 
   useEffect(() => {
     if (!open) {
@@ -1208,17 +1330,44 @@ export function SettingsModal({
     }
   };
 
+  /** Applying or dismissing the tour's look puts every preview back on the draft. */
+  const endAppearanceOffer = (next: AppSettings) => {
+    setAppearanceOffer(null);
+    const defaults = localProjects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
+    onThemePreview(defaults?.theme ?? next.theme);
+    onEffortSliderPreview(defaults?.effortSlider ?? next.effortSlider);
+    onChatFontPreview(defaults?.chatFont ?? next.chatFont);
+  };
+  const applyAppearanceOffer = () => {
+    if (!appearanceOffer) return;
+    const next = settingsWithAppearance(local, appearanceOffer);
+    setLocal(next);
+    endAppearanceOffer(next);
+  };
+  // Choosing a look by hand replaces the tour preview: keep showing the parts
+  // not chosen here as they are saved, not as the tour left them.
+  const dropOfferFor = (kind: "theme" | "effortSlider" | "chatFont") => {
+    if (!appearanceOffer) return;
+    setAppearanceOffer(null);
+    if (kind !== "theme") onThemePreview(local.theme);
+    if (kind !== "effortSlider") onEffortSliderPreview(local.effortSlider);
+    if (kind !== "chatFont") onChatFontPreview(local.chatFont);
+  };
+
   const previewTheme = (theme: ThemeName) => {
+    dropOfferFor("theme");
     setLocal((current) => ({ ...current, theme }));
     onThemePreview(theme);
   };
 
   const previewEffortSlider = (style: EffortSliderStyle) => {
+    dropOfferFor("effortSlider");
     setLocal((current) => ({ ...current, effortSlider: style }));
     onEffortSliderPreview(style);
   };
 
   const previewChatFont = (chatFont: ChatFont) => {
+    dropOfferFor("chatFont");
     setLocal((current) => ({ ...current, chatFont }));
     onChatFontPreview(chatFont);
   };
@@ -1236,6 +1385,10 @@ export function SettingsModal({
   };
 
   const [agentDefaultsOpen, setAgentDefaultsOpen] = useState(false);
+  // M08 (round 6): optional logo presets sit behind one row so they don't
+  // compete with theme, scale and font; every choice is still one click away.
+  const [providerLogosOpen, setProviderLogosOpen] = useState(false);
+  const providerLogosId = useId();
   const [agentEditScope, setAgentEditScope] = useState("global");
   const editedAgentProject = localProjects.find((project) => project.id === agentEditScope);
   const editedAgentPolicy = editedAgentProject?.overrides?.subagents ?? projectSubagentSettingsFromApp(local);
@@ -1334,7 +1487,7 @@ export function SettingsModal({
     }
     if (action.startsWith("apply:")) applyPresetToScope(preset, action.slice("apply:".length));
   };
-  // Thirteen panes is more than anyone scans reliably, so the sidebar can be
+  // Seventeen panes is more than anyone scans reliably, so the sidebar can be
   // searched. Filtering only hides nav rows: the pane in front of you is never
   // swapped out mid-edit just because you started typing.
   const [navQuery, setNavQuery] = useState("");
@@ -1342,14 +1495,25 @@ export function SettingsModal({
     .map((section) => ({ ...section, items: section.items.filter((item) => (navQuery.trim() || !item.parent) && settingsNavMatches(item, navQuery)) }))
     .filter((section) => section.items.length > 0), [navQuery]);
   const navMatches = useMemo(() => navGroups.flatMap((section) => section.items), [navGroups]);
-  // Individual settings, so "scrollback" lands on the row, not just Runtime.
+  // Individual settings, so "scrollback" lands on the row, not just Advanced.
   const rowMatches = useMemo(() => navQuery.trim()
     ? SETTINGS_ROWS.filter((row) => settingsNavMatches({ label: row.label, detail: SETTINGS_PANES.get(row.pane)?.label ?? "", keywords: row.keywords ?? "" }, navQuery)).slice(0, 8)
     : [], [navQuery]);
+  // M10: while searching, panes and individual settings share one explicit
+  // order: a setting whose own name answers the query comes before the pane
+  // that merely contains it, and ↑/↓/Enter follow exactly this order.
+  const orderedResults = useMemo(() => navQuery.trim()
+    ? orderSettingsResults(navMatches, rowMatches.map((row) => ({ ...row, paneLabel: SETTINGS_PANES.get(row.pane)?.label ?? "" })), searchWords(navQuery))
+    : [], [navMatches, navQuery, rowMatches]);
   const [rowFocus, setRowFocus] = useState<(SettingsRow & { nonce: number }) | null>(null);
+  /** Spoken once a search result lands on its setting. */
+  const [searchArrival, setSearchArrival] = useState("");
+  const searchResultCount = orderedResults.length;
+  useEffect(() => { setSearchArrival(""); }, [navQuery]);
   const goToRow = (row: SettingsRow) => {
     // Reveal the account panel without editing the default provider/model.
     if (row.accountProvider) {
+      setAccountMotion(false);
       setAccountProvider(row.accountProvider);
       setAccountExpanded(true);
       const provider = row.accountProvider;
@@ -1358,19 +1522,16 @@ export function SettingsModal({
     setSettingsSection(row.pane);
     setRowFocus((current) => ({ ...row, nonce: (current?.nonce ?? 0) + 1 }));
   };
-  // Panes with edits that Save would write, marked in the sidebar.
-  const dirtyPanes = useMemo(() => {
-    const panes = new Set<SettingsPane>();
-    if (!open) return panes;
-    for (const key of Object.keys(SETTING_PANES) as Array<keyof AppSettings>) {
-      if (local[key] !== settings[key] && JSON.stringify(local[key]) !== JSON.stringify(settings[key])) panes.add(SETTING_PANES[key]!);
-    }
-    if (projectsDraftChanged) panes.add("projects");
-    if (profilesDraftChanged) panes.add("prompts");
-    if (terminalTimeoutTyped !== terminalTimeoutMinutes) panes.add("system");
-    if (guidanceDraftChanged || followUpLimitInvalid) panes.add("agents");
-    return panes;
-  }, [open, local, settings, projectsDraftChanged, profilesDraftChanged, terminalTimeoutTyped, terminalTimeoutMinutes, guidanceDraftChanged, followUpLimitInvalid]);
+  // A link from elsewhere in the app (e.g. Tools → Actions) can name a
+  // row to land on when Settings opens; it uses the same arrival as search.
+  const initialRow = initialDraft?.row;
+  useEffect(() => {
+    if (!open || !initialRow) return;
+    const row = SETTINGS_ROWS.find((entry) => entry.id === initialRow);
+    if (row) goToRow(row);
+    // goToRow only sets state; re-running on its identity would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialRow]);
   // A search result names a row; once its pane renders, bring that row into
   // view and mark it briefly. Lazy panes can take a few frames to mount.
   useEffect(() => {
@@ -1382,17 +1543,26 @@ export function SettingsModal({
     const find = () => {
       const content = contentRef.current;
       const label = rowFocus.label.toLowerCase();
-      const match = rowFocus.target
-        ? content?.querySelector<HTMLElement>(`[data-settings-row="${rowFocus.target}"]`)
-        : content && [...content.querySelectorAll<HTMLElement>("h4, .set-row strong, summary")]
-          .find((element) => element.textContent?.trim().toLowerCase() === label);
+      // Stable ids first (`data-settings-row`), then the visible title.
+      const byId = content?.querySelector<HTMLElement>(`[data-settings-row="${rowFocus.target ?? rowFocus.id}"]`);
+      const match = byId ?? (rowFocus.target ? null : content && [...content.querySelectorAll<HTMLElement>("h4, .set-row strong, summary")]
+        .find((element) => element.textContent?.trim().toLowerCase() === label));
       if (!match) {
         if (++attempts < 30) frame = requestAnimationFrame(find);
         return;
       }
-      marked = rowFocus.target ? match : match.closest<HTMLElement>(".set-row, .set-group") ?? match;
+      marked = byId ? match : match.closest<HTMLElement>(".set-row, .set-group") ?? match;
       marked.scrollIntoView?.({ block: "center" });
       marked.classList.add("settings-row-highlight");
+      // Arrive on the setting itself (its first control), not just near it,
+      // and say where focus went. The search keeps its text for going back.
+      const control = marked.querySelector<HTMLElement>("input:not([type='hidden']):not(:disabled), textarea:not(:disabled), button:not(:disabled), [role='switch'], [tabindex='0']");
+      if (control) control.focus({ preventScroll: true });
+      else {
+        if (!marked.hasAttribute("tabindex")) marked.tabIndex = -1;
+        marked.focus({ preventScroll: true });
+      }
+      setSearchArrival(`${rowFocus.label}, in ${SETTINGS_PANES.get(rowFocus.pane)?.label ?? "Settings"}`);
       timer = window.setTimeout(() => marked?.classList.remove("settings-row-highlight"), 1_600);
     };
     frame = requestAnimationFrame(find);
@@ -1407,8 +1577,10 @@ export function SettingsModal({
   // A soft fade at the bottom of the pane says "there is more" without
   // adding chrome; it disappears once the pane is scrolled to its end.
   const contentRef = useRef<HTMLDivElement>(null);
-  const wideSheet = settingsSection === "usage" || settingsSection === "pricing";
-  useSettingsSheetResize(dialogRef, contentRef, wideSheet ? "wide" : "reading", open);
+  // One sheet size for every pane: wide tables scroll inside the content
+  // column, so moving between panes never makes the window jump.
+  const usageTabs = settingsSection === "usage" || settingsSection === "pricing";
+  useSettingsSheetResize(dialogRef, contentRef, "sheet", open);
   const scrollableNumberInputRef = useCallback((input: HTMLInputElement | null) => {
     if (!input) return;
     const onWheel = (event: WheelEvent) => {
@@ -1440,32 +1612,23 @@ export function SettingsModal({
     };
   }, [open, settingsSection]);
 
-  // Each pane's primary action lives in its heading, beside the title, so
-  // the pane never needs a second heading of its own.
+  // Pane actions live with the section they act on, never beside Close.
   const updatesChecking = appUpdater.phase === "checking" || developerRuntimeUpdater.checking;
   const updatesBusy = ["checking", "downloading", "installing", "restarting"].includes(appUpdater.phase) || developerRuntimeUpdater.checking || developerRuntimeUpdater.updating !== null;
-  const paneAction = settingsSection === "general" && local.theme !== DEFAULT_SETTINGS.theme
-    ? <button type="button" className="secondary-button" onClick={() => previewTheme(DEFAULT_SETTINGS.theme)}><RotateCcw size={12} /> Default theme</button>
-    : settingsSection === "updates"
-      ? <button type="button" className="secondary-button" disabled={updatesBusy} onClick={() => void Promise.all([appUpdater.checkForUpdates(), developerRuntimeUpdater.checkForUpdates()])}>{updatesChecking ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />} Check all</button>
-      : null;
+  const checkAllUpdates = <button type="button" className="secondary-button" disabled={updatesBusy} onClick={() => void Promise.all([appUpdater.checkForUpdates(), developerRuntimeUpdater.checkForUpdates()])}>{updatesChecking ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />} Check for updates</button>;
 
-  const saveSettings = async () => {
-    if (!projectDefaultsComplete || terminalTimeoutInvalid || followUpLimitInvalid) return;
-    // Only an entry's own Save stages it; Save settings never applies an
-    // open editor implicitly, and never drops it without asking.
-    if (guidanceDraftChanged && !await confirmDialog("Save settings without your unsaved model guidance entry?", { confirmLabel: "Save without it", cancelLabel: "Keep editing" })) {
-      const guidanceRow = SETTINGS_ROWS.find((row) => row.pane === "agents" && row.label === "Model guidance");
-      if (guidanceRow) goToRow(guidanceRow);
-      else setSettingsSection("agents");
-      return;
-    }
-    if (onBeforeSave?.(local) === false) return;
-    const nextProjects = sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(localProjects));
+  // ---- Saving: everything a person edits is written a moment later ----
+  const [savedFlash, setSavedFlash] = useState(0);
+  /** Writes every draft that differs from what is stored. A Sub-agents V2
+   * switch the app can't apply yet is held back (and reported) while the
+   * rest is saved. Never sends the same payload twice. */
+  const commitDrafts = (): { heldV2: boolean } => {
+    // Half-typed numbers never reach the draft, so the settings draft always
+    // holds the last valid values. Only project overrides without a model
+    // are held back, and only they wait.
+    const v2Changed = (local.managedSubagentV2 === true) !== (settings.managedSubagentV2 === true);
     const normalizedSubagents = projectSubagentSettingsFromApp(local);
-    onProjects(nextProjects);
-    onProfiles(mergePromptProfileDrafts(draftBaselineRef.current.profiles, localProfiles, profiles));
-    onSave({
+    let next: AppSettings = {
       ...local,
       childAgents: normalizedSubagents.childAgents,
       childAgentPresets: sanitizeChildAgentPresets(local.childAgentPresets),
@@ -1473,8 +1636,47 @@ export function SettingsModal({
       subagentMax: normalizedSubagents.maxConcurrent,
       terminalTimeoutMinutes,
       parentFollowUpLimit: followUpLimit,
-    });
+    };
+    let heldV2 = false;
+    if (v2Changed && (managedSubagentV2LockedReason || v2Held || onBeforeSave?.(next) === false)) {
+      heldV2 = true;
+      next = { ...next, managedSubagentV2: settings.managedSubagentV2 };
+    }
+    if (heldV2 !== v2Held) setV2Held(heldV2);
+    const nextProjects = projectDefaultsComplete ? sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(localProjects)) : projects;
+    const nextProfiles = mergePromptProfileDrafts(draftBaselineRef.current.profiles, localProfiles, profiles);
+    const settingsJson = JSON.stringify(next);
+    const projectsJson = JSON.stringify(nextProjects);
+    const profilesJson = JSON.stringify(nextProfiles);
+    const fingerprint = `${settingsJson}\u0000${projectsJson}\u0000${profilesJson}`;
+    // Held-back projects aren't "committed", so a later external change can't
+    // be mistaken for the echo of our own write and replace them.
+    committedRef.current = { local: JSON.stringify(local), projects: projectDefaultsComplete ? JSON.stringify(localProjects) : "", profiles: JSON.stringify(localProfiles) };
+    if (fingerprint === lastWrittenRef.current) return { heldV2 };
+    lastWrittenRef.current = fingerprint;
+    let wrote = false;
+    if (projectsJson !== JSON.stringify(projects)) { onProjects(nextProjects); wrote = true; }
+    if (profilesJson !== JSON.stringify(profiles)) { onProfiles(nextProfiles); wrote = true; }
+    if (settingsJson !== JSON.stringify(settings)) { onSave(next); wrote = true; }
+    if (wrote) setSavedFlash(Date.now());
+    return { heldV2 };
   };
+  const commitDraftsRef = useRef(commitDrafts);
+  commitDraftsRef.current = commitDrafts;
+  if (open) flushOnCloseRef.current = pendingChanges ? () => commitDraftsRef.current() : null;
+  // Toggles and choices settle almost at once; typing waits for a pause.
+  useEffect(() => {
+    if (!open || !pendingChanges) return;
+    const timer = window.setTimeout(() => commitDraftsRef.current(), 450);
+    return () => window.clearTimeout(timer);
+  }, [open, pendingChanges, local, localProjects, localProfiles, managedSubagentV2LockedReason]);
+  // A lifted lock lets a waiting V2 switch be tried again.
+  useEffect(() => { if (!managedSubagentV2LockedReason) setV2Held(false); }, [managedSubagentV2LockedReason]);
+  useEffect(() => {
+    if (!savedFlash) return;
+    const timer = window.setTimeout(() => setSavedFlash(0), 1_800);
+    return () => window.clearTimeout(timer);
+  }, [savedFlash]);
   const setFollowUpLimitUnlimited = (unlimited: boolean) => {
     if (unlimited && followUpLimited) {
       // Keep the last valid count in case Limited is selected again.
@@ -1508,13 +1710,15 @@ export function SettingsModal({
     if (minutes !== null) setLocal({ ...local, terminalTimeoutMinutes: minutes });
   };
 
-  // ---- Accounts & connections: a compact list; sign-in lives on each row ----
+  // ---- Accounts: a compact list; sign-in lives on each row ----
   const toggleAccount = (provider: Provider) => {
+    setAccountMotion(true);
     setMountedAccounts((current) => current.includes(provider) ? current : [...current, provider]);
     if (provider === accountProvider) setAccountExpanded((current) => !current);
     else { setAccountProvider(provider); setAccountExpanded(true); }
   };
   const expandAccount = (provider: Provider) => {
+    setAccountMotion(true);
     setMountedAccounts((current) => current.includes(provider) ? current : [...current, provider]);
     setAccountProvider(provider);
     setAccountExpanded(true);
@@ -1523,6 +1727,8 @@ export function SettingsModal({
     requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLButtonElement>(`#account-toggle-${provider}`)?.focus());
   };
   const openAiConnected = codexAccountReady(account);
+  // The server answered but has nothing loaded: connected, just empty.
+  const lmStudioNoModels = !lmStudioReady && /did not report any models/i.test(lmStudioModelsError);
   const cursorConnected = Boolean(cursorStatus?.loggedIn) && cursorStatus?.authVerified !== false;
   const accountRows: Array<{ id: Provider; name: string; detail: string; logo: ReactNode; status: ReactNode; action: ReactNode }> = [
     {
@@ -1530,21 +1736,21 @@ export function SettingsModal({
       name: "OpenAI",
       detail: account?.type === "chatgpt" && account.email ? account.email : account?.type === "apiKey" ? "API key" : "ChatGPT plan or API key",
       logo: <span className="provider-logo openai">{local.openAiLogo === "codex" ? <CodexLogo size={18} /> : <OpenAILogo size={17} />}</span>,
-      status: <span className={`provider-status ${openAiConnected && !accountChecks.openai ? "on" : ""}`} title={accountChecks.openai || (openAiConnected ? OPENAI_SIGNED_IN_NOTE : undefined)} aria-live="polite">{accountChecks.openai === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.openai, openAiConnected, Boolean(runtimeStatus?.available), "Codex CLI needed", account?.type === "apiKey" ? "API key" : "Signed in")}</span>,
+      status: <span className={`provider-status ${openAiConnected && !accountChecks.openai ? "on" : ""}`} title={accountChecks.openai || (openAiConnected ? OPENAI_SIGNED_IN_NOTE : undefined)} aria-live="polite">{accountChecks.openai === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.openai, openAiConnected, Boolean(runtimeStatus?.available))}</span>,
       action: openAiConnected ? null : openAiBilling === null && runtimeStatus?.available
         ? <button type="button" className="secondary-button" onClick={() => expandAccount("openai")}>Connect</button>
         : openAiBilling === "subscription" || !runtimeStatus?.available ? (
         <button type="button" className="secondary-button" onClick={() => void signIn()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>
-          {busy || openAiLoginStarting ? <LoaderCircle className="spin" size={13} /> : !runtimeStatus?.available ? <Download size={13} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex"}
+          {busy || openAiLoginStarting ? <LoaderCircle className="spin" size={13} /> : !runtimeStatus?.available ? <Download size={13} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex CLI"}
         </button>
       ) : <button type="button" className="secondary-button" onClick={() => expandAccount("openai")}>Add key</button>,
     },
     {
       id: "claude",
-      name: "Anthropic",
+      name: "Claude (Anthropic)",
       detail: claudeStatus?.loggedIn && claudeStatus.email ? claudeStatus.email : claudeUsesApiKey(claudeStatus) ? "API key" : "Claude plan or API key",
       logo: <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={18} />}</span>,
-      status: <span className={`provider-status ${claudeStatus?.loggedIn && !accountChecks.claude ? "on" : ""}`} title={accountChecks.claude} aria-live="polite">{accountChecks.claude === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{claudeUsesApiKey(claudeStatus) && !claudeStatus?.loggedIn && !accountChecks.claude ? "Key needed" : accountConnectionLabel(accountChecks.claude, Boolean(claudeStatus?.loggedIn), Boolean(claudeStatus?.available), "Claude Code needed", claudeUsesApiKey(claudeStatus) ? "API key" : "Connected")}</span>,
+      status: <span className={`provider-status ${claudeStatus?.loggedIn && !accountChecks.claude ? "on" : ""}`} title={accountChecks.claude} aria-live="polite">{accountChecks.claude === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{claudeUsesApiKey(claudeStatus) && !claudeStatus?.loggedIn && !accountChecks.claude ? "No key" : accountConnectionLabel(accountChecks.claude, Boolean(claudeStatus?.loggedIn), Boolean(claudeStatus?.available))}</span>,
       action: claudeStatus?.loggedIn ? null : claudeLoginStarting
         ? <button type="button" className="secondary-button" onClick={() => void cancelClaudeLogin().catch(() => undefined)} title="Finish signing in in your browser, or cancel"><LoaderCircle className="spin" size={13} /> Cancel</button>
         : claudeStatus?.available && claudeStatus.billing !== "subscription"
@@ -1556,7 +1762,7 @@ export function SettingsModal({
       name: "Cursor",
       detail: cursorStatus?.loggedIn && cursorStatus.email ? cursorStatus.email : "Cursor subscription",
       logo: <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>,
-      status: <span className={`provider-status ${cursorStatus?.loggedIn && !cursorAccountCheck ? "on" : ""}`} title={cursorAccountCheck} aria-live="polite">{cursorAccountCheck === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(cursorAccountCheck, Boolean(cursorStatus?.loggedIn), Boolean(cursorStatus?.available), "Cursor Agent needed")}</span>,
+      status: <span className={`provider-status ${cursorStatus?.loggedIn && !cursorAccountCheck ? "on" : ""}`} title={cursorAccountCheck} aria-live="polite">{cursorAccountCheck === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(cursorAccountCheck, Boolean(cursorStatus?.loggedIn), Boolean(cursorStatus?.available))}</span>,
       action: cursorConnected ? null : (
         <button type="button" className="secondary-button" onClick={() => void (cursorStatus?.available ? onCursorSignIn() : openUrl("https://cursor.com/docs/cli/installation"))} disabled={cursorLoginStarting}>
           {cursorLoginStarting ? <LoaderCircle className="spin" size={13} /> : !cursorStatus?.available ? <Download size={13} /> : null}
@@ -1569,16 +1775,17 @@ export function SettingsModal({
       name: "OpenRouter",
       detail: "Pay-as-you-go API key",
       logo: <span className="provider-logo openrouter"><OpenRouterLogo size={18} /></span>,
-      status: <span className={`provider-status ${openRouterReady ? "on" : ""}`}>{openRouterReady ? "Key saved" : "No key yet"}</span>,
+      status: <span className={`provider-status ${openRouterReady ? "on" : ""}`}>{openRouterReady ? "Connected" : "No key"}</span>,
       action: openRouterReady ? null : <button type="button" className="secondary-button" onClick={() => expandAccount("openrouter")}>Add key</button>,
     },
     {
       id: "lmstudio",
       name: "LM Studio",
-      detail: lmStudioReady ? `${lmStudioModels.length} local model${lmStudioModels.length === 1 ? "" : "s"}` : "Local models on this computer",
+      detail: lmStudioReady ? `${lmStudioModels.length} local model${lmStudioModels.length === 1 ? "" : "s"}` : lmStudioNoModels ? "No model loaded yet" : "Local models on this computer",
       logo: <span className="provider-logo lmstudio"><LmStudioLogo size={18} /></span>,
-      status: <span className={`provider-status ${lmStudioReady ? "on" : ""}`}>{lmStudioReady ? "Connected" : "Not connected"}</span>,
-      action: lmStudioReady ? null : <button type="button" className="secondary-button" onClick={() => expandAccount("lmstudio")}>Set up</button>,
+      // A reachable server with nothing loaded can't run a turn yet: amber, and it says what to do.
+      status: <span className={`provider-status ${lmStudioReady ? "on" : lmStudioNoModels ? "warn" : ""}`}>{lmStudioReady ? "Connected" : lmStudioNoModels ? "Server online · load a model" : "Not set up"}</span>,
+      action: lmStudioReady || lmStudioNoModels ? null : <button type="button" className="secondary-button" onClick={() => expandAccount("lmstudio")}>Set up</button>,
     },
   ];
   // Each row owns its panel instance even while another row is expanded.
@@ -1588,16 +1795,15 @@ export function SettingsModal({
               <div className="credential-panel">
                 <div>
                   <strong>{account?.type === "chatgpt" ? account.email || "ChatGPT account" : openAiBilling === "apiKey" ? "OpenAI API connection" : "OpenAI connection"}</strong>
-                  <small>{accountChecks.openai === "Checking connection…" ? accountChecks.openai : openAiBilling === "apiKey" && !account ? "Save or connect an API key above" : accountChecks.openai || (account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan · signed in to Codex` : account?.type === "apiKey" ? "Billed per token to your OpenAI API account · signed in to Codex" : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required")}</small>
+                  <small>{accountChecks.openai === "Checking connection…" ? accountChecks.openai : openAiBilling === "apiKey" && !account ? "Save or connect an API key above" : accountChecks.openai || (account?.type === "chatgpt" ? `${account.planType ? sentenceCase(account.planType) : "ChatGPT"} plan` : account?.type === "apiKey" ? "Billed per token to your OpenAI API account · signed in to Codex" : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required")}</small>
                 </div>
                 {codexAccountReady(account) ? (
                   <div className="credential-actions">
-                    <span className={`connected-badge${accountChecks.openai ? " unverified" : ""}`} title={accountChecks.openai ? undefined : OPENAI_SIGNED_IN_NOTE} aria-live="polite">{accountChecks.openai === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.openai ? <Check size={12} /> : null} {accountChecks.openai === "Checking connection…" ? "Checking…" : accountChecks.openai ? "Unverified" : "Signed in"}</span>
                     <button className="secondary-button" onClick={() => void signOut()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>Sign out</button>
                   </div>
                 ) : openAiBilling === "subscription" || !runtimeStatus?.available ? (
                   <button className="secondary-button" onClick={() => void signIn()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>
-                    {busy || openAiLoginStarting ? <LoaderCircle className="spin" size={14} /> : !runtimeStatus?.available ? <Download size={14} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex"}
+                    {busy || openAiLoginStarting ? <LoaderCircle className="spin" size={14} /> : !runtimeStatus?.available ? <Download size={14} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex CLI"}
                   </button>
                 ) : null}
                 {runtimeStatus?.available && <button className="icon-button" onClick={refreshOpenAi} title="Refresh OpenAI connection" aria-label="Refresh OpenAI connection" aria-busy={openAiRefreshing > 0} disabled={openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>{openAiRefreshing ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>}
@@ -1606,11 +1812,10 @@ export function SettingsModal({
             ) : provider === "openrouter" ? (
               <div className="credential-panel stacked" data-settings-row="openrouter-key">
                 <div className="credential-status">
-                  <div><strong>OpenRouter API key</strong><small>{openRouterReady ? "Stored securely on this device" : "No key stored"}</small></div>
-                  {openRouterReady && <span className="connected-badge"><Check size={12} /> Connected</span>}
+                  <div><strong>OpenRouter API key</strong><small>{openRouterReady ? "Saved securely on this device" : "No key saved"}</small></div>
                 </div>
                 <div className="key-input-row">
-                  <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-or-v1-…" />
+                  <input type="password" aria-label="OpenRouter API key" autoComplete="off" spellCheck={false} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-or-v1-…" />
                   <button className="secondary-button" onClick={() => void storeKey()} disabled={!apiKey.trim() || busy}>Save key</button>
                 </div>
               </div>
@@ -1619,22 +1824,21 @@ export function SettingsModal({
                 <div className="credential-status">
                   <div>
                     <strong>LM Studio local server</strong>
-                    <small>{lmStudioReady ? `${lmStudioModels.length} model${lmStudioModels.length === 1 ? "" : "s"} available` : lmStudioModelsError || "Start the server from LM Studio’s Developer tab"}</small>
+                    <small>{lmStudioReady ? `${lmStudioModels.length} model${lmStudioModels.length === 1 ? "" : "s"} available` : lmStudioNoModels ? "The server is running but has no models loaded. Load one in LM Studio." : lmStudioModelsError || "Start the server from LM Studio’s Developer tab"}</small>
                   </div>
-                  {lmStudioReady && <span className="connected-badge"><Check size={12} /> Connected</span>}
                 </div>
                 <label className="field-label">
                   <span>Server URL</span>
                   <input value={local.lmStudioBaseUrl} onChange={(event) => setLocal({ ...local, lmStudioBaseUrl: event.target.value })} placeholder={DEFAULT_LM_STUDIO_BASE_URL} spellCheck={false} />
-                  <small>Mythra Code uses LM Studio’s OpenAI-compatible Responses API. Keep the default for a server on this computer.</small>
+                  <small>Keep the default for a server on this computer.</small>
                 </label>
                 <div className="key-input-row">
-                  <input type="password" value={lmStudioToken} onChange={(event) => setLmStudioToken(event.target.value)} placeholder={lmStudioTokenStored ? "Token stored in the OS credential store" : "Optional API token"} />
+                  <input type="password" aria-label="LM Studio API token" autoComplete="off" spellCheck={false} value={lmStudioToken} onChange={(event) => setLmStudioToken(event.target.value)} placeholder={lmStudioTokenStored ? "Token saved securely" : "API token (optional)"} />
                   <button className="secondary-button" onClick={() => void storeLmStudioToken()} disabled={!lmStudioToken.trim() || busy}>Save token</button>
                   {lmStudioTokenStored && <button className="secondary-button" onClick={() => void storeLmStudioToken(true)} disabled={busy}>Remove</button>}
                 </div>
                 <div className="credential-status">
-                  <small>{lmStudioConnectionMessage || "Authentication is optional for the default localhost server. Use a token for authenticated or network-accessible servers."}</small>
+                  <small>{lmStudioConnectionMessage || "A token is only needed for servers that require one."}</small>
                   <button className="secondary-button" onClick={() => void testLmStudioConnection()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />} Test connection</button>
                 </div>
               </div>
@@ -1647,12 +1851,10 @@ export function SettingsModal({
                   <small>{accountChecks.claude || (claudeUsesApiKey(claudeStatus)
                     ? claudeStatus?.loggedIn ? `Billed per token through ${claudeStatus.version || "Claude Code"}` : claudeStatus?.warning || "Add an Anthropic API key above"
                     : claudeStatus?.loggedIn
-                    ? `${claudeStatus.subscriptionType || claudeStatus.authMethod || "Claude"} plan connected · ${claudeStatus.version || "Claude Code"}`
+                    ? `${sentenceCase(claudeStatus.subscriptionType || "Claude")} plan · ${claudeStatus.version ? `Claude Code ${claudeStatus.version}` : "Claude Code"}`
                     : claudeStatus?.warning || (claudeStatus?.available ? claudeStatus.billing === "subscription" ? "Claude Code detected · sign in to continue" : "Choose how to bill Claude work above" : "Claude Code must be installed first"))}</small>
                 </div>
-                {claudeStatus?.loggedIn ? (
-                  <span className={`connected-badge${accountChecks.claude ? " unverified" : ""}`} aria-live="polite">{accountChecks.claude === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.claude ? <Check size={12} /> : null} {accountChecks.claude === "Checking connection…" ? "Checking…" : accountChecks.claude ? "Unverified" : "Connected"}</span>
-                ) : claudeLoginStarting ? (
+                {claudeStatus?.loggedIn ? null : claudeLoginStarting ? (
                     <button className="secondary-button" onClick={() => void cancelClaudeLogin().catch(() => undefined)} title="Finish signing in in your browser, or cancel">
                       <LoaderCircle className="spin" size={14} /> Cancel sign-in
                     </button>
@@ -1666,7 +1868,7 @@ export function SettingsModal({
               </div>
               {claudeStatus?.loggedIn && claudeStatus.warning && <div className="settings-notice" role="status">
                 <Info size={13} /><span>{claudeStatus.warning}</span>
-                <button type="button" className="secondary-button" onClick={() => setSettingsSection("updates")}>Open Updates</button>
+                <button type="button" className="secondary-button" onClick={() => setSettingsSection("updates")}>Open updates</button>
               </div>}
               </>
             ) : (
@@ -1675,12 +1877,9 @@ export function SettingsModal({
                 <div>
                   <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
                   <small>{cursorAccountCheck || (cursorStatus?.loggedIn
-                    ? "Signed in to Cursor Agent on this device"
+                    ? "Connected through Cursor Agent on this device"
                     : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent CLI must be installed first"))}</small>
                 </div>
-                {cursorStatus?.loggedIn && (
-                  <span className={`connected-badge${cursorAccountCheck ? " unverified" : ""}`} aria-live="polite">{cursorAccountCheck === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !cursorAccountCheck ? <Check size={12} /> : null} {cursorAccountCheck === "Checking connection…" ? "Checking…" : cursorAccountCheck === "Waiting for sign-in…" ? "Signing in…" : cursorAccountCheck ? "Unverified" : "Connected"}</span>
-                )}
                 {(!cursorStatus?.loggedIn || cursorStatus.authVerified === false) && (
                   <button className="secondary-button" onClick={() => void (cursorStatus?.available ? onCursorSignIn() : openUrl("https://cursor.com/docs/cli/installation"))} disabled={cursorLoginStarting}>
                     {cursorLoginStarting ? <LoaderCircle className="spin" size={14} /> : !cursorStatus?.available ? <Download size={14} /> : null}
@@ -1693,7 +1892,7 @@ export function SettingsModal({
 
   return (
     <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} data-backdrop-blur={isWindowsPlatform() ? "always" : undefined} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
-      <div ref={dialogRef} className={`settings-modal${wideSheet ? " settings-modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings categories">
             <div className="settings-nav-head">
@@ -1709,46 +1908,78 @@ export function SettingsModal({
                   onChange={(event) => setNavQuery(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Escape" && navQuery) { event.stopPropagation(); setNavQuery(""); }
-                    // Once a search has narrowed to one answer, Enter goes
-                    // there: no second aim with the mouse.
-                    if (event.key === "Enter" && rowMatches.length === 1) goToRow(rowMatches[0]!);
-                    else if (event.key === "Enter" && navMatches.length === 1) setSettingsSection(navMatches[0]!.id);
+                    // ↓ moves from the search field into the list below it.
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      event.currentTarget.closest(".settings-nav")?.querySelector<HTMLButtonElement>(".settings-nav-scroll button")?.focus();
+                    }
+                    // Enter opens the first result in the listed order.
+                    if (event.key === "Enter" && orderedResults.length) {
+                      event.preventDefault();
+                      const first = orderedResults[0]!;
+                      if (first.kind === "row") goToRow(first.item as SettingsRow);
+                      else setSettingsSection((first.item as { id: SettingsPane }).id);
+                    }
                   }}
                 />
                 {navQuery && <button type="button" className="settings-search-clear" aria-label="Clear search" onClick={() => setNavQuery("")}><X size={12} /></button>}
               </div>
+              <p className="sr-only" role="status" aria-live="polite">{searchArrival || (navQuery.trim() ? (searchResultCount ? `${searchResultCount} result${searchResultCount === 1 ? "" : "s"}` : "No results") : "")}</p>
             </div>
-            <div className="settings-nav-scroll">
-              {navGroups.map((section) => (
+            <div className="settings-nav-scroll" onKeyDown={(event) => {
+              // ↑/↓ walk the categories (and search results); ↑ from the
+              // first one returns to the search field.
+              if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+              const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
+              const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+              if (index < 0) return;
+              event.preventDefault();
+              if (event.key === "ArrowUp" && index === 0) {
+                event.currentTarget.closest(".settings-nav")?.querySelector<HTMLInputElement>(".settings-search input")?.focus();
+                return;
+              }
+              buttons[Math.max(0, Math.min(buttons.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
+            }}>
+              {!navQuery.trim() && navGroups.map((section) => (
                 <div className="settings-nav-group" key={section.group} role="group" aria-label={section.group}>
                   <span className="settings-nav-label" aria-hidden>{section.group}</span>
                   {section.items.map(({ id, label, icon: Icon }) => {
                     const current = settingsSection === id || (!navQuery.trim() && SETTINGS_PANES.get(settingsSection)?.parent === id);
-                    const dirtyHere = dirtyPanes.has(id) || [...dirtyPanes].some((pane) => SETTINGS_PANES.get(pane)?.parent === id);
+                    const heldHere = heldBack?.pane === id;
                     return <button
                       key={id}
                       className={current ? "active" : ""}
                       onClick={() => setSettingsSection(id)}
                       aria-current={current ? "page" : undefined}
                     >
-                      <Icon size={14} aria-hidden="true" /><span>{label}</span>{id === "updates" && anyUpdateAvailable && <span className="settings-update-dot" role="img" aria-label="Update available" />}{dirtyHere && <span className="settings-dirty-dot" role="img" aria-label="Unsaved changes" title="Unsaved changes" />}
+                      <Icon size={14} aria-hidden="true" /><span>{label}</span>{id === "updates" && anyUpdateAvailable && <span className="settings-update-dot" role="img" aria-label="Update available" />}{heldHere && <span className="settings-dirty-dot" role="img" aria-label="Has a change that can’t be saved yet" title="Has a change that can’t be saved yet" />}
                     </button>;
                   })}
                 </div>
               ))}
-              {rowMatches.length > 0 && <div className="settings-nav-group settings-row-results" role="group" aria-label="Settings">
-                <span className="settings-nav-label" aria-hidden>Settings</span>
-                {rowMatches.map((row) => <button key={`${row.pane}:${row.label}`} type="button" onClick={() => goToRow(row)}>
-                  <CornerDownRight size={14} aria-hidden="true" /><span className="settings-row-result"><small>{SETTINGS_PANES.get(row.pane)?.label}</small><span>{row.label}</span></span>
-                </button>)}
+              {navQuery.trim() && orderedResults.length > 0 && <div className="settings-nav-group settings-search-results" role="group" aria-label="Search results">
+                <span className="settings-nav-label" aria-hidden>Results</span>
+                {orderedResults.map((result) => {
+                  if (result.kind === "row") {
+                    const row = result.item as SettingsRow;
+                    return <button key={`row:${row.id}`} type="button" className="settings-row-result-button" onClick={() => goToRow(row)}>
+                      <CornerDownRight size={14} aria-hidden="true" /><span className="settings-row-result"><small>{SETTINGS_PANES.get(row.pane)?.label}</small><span>{row.label}</span></span>
+                    </button>;
+                  }
+                  const { id, label, icon: Icon } = result.item as (typeof navMatches)[number];
+                  const current = settingsSection === id;
+                  return <button key={`pane:${id}`} type="button" className={current ? "active" : ""} onClick={() => setSettingsSection(id)} aria-current={current ? "page" : undefined}>
+                    <Icon size={14} aria-hidden="true" /><span>{label}</span>
+                  </button>;
+                })}
               </div>}
-              {!navGroups.length && !rowMatches.length && <p className="settings-nav-empty">Nothing matches &ldquo;{navQuery.trim()}&rdquo;.</p>}
+              {navQuery.trim() && !orderedResults.length && <p className="settings-nav-empty">Nothing matches &ldquo;{navQuery.trim()}&rdquo;.</p>}
             </div>
           </nav>
           <div className="settings-pane">
             <header className="settings-pane-heading">
-              <div className={wideSheet ? "settings-heading-stack" : undefined}>
-                {wideSheet ? (["usage", "pricing"] as const).map((pane) => (
+              <div className={usageTabs ? "settings-heading-stack" : undefined}>
+                {usageTabs ? (["usage", "pricing"] as const).map((pane) => (
                   <div className="settings-heading-copy" key={pane} aria-hidden={settingsSection !== pane}>
                     <h3>{SETTINGS_PANES.get(pane)?.label}</h3>
                     <small>{SETTINGS_PANES.get(pane)?.detail}</small>
@@ -1758,8 +1989,9 @@ export function SettingsModal({
                   <small>{SETTINGS_PANES.get(settingsSection)?.detail}</small>
                 </>}
               </div>
-              {paneAction}
-              <button className="icon-button settings-close" onClick={requestClose} aria-label="Close settings"><X size={17} /></button>
+              {/* The one save confirmation: brief, quiet, and announced. */}
+              <span className={`settings-saved${savedFlash ? " show" : ""}`} role="status" aria-live="polite">{savedFlash ? <><Check size={12} aria-hidden="true" /> Saved</> : null}</span>
+              <button className="icon-button settings-close" onClick={requestClose} aria-label="Close settings" title="Close (Esc)"><X size={17} /></button>
             </header>
             <div className={`settings-content ${moreBelow ? "has-more-below" : ""}`} ref={contentRef}>
           {settingsSection === "voice" &&
@@ -1774,33 +2006,121 @@ export function SettingsModal({
             }}
           />}
 
-          {settingsSection === "system" &&
+          {settingsSection === "general" && <>
           <div className="set-group">
-            <h4>Getting started</h4>
+            <h4>Behavior</h4>
+            <div className="set-card">
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Escape stops the active run</strong>
+                  <small id={escapeStopsRunId}>Escape still closes menus and dialogs. Text fields keep their own Escape behavior.</small>
+                </div>
+                <div className="set-control">
+                  <Switch checked={local.escapeStopsRun} label="Escape stops the active run" describedBy={escapeStopsRunId} onChange={() => setLocal({ ...local, escapeStopsRun: !local.escapeStopsRun })} />
+                </div>
+              </div>
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Desktop notifications</strong>
+                  <small>Notify when a background task finishes.</small>
+                </div>
+                <div className="set-control">
+                  <Switch checked={local.notificationsEnabled} label="Desktop notifications" onChange={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })} />
+                </div>
+              </div>
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Status in the menu bar</strong>
+                  <small>Shows thread status in the menu bar or notification area.</small>
+                </div>
+                <div className="set-control">
+                  <Switch checked={trayStatus} label="Status in the menu bar" onChange={() => setTrayStatusEnabled(!trayStatus)} />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="set-group">
+            <h4>New threads</h4>
+            <div className="set-card">
+              {/* Opt-in. The popover says the two things people would otherwise
+                  find out afterwards: the first message leaves for whichever
+                  provider is chosen here even from a thread running on another
+                  one, and a name you typed is yours. The fields appear only
+                  once it is on; an off switch needs no configuration. */}
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Automatic thread titles</strong>
+                  <small>Names each new thread from your first message, using the model you choose. <SettingInfo label="How automatic thread titles work">That first message goes to the provider chosen here, even when the thread itself runs on another one, and uses that provider&rsquo;s subscription or credits. Nothing is kept as a chat, and a title you write yourself is never replaced.</SettingInfo></small>
+                </div>
+                <div className="set-control">
+                  <Switch checked={local.automaticThreadTitles} label="Automatic thread titles" onChange={() => setLocal({ ...local, automaticThreadTitles: !local.automaticThreadTitles })} />
+                </div>
+              </div>
+              {local.automaticThreadTitles && (
+                <ThreadTitleFields
+                  settings={local}
+                  catalogs={modelCatalogs}
+                  readiness={childAgentReadiness}
+                  onChange={setLocal}
+                  onAccounts={() => setSettingsSection("models")}
+                />
+              )}
+            </div>
+          </div>
+          <div className="set-group">
+            <h4>Help</h4>
             <div className="set-card"><div className="set-row">
               <div className="set-copy">
                 <strong>Guided setup</strong>
-                <small>Explore providers, projects, sub-agents, and ways to make the app your own.</small>
+                <small>A short tour of providers, projects, sub-agents and ways to make the app your own.</small>
               </div>
               <div className="set-control">
                 <button type="button" className="secondary-button" onClick={requestOnboarding}><BookOpenCheck size={13} /> Run onboarding</button>
               </div>
-            </div></div>
-          </div>}
-
-          {settingsSection === "general" &&
+            </div>
+            {onOpenShortcuts && <div className="set-row" data-settings-row="general-shortcuts">
+              <div className="set-copy">
+                <strong>Keyboard shortcuts</strong>
+                <small>Every shortcut in one list, with a filter. Also opens with {formatShortcut("shortcuts")} from the main window.</small>
+              </div>
+              <div className="set-control">
+                <button type="button" className="secondary-button" onClick={() => void requestShortcuts()}><Keyboard size={13} /> Show shortcuts</button>
+              </div>
+            </div>}
+            </div>
+          </div>
+          </>}
+          {settingsSection === "appearance" &&
           <section className="settings-section theme-settings-section">
-            {activeProjectHasAppearanceOverride && <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Save updates app-wide defaults. This project has appearance overrides; edit them in Projects.</span></p>}
+            {appearanceOffer && <div className="settings-preview-offer" role="status">
+              <Palette size={15} aria-hidden="true" />
+              <div className="settings-preview-offer-copy">
+                <strong>Previewing the look from the tour</strong>
+                <small>{[
+                  appearanceOffer.theme !== local.theme ? THEMES.find((theme) => theme.id === appearanceOffer.theme)?.name ?? appearanceOffer.theme : "",
+                  appearanceOffer.chatFont !== local.chatFont ? `${chatFontName(appearanceOffer.chatFont, appCustomFonts)} font` : "",
+                  appearanceOffer.effortSlider !== local.effortSlider ? `${EFFORT_SLIDER_STYLES.find((style) => style.id === appearanceOffer.effortSlider)?.name ?? appearanceOffer.effortSlider} slider` : "",
+                ].filter(Boolean).join(" · ")}. Nothing is saved unless you apply it.</small>
+              </div>
+              <div className="settings-preview-offer-actions">
+                <button type="button" className="secondary-button" onClick={() => endAppearanceOffer(local)}>Keep current look</button>
+                <button type="button" className="primary-button" onClick={applyAppearanceOffer}>Apply this look</button>
+              </div>
+            </div>}
+            {activeProjectHasAppearanceOverride && <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>This project has its own appearance, so changes here apply to your other projects. Edit this one in Projects.</span></p>}
             <div className="set-group">
-              <h4>Theme</h4>
+              <div className="set-group-head"><h4>Theme</h4>{local.theme !== DEFAULT_SETTINGS.theme && <button type="button" className="secondary-button" onClick={() => previewTheme(DEFAULT_SETTINGS.theme)}><RotateCcw size={12} /> Use default theme</button>}</div>
               <div className="set-card bare"><div className="set-body">
-                <div className="theme-grid">
+                <div className="theme-grid" role="radiogroup" aria-label="Theme" onKeyDown={rovingChoiceKeyDown}>
                   {THEMES.map((theme) => (
                     <button
                       type="button"
                       key={theme.id}
                       className={`theme-card ${local.theme === theme.id ? "selected" : ""}`}
-                      aria-pressed={local.theme === theme.id}
+                      role="radio"
+                      aria-checked={local.theme === theme.id}
+                      tabIndex={local.theme === theme.id ? 0 : -1}
+                      title={theme.description}
                       onClick={() => previewTheme(theme.id)}
                     >
                       {/* A miniature of the app itself — ground, sidebar, content,
@@ -1812,7 +2132,7 @@ export function SettingsModal({
                         <i className="theme-preview-active" style={{ background: theme.swatches[2], color: theme.swatches[2] }} />
                         <i className="theme-preview-accent" style={{ background: theme.swatches[2] }} />
                       </span>
-                      <span><strong>{theme.name}</strong><small>{theme.description}</small></span>
+                      <span><strong>{theme.name}</strong></span>
                       {local.theme === theme.id && <Check size={14} />}
                     </button>
                   ))}
@@ -1821,17 +2141,17 @@ export function SettingsModal({
             </div>
 
             <div className="set-group">
-              <h4>Interface size</h4>
+              <h4>Size</h4>
               <div className="set-card"><div className="set-row">
                 <div className="set-copy">
                   <strong>App scale</strong>
-                  <small>Scales the whole app, including chat text, without changing the typeface.</small>
+                  <small>Scales the whole app, including chat text.</small>
                 </div>
                 <div className="set-control">
                   <AppSelectMenu
                     value={String(local.uiScale ?? 100)}
                     options={INTERFACE_SIZE_OPTIONS}
-                    ariaLabel="Interface size"
+                    ariaLabel="App scale"
                     portal
                     onChange={(value) => previewUiScale(Number(value))}
                   />
@@ -1840,46 +2160,30 @@ export function SettingsModal({
             </div>
 
             <div className="set-group">
-              <h4>Chat typeface</h4>
-              <ChatFontSettings value={local.chatFont} onChange={previewChatFont} active={open && settingsSection === "general"} />
+              <h4>Chat font</h4>
+              <ChatFontSettings value={local.chatFont} onChange={previewChatFont} active={open && settingsSection === "appearance"} />
             </div>
 
             <div className="set-group">
-              <h4>Behavior</h4>
-              <div className="set-card">
-                <div className="set-row">
-                <div className="set-copy">
-                  <strong>Escape stops the active run</strong>
-                  <small id={escapeStopsRunId}>Applies across the app. Escape still dismisses menus and dialogs when this is off. Editable fields keep their own Escape behavior.</small>
-                </div>
-                <button type="button" role="switch" aria-label="Escape stops the active run" aria-describedby={escapeStopsRunId} aria-checked={local.escapeStopsRun} className={`toggle-switch ${local.escapeStopsRun ? "on" : ""}`} onClick={() => setLocal({ ...local, escapeStopsRun: !local.escapeStopsRun })}><span /></button>
-              </div>
-                <div className="set-row">
-                <div className="set-copy">
-                  <strong>Warn before using Max reasoning</strong>
-                  <small id={maxReasoningWarningId}>Ask before selecting Max in model and sub-agent controls. Extra reasoning can use much more of your allowance or API budget without a meaningful improvement. Applies app-wide.</small>
-                </div>
-                <button type="button" role="switch" aria-label="Warn before using Max reasoning" aria-describedby={maxReasoningWarningId} aria-checked={local.warnOnMaxReasoning !== false} className={`toggle-switch ${local.warnOnMaxReasoning !== false ? "on" : ""}`} onClick={() => setLocal((current) => ({ ...current, warnOnMaxReasoning: current.warnOnMaxReasoning === false }))}><span /></button>
-              </div>
-              </div>
-            </div>
-            <div className="set-group">
-              <h4>Effort slider style</h4>
-              <p>How the reasoning-effort slider looks for every provider.</p>
+              <h4>Effort slider</h4>
+              <p>How the reasoning slider looks for every provider.</p>
               <div className="set-card bare"><div className="set-body">
-                    <div className="slider-style-grid">
+                    <div className="slider-style-grid" role="radiogroup" aria-label="Effort slider" onKeyDown={rovingChoiceKeyDown}>
                       {EFFORT_SLIDER_STYLES.map((style) => (
                         <button
                           type="button"
                           key={style.id}
                           className={`slider-style-card ${local.effortSlider === style.id ? "selected" : ""}`}
-                          aria-pressed={local.effortSlider === style.id}
+                          title={style.description}
+                          role="radio"
+                          aria-checked={local.effortSlider === style.id}
+                          tabIndex={local.effortSlider === style.id ? 0 : -1}
                           onClick={() => previewEffortSlider(style.id)}
                         >
                           <span className={`slider-style-preview ${style.id}`} aria-hidden="true">
                             <i className="slider-style-rail" /><i className="slider-style-thumb" />
                           </span>
-                          <span><strong>{style.name}</strong><small>{style.description}</small></span>
+                          <span><strong>{style.name}</strong></span>
                           {local.effortSlider === style.id && <Check size={14} />}
                         </button>
                       ))}
@@ -1888,19 +2192,33 @@ export function SettingsModal({
             </div>
 
             <div className="set-group">
-              <h4>Provider marks</h4>
-              <p>The logo shown on threads, responses, and provider controls for each subscription.</p>
-              <div className="set-card bare"><div className="set-body">
+              <h4>Provider logos</h4>
+              <div className="set-card">
+                <div className="set-row">
+                  <div className="set-copy">
+                    <strong>Logos on threads and controls</strong>
+                    <small>{[
+                      local.openAiLogo === "codex" ? "Codex" : "OpenAI",
+                      local.claudeLogo === "anthropic" ? "Anthropic" : "Claude",
+                      local.cursorLogo === "app-dark" ? "Cursor Dark" : "Cursor",
+                    ].join(" · ")}</small>
+                  </div>
+                  <div className="set-control">
+                    <button type="button" className="secondary-button" aria-expanded={providerLogosOpen} aria-controls={providerLogosId} onClick={() => setProviderLogosOpen((value) => !value)}>{providerLogosOpen ? "Done" : "Change logos"}</button>
+                  </div>
+                </div>
+              </div>
+              {providerLogosOpen && <div className="set-card bare" id={providerLogosId}><div className="set-body">
                     <div className="provider-mark-grid">
                       <div className="provider-mark-group">
                         <span>OpenAI threads</span>
-                        <div className="provider-logo-options" role="radiogroup" aria-label="OpenAI model logo">
-                          <button type="button" className={local.openAiLogo === "openai" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "openai"} onClick={() => setLocal({ ...local, openAiLogo: "openai" })}>
+                        <div className="provider-logo-options" role="radiogroup" aria-label="OpenAI model logo" onKeyDown={rovingChoiceKeyDown}>
+                          <button type="button" className={local.openAiLogo === "openai" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "openai"} tabIndex={local.openAiLogo === "openai" ? 0 : -1} onClick={() => setLocal({ ...local, openAiLogo: "openai" })}>
                             <span className="provider-logo-preview openai"><OpenAILogo size={18} /></span>
                             <span><strong>OpenAI</strong></span>
                             {local.openAiLogo === "openai" && <Check size={13} />}
                           </button>
-                          <button type="button" className={local.openAiLogo === "codex" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "codex"} onClick={() => setLocal({ ...local, openAiLogo: "codex" })}>
+                          <button type="button" className={local.openAiLogo === "codex" ? "selected" : ""} role="radio" aria-checked={local.openAiLogo === "codex"} tabIndex={local.openAiLogo === "codex" ? 0 : -1} onClick={() => setLocal({ ...local, openAiLogo: "codex" })}>
                             <span className="provider-logo-preview codex"><CodexLogo size={20} /></span>
                             <span><strong>Codex</strong></span>
                             {local.openAiLogo === "codex" && <Check size={13} />}
@@ -1909,13 +2227,13 @@ export function SettingsModal({
                       </div>
                       <div className="provider-mark-group">
                         <span>Claude threads</span>
-                        <div className="provider-logo-options" role="radiogroup" aria-label="Claude model logo">
-                          <button type="button" className={local.claudeLogo === "claude" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "claude"} onClick={() => setLocal({ ...local, claudeLogo: "claude" })}>
+                        <div className="provider-logo-options" role="radiogroup" aria-label="Claude model logo" onKeyDown={rovingChoiceKeyDown}>
+                          <button type="button" className={local.claudeLogo === "claude" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "claude"} tabIndex={local.claudeLogo === "claude" ? 0 : -1} onClick={() => setLocal({ ...local, claudeLogo: "claude" })}>
                             <span className="provider-logo-preview claude"><ClaudeLogo size={18} /></span>
                             <span><strong>Claude</strong></span>
                             {local.claudeLogo === "claude" && <Check size={13} />}
                           </button>
-                          <button type="button" className={local.claudeLogo === "anthropic" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "anthropic"} onClick={() => setLocal({ ...local, claudeLogo: "anthropic" })}>
+                          <button type="button" className={local.claudeLogo === "anthropic" ? "selected" : ""} role="radio" aria-checked={local.claudeLogo === "anthropic"} tabIndex={local.claudeLogo === "anthropic" ? 0 : -1} onClick={() => setLocal({ ...local, claudeLogo: "anthropic" })}>
                             <span className="provider-logo-preview anthropic"><AnthropicLogo size={18} /></span>
                             <span><strong>Anthropic</strong></span>
                             {local.claudeLogo === "anthropic" && <Check size={13} />}
@@ -1924,13 +2242,13 @@ export function SettingsModal({
                       </div>
                       <div className="provider-mark-group">
                         <span>Cursor threads</span>
-                        <div className="provider-logo-options" role="radiogroup" aria-label="Cursor model logo">
-                          <button type="button" className={local.cursorLogo === "cube" ? "selected" : ""} role="radio" aria-checked={local.cursorLogo === "cube"} onClick={() => setLocal({ ...local, cursorLogo: "cube" })}>
+                        <div className="provider-logo-options" role="radiogroup" aria-label="Cursor model logo" onKeyDown={rovingChoiceKeyDown}>
+                          <button type="button" className={local.cursorLogo === "cube" ? "selected" : ""} role="radio" aria-checked={local.cursorLogo === "cube"} tabIndex={local.cursorLogo === "cube" ? 0 : -1} onClick={() => setLocal({ ...local, cursorLogo: "cube" })}>
                             <span className="provider-logo-preview cursor"><CursorLogo size={19} /></span>
                             <span><strong>Cursor</strong></span>
                             {local.cursorLogo === "cube" && <Check size={13} />}
                           </button>
-                          <button type="button" className={local.cursorLogo === "app-dark" ? "selected" : ""} role="radio" aria-checked={local.cursorLogo === "app-dark"} onClick={() => setLocal({ ...local, cursorLogo: "app-dark" })}>
+                          <button type="button" className={local.cursorLogo === "app-dark" ? "selected" : ""} role="radio" aria-checked={local.cursorLogo === "app-dark"} tabIndex={local.cursorLogo === "app-dark" ? 0 : -1} onClick={() => setLocal({ ...local, cursorLogo: "app-dark" })}>
                             <span className="provider-logo-preview cursor-app-dark"><CursorDarkAppIcon size={26} /></span>
                             <span><strong>Cursor Dark</strong></span>
                             {local.cursorLogo === "app-dark" && <Check size={13} />}
@@ -1938,7 +2256,7 @@ export function SettingsModal({
                         </div>
                       </div>
                     </div>
-              </div></div>
+              </div></div>}
             </div>
           </section>}
 
@@ -1961,33 +2279,38 @@ export function SettingsModal({
               onRefreshGlobalInstructionFiles={onRefreshGlobalInstructionFiles}
               onGlobalInstructionFileSaved={onGlobalInstructionFileSaved}
               onOpenMemory={() => setSettingsSection("memory")}
+              projectInstructions={projectInstructionsTarget ? { name: projectInstructionsTarget.name, open: () => void (async () => { if (await settleBeforeLeaving()) projectInstructionsTarget.open(); })() } : undefined}
             />
           </section></div>
 
-          <div hidden={!(["agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "agents" | "workflows" | "scheduled-tasks" | "tools")}><HarnessSettings
-            section={(["agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "agents" | "workflows" | "scheduled-tasks" | "tools") ? settingsSection as "agents" | "workflows" | "scheduled-tasks" | "tools" : "tools"}
-            visible={open}
-            settings={local}
-            agents={agents}
-            actions={actions}
-            schedules={schedules}
+          {settingsSection === "workflows" && <>
+          <WorkflowManager
             workflows={workflows}
-            workflowRuns={workflowRuns}
+            runs={workflowRuns}
             projects={projects}
             skills={skills}
+            settings={local}
+            onWorkflows={onWorkflows}
+            onRun={onRunWorkflow}
+            onStop={onStopWorkflow}
+            onOpenRun={onOpenRun}
+          />
+          <QuickActionsSettings actions={actions} onActions={onActions} drafts={harnessDrafts} onDrafts={setHarnessDrafts} />
+          </>}
+
+          {settingsSection === "scheduled-tasks" && <ScheduledTasksSettings
+            visible={open}
+            settings={local}
+            schedules={schedules}
+            projects={projects}
             modelCatalogs={subAgentModelCatalogs}
-            onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
-            onAgents={onAgents}
-            onActions={onActions}
+            scheduleRuns={scheduleRuns}
+            workflows={workflows}
             onSchedules={onSchedules}
             onWorkflows={onWorkflows}
-            onRunWorkflow={onRunWorkflow}
-            onStopWorkflow={onStopWorkflow}
-            mcpServers={mcpServers}
-            onMcpChanged={onMcpChanged}
-            scheduleRuns={scheduleRuns}
+            onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
             onOpenRun={onOpenRun}
-          /></div>
+          />}
 
           {settingsSection === "memory" && <section className="settings-section">
             <PreferenceLearningSettings projects={projects} modelCatalogs={learningModelCatalogs} onLearnPastConversations={onLearnPastConversations} onCancelLearning={onCancelPreferenceLearning} historyProgress={preferenceHistoryProgress} onChanged={onPreferenceLearningChanged} />
@@ -1995,63 +2318,41 @@ export function SettingsModal({
 
           {settingsSection === "devices" && <DevicesSettings projects={projects} />}
 
+          {/* M08 (round 6): MCP setup and language tools share one long
+              scroll; the same sticky jump list as Sub-agents lets either be
+              reached directly. */}
+          {settingsSection === "tools" && <SettingsJumpList label="MCP & language servers sections" items={TOOLS_SECTIONS} scrollRef={contentRef} />}
+
+          {settingsSection === "tools" && <McpServerSettings mcpServers={mcpServers} onMcpChanged={onMcpChanged} onSignIn={workspaceToolsAvailable ? onWorkspaceTools : undefined} drafts={harnessDrafts} onDrafts={setHarnessDrafts} />}
+
           {settingsSection === "tools" && <LanguageToolsSettings />}
 
           {settingsSection === "tools" &&
-          <div className="set-group">
-            <h4>Live tools</h4>
+          <div className="set-group" id="tools-live">
+            <h4 tabIndex={-1}>In this thread</h4>
             <div className="set-card"><div className="set-row">
               <div className="set-copy">
-                <strong>Live tool controls</strong>
-                <small>{workspaceToolsAvailable ? "Inspect skills, finish MCP sign-in, connect configured servers, and run project actions in the active workspace." : "Open a project first to inspect its live skills, MCP servers, and project actions."}</small>
+                <strong>Tools → Skills & MCP</strong>
+                <small>{workspaceToolsAvailable ? "Inspect live skills, finish MCP sign-in and connect servers for the open project." : "Open a project first to inspect its live skills and MCP servers."}</small>
               </div>
               <div className="set-control">
-                <button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open Thread tools</button>
+                <button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open Skills &amp; MCP in Tools</button>
               </div>
             </div></div>
           </div>}
 
           {settingsSection === "projects" && <>
           <div className="set-group">
-            <h4>Git setup</h4>
+            <h4>New project threads</h4>
             <div className="set-card"><div className="set-row">
               <div className="set-copy">
-                <strong>Automatically initialize Git for new project threads</strong>
-                <small id={automaticGitInitializationId}>When enabled, creates a local Git repository in the project folder when you start a new thread if the folder is not already in a repository. Existing repositories are left untouched. Does not create commits or publish to GitHub.</small>
+                <strong>Set up Git automatically</strong>
+                <small id={automaticGitInitializationId}>Creates a local Git repository when a new thread starts in a folder that has none. <SettingInfo label="What automatic Git setup does">Existing repositories are left untouched. Mythra Code doesn&rsquo;t create commits or publish anything to GitHub.</SettingInfo></small>
               </div>
               <div className="set-control">
-                <button type="button" role="switch" aria-label="Automatically initialize Git for new project threads" aria-describedby={automaticGitInitializationId} aria-checked={local.automaticGitInitialization === true} className={`toggle-switch ${local.automaticGitInitialization === true ? "on" : ""}`} onClick={() => setLocal({ ...local, automaticGitInitialization: local.automaticGitInitialization !== true })}><span /></button>
+                <Switch checked={local.automaticGitInitialization === true} label="Set up Git automatically" describedBy={automaticGitInitializationId} onChange={() => setLocal({ ...local, automaticGitInitialization: local.automaticGitInitialization !== true })} />
               </div>
             </div></div>
-          </div>
-          <div className="set-group">
-            <h4>Thread titles</h4>
-            <div className="set-card">
-              {/* Opt-in, and it says the two things people would otherwise
-                  find out afterwards: the first message leaves for whichever
-                  provider is chosen here even from a thread running on another
-                  one, and a name you typed is yours. The fields appear only
-                  once it is on — an off switch needs no configuration. */}
-              <div className="set-row">
-                <div className="set-copy">
-                  <strong>Automatic thread titles</strong>
-                  <small>Names each new thread from your first message, using the provider and model you choose.</small>
-                  <small>That first message goes to the chosen provider even when the thread itself runs on another one, and uses that provider&rsquo;s own subscription or credits. Nothing is kept as a chat, and a title you write yourself is never replaced.</small>
-                </div>
-                <div className="set-control">
-                  <button type="button" role="switch" aria-label="Automatic thread titles" aria-checked={local.automaticThreadTitles} className={`toggle-switch ${local.automaticThreadTitles ? "on" : ""}`} onClick={() => setLocal({ ...local, automaticThreadTitles: !local.automaticThreadTitles })}><span /></button>
-                </div>
-              </div>
-              {local.automaticThreadTitles && (
-                <ThreadTitleFields
-                  settings={local}
-                  catalogs={modelCatalogs}
-                  readiness={childAgentReadiness}
-                  onChange={setLocal}
-                  onAccounts={() => setSettingsSection("models")}
-                />
-              )}
-            </div>
           </div>
           <ProjectDefaultsSettings
             active={open && settingsSection === "projects"}
@@ -2102,59 +2403,24 @@ export function SettingsModal({
             }}
           />}
 
-          {(settingsSection === "usage" || settingsSection === "pricing") && <div className="settings-pane-tabs" role="tablist" aria-label="Usage views">
-            <button type="button" role="tab" aria-selected={settingsSection === "usage"} className={settingsSection === "usage" ? "selected" : ""} onClick={() => setSettingsSection("usage")}>Usage</button>
-            <button type="button" role="tab" aria-selected={settingsSection === "pricing"} className={settingsSection === "pricing" ? "selected" : ""} onClick={() => setSettingsSection("pricing")}>Model pricing</button>
+          {usageTabs && <div className="settings-pane-tabs" role="tablist" aria-label="Usage pages" onKeyDown={rovingChoiceKeyDown}>
+            <button type="button" role="tab" id={`${usageTabsId}-usage`} aria-controls={`${usageTabsId}-panel`} tabIndex={settingsSection === "usage" ? 0 : -1} aria-selected={settingsSection === "usage"} className={settingsSection === "usage" ? "selected" : ""} onClick={() => setSettingsSection("usage")}>Spending</button>
+            <button type="button" role="tab" id={`${usageTabsId}-pricing`} aria-controls={`${usageTabsId}-panel`} tabIndex={settingsSection === "pricing" ? 0 : -1} aria-selected={settingsSection === "pricing"} className={settingsSection === "pricing" ? "selected" : ""} onClick={() => setSettingsSection("pricing")}>Model pricing</button>
           </div>}
+          {usageTabs && <div role="tabpanel" id={`${usageTabsId}-panel`} aria-labelledby={`${usageTabsId}-${settingsSection}`} className="settings-tabpanel">
           {settingsSection === "usage" && <>
+            {/* Opus R6 D4 / Sol M08: the pane leads with usage; how live
+                quotas read is a display preference, so it sits below. */}
             {open && <UsageDashboard onRefreshPricing={onRefreshUsagePricing} openRouterPricingError={openRouterPricingError} />}
             <UsageDisplaySettings value={local.usageDisplay} onChange={(usageDisplay) => setLocal({ ...local, usageDisplay })} />
-            <div className="set-group">
-              <h4>Instruction records</h4>
-              <p>Optional, off by default, and saved immediately on this device. Records can contain private prompts, learned preferences and skill instructions. They are not uploaded by this feature.</p>
-              <div className="set-card">
-                <div className="set-row">
-                  <div className="set-copy">
-                    <strong>Record last-turn instructions</strong>
-                    <small>Keep the last confirmed turn for up to 24 threads, with the first 32,000 instruction characters each. View them in Thread tools → Usage → Request details. Turning this off stops new records; existing records remain until deleted.</small>
-                  </div>
-                  <div className="set-control">
-                    <button type="button" role="switch" aria-label="Record last-turn instructions" aria-checked={instructionRecording} disabled={instructionRecordBusy} className={`toggle-switch ${instructionRecording ? "on" : ""}`} onClick={() => {
-                      try {
-                        setTurnContextRecordingEnabled(!instructionRecording);
-                        setInstructionRecordError("");
-                        setInstructionRecordStatus("");
-                      } catch { setInstructionRecordError("Could not save this privacy preference. Please try again."); }
-                    }}><span /></button>
-                  </div>
-                </div>
-                <div className="set-row">
-                  <div className="set-copy"><strong>Delete existing instruction records</strong><small>{instructionRecordCount} saved {instructionRecordCount === 1 ? "thread" : "threads"}. Deletes these local copies and turns recording off. Chats, skills, learned preferences and original instruction files are not deleted.</small></div>
-                  <div className="set-control"><button type="button" className="secondary-button compact" disabled={instructionRecordBusy || (!instructionRecordCount && !instructionRecordError)} onClick={() => {
-                    void (async () => {
-                      if (!await confirmDialog("Delete all saved instruction records on this device and turn recording off? Your chats and original instructions will stay untouched.", { confirmLabel: "Delete records", inApp: true })) return;
-                      setInstructionRecordBusy(true);
-                      setInstructionRecordError("");
-                      setInstructionRecordStatus("");
-                      try {
-                        clearTurnContextReceipts();
-                        if (isTauri()) await flushPendingStateWrites();
-                        setInstructionRecordStatus("Instruction records deleted. Recording is off.");
-                      } catch { setInstructionRecordError("Recording has been stopped, but deletion could not be confirmed. Please try again."); }
-                      finally { setInstructionRecordBusy(false); }
-                    })();
-                  }}>{instructionRecordBusy ? <LoaderCircle size={12} className="spin" /> : <Trash2 size={12} />} Delete records</button></div>
-                </div>
-              </div>
-              {instructionRecordError && <p role="alert">{instructionRecordError}</p>}
-              {instructionRecordStatus && <p role="status">{instructionRecordStatus}</p>}
-            </div>
           </>}
 
           {settingsSection === "pricing" && open && <FrontierPricingSettings onRefreshAvailableModels={onRefreshAvailableModels} />}
+          </div>}
 
           {settingsSection === "skills" && <SkillLibrary
             active={open}
+            menuScale={(local.uiScale ?? 100) / 100}
             onInstallOfficial={onInstallOfficialSkill}
             officialInstallFailure={officialSkillInstallFailure}
             officialInstallingId={officialSkillInstallingId}
@@ -2178,59 +2444,32 @@ export function SettingsModal({
             onRestore={onRestoreSkill}
           />}
 
-          {settingsSection === "updates" && <UpdateSettings appUpdater={appUpdater} developerRuntimeUpdater={developerRuntimeUpdater} />}
+          {settingsSection === "updates" && <UpdateSettings appUpdater={appUpdater} developerRuntimeUpdater={developerRuntimeUpdater} checkAll={checkAllUpdates} />}
 
           {settingsSection === "system" && <>
           <div className="set-group">
-            <h4>Runtime behavior</h4>
+            <h4>Terminal</h4>
             <div className="set-card">
               <div className="set-row">
                 <div className="set-copy">
-                  <strong>Desktop notifications</strong>
-                  <small>Notify when a background task finishes.</small>
-                </div>
-                <div className="set-control">
-                  <button type="button" role="switch" aria-label="Desktop notifications" aria-checked={local.notificationsEnabled} className={`toggle-switch ${local.notificationsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })}><span /></button>
-                </div>
-              </div>
-              <div className="set-row">
-                <div className="set-copy">
-                  <strong>Status in the menu bar</strong>
-                  <small>Shows how many threads are working or waiting for approval in the macOS menu bar or the Windows notification area, with a shortcut back to the app. Saves automatically.</small>
-                </div>
-                <div className="set-control">
-                  <button type="button" role="switch" aria-label="Status in the menu bar" aria-checked={trayStatus} className={`toggle-switch ${trayStatus ? "on" : ""}`} onClick={() => setTrayStatusEnabled(!trayStatus)}><span /></button>
-                </div>
-              </div>
-              <div className="set-row">
-                <div className="set-copy">
-                  <strong>OpenAI service tier</strong>
-                  <small>How OpenAI requests are scheduled. API pricing or subscription limits may differ.</small>
-                </div>
-                <div className="set-control">
-                  <AppSelectMenu value={local.serviceTier ?? ""} options={SERVICE_TIER_OPTIONS} ariaLabel="OpenAI service tier" onChange={(value) => setLocal({ ...local, serviceTier: value || null })} />
-                </div>
-              </div>
-              <div className="set-row">
-                <div className="set-copy">
-                  <strong>Terminal scrollback</strong>
+                  <strong>Terminal history</strong>
                   <small>How much output each terminal keeps in memory.</small>
                 </div>
                 <div className="set-control">
-                  <AppSelectMenu value={String(local.terminalScrollback)} options={TERMINAL_SCROLLBACK_OPTIONS} ariaLabel="Terminal scrollback" onChange={(value) => setLocal({ ...local, terminalScrollback: Number(value) })} />
+                  <AppSelectMenu portal value={String(local.terminalScrollback)} options={TERMINAL_SCROLLBACK_OPTIONS} ariaLabel="Terminal history" onChange={(value) => setLocal({ ...local, terminalScrollback: Number(value) })} />
                 </div>
               </div>
               <div className="set-row terminal-timeout-row">
                 <div className="set-copy">
-                  <strong>Terminal and local-server timeout</strong>
-                  <small id={`${terminalTimeoutId}-help`}>Applies to new commands launched from Terminal or Run; commands already running keep the limit they launched with. With no timeout, a command runs until it exits or you stop it. Provider tool runs, Project Actions and project checks keep their own limits.</small>
+                  <strong>Stop long-running commands after</strong>
+                  <small id={`${terminalTimeoutId}-help`}>A time limit for new commands started from Terminal or Run. <SettingInfo label="How the command time limit works">Commands already running keep the limit they started with. With no limit, a command runs until it exits or you stop it. Provider tool runs, quick actions and project checks keep their own limits.</SettingInfo></small>
                 </div>
                 <div className="set-control">
-                  <button type="button" role="switch" aria-label="Automatically stop terminal commands" aria-describedby={`${terminalTimeoutId}-help`} aria-checked={terminalTimeoutEnabled} className={`toggle-switch ${terminalTimeoutEnabled ? "on" : ""}`} onClick={() => setTerminalTimeoutEnabled(!terminalTimeoutEnabled)}><span /></button>
+                  <Switch checked={terminalTimeoutEnabled} label="Stop long-running commands" describedBy={`${terminalTimeoutId}-help`} onChange={() => setTerminalTimeoutEnabled(!terminalTimeoutEnabled)} />
                 </div>
                 {terminalTimeoutEnabled ? (
                   <div className="terminal-timeout-detail">
-                    <label id={`${terminalTimeoutId}-label`} htmlFor={`${terminalTimeoutId}-minutes`}>Timeout</label>
+                    <label id={`${terminalTimeoutId}-label`} htmlFor={`${terminalTimeoutId}-minutes`}>Limit</label>
                     <input
                       ref={scrollableNumberInputRef}
                       id={`${terminalTimeoutId}-minutes`}
@@ -2250,13 +2489,53 @@ export function SettingsModal({
                     <span id={`${terminalTimeoutId}-unit`}>minutes</span>
                     {terminalTimeoutInvalid && <p id={`${terminalTimeoutId}-error`} className="terminal-timeout-error" role="alert">
                       {/^\d+$/.test(terminalTimeoutText?.trim() ?? "") && Number(terminalTimeoutText) > 0
-                        ? `Enter ${MAX_TERMINAL_TIMEOUT_MINUTES.toLocaleString()} minutes or fewer, or turn the timeout off.`
+                        ? `Enter ${MAX_TERMINAL_TIMEOUT_MINUTES.toLocaleString()} minutes or fewer, or turn the limit off.`
                         : "Enter a whole number of minutes, 1 or more."}
                     </p>}
                   </div>
-                ) : <p className="terminal-timeout-detail">No automatic timeout</p>}
+                ) : <p className="terminal-timeout-detail">No time limit</p>}
               </div>
             </div>
+          </div>
+
+          <div className="set-group">
+            <h4>Privacy</h4>
+            <div className="set-card">
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Record last-turn instructions</strong>
+                  <small>Keeps a local copy of what the agent was told on its last turn. Off by default. <SettingInfo label="About instruction records">Keeps the last confirmed turn for up to 24 threads, with the first 32,000 instruction characters each. Records can contain private prompts, learned preferences and skill instructions, and stay on this device. View them in Tools → Usage → Request details. Turning this off stops new records; existing records remain until deleted.</SettingInfo></small>
+                </div>
+                <div className="set-control">
+                  <Switch checked={instructionRecording} label="Record last-turn instructions" disabled={instructionRecordBusy} onChange={() => {
+                    try {
+                      setTurnContextRecordingEnabled(!instructionRecording);
+                      setInstructionRecordError("");
+                      setInstructionRecordStatus("");
+                    } catch { setInstructionRecordError("Could not save this privacy preference. Please try again."); }
+                  }} />
+                </div>
+              </div>
+              <div className="set-row">
+                <div className="set-copy"><strong>Delete instruction records</strong><small>{instructionRecordCount} saved {instructionRecordCount === 1 ? "thread" : "threads"}. Also turns recording off; chats and instruction files stay.</small></div>
+                <div className="set-control"><button type="button" className="secondary-button compact" disabled={instructionRecordBusy || (!instructionRecordCount && !instructionRecordError)} onClick={() => {
+                  void (async () => {
+                    if (!await confirmDialog("Delete all saved instruction records on this device and turn recording off? Your chats and original instructions will stay untouched.", { confirmLabel: "Delete records", inApp: true })) return;
+                    setInstructionRecordBusy(true);
+                    setInstructionRecordError("");
+                    setInstructionRecordStatus("");
+                    try {
+                      clearTurnContextReceipts();
+                      if (isTauri()) await flushPendingStateWrites();
+                      setInstructionRecordStatus("Instruction records deleted. Recording is off.");
+                    } catch { setInstructionRecordError("Recording has been stopped, but deletion could not be confirmed. Please try again."); }
+                    finally { setInstructionRecordBusy(false); }
+                  })();
+                }}>{instructionRecordBusy ? <LoaderCircle size={12} className="spin" /> : <Trash2 size={12} />} Delete records</button></div>
+              </div>
+            </div>
+            {instructionRecordError && <p className="set-group-message error" role="alert">{instructionRecordError}</p>}
+            {instructionRecordStatus && <p className="set-group-message" role="status">{instructionRecordStatus}</p>}
           </div>
 
           <div className="set-group">
@@ -2265,7 +2544,7 @@ export function SettingsModal({
               <div className="set-row">
                 <div className="set-copy">
                   <strong>Export a diagnostic bundle</strong>
-                  <small>Runtime details, recent errors, and performance samples as JSON · {runtimeStatus?.version ?? "runtime version unavailable"}{runtimeStatus?.warning ? ` · ${runtimeStatus.warning}` : ""}</small>
+                  <small>Runtime details, recent errors and performance samples as JSON, saved to a file you choose; nothing is sent. Look it over before sharing it. · {runtimeStatus?.version ?? "runtime version unavailable"}{runtimeStatus?.warning ? ` · ${runtimeStatus.warning}` : ""}</small>
                 </div>
                 <div className="set-control">
                   <button className="secondary-button" onClick={() => void exportDiagnosticBundle()}>Export JSON</button>
@@ -2274,10 +2553,10 @@ export function SettingsModal({
               <div className="set-row">
                 <div className="set-copy">
                   <strong>Performance overlay</strong>
-                  <small>Shows frame rate, slow frames, long tasks, provider events per second and memory in a corner of the window. Saves automatically.</small>
+                  <small>Frame rate, slow frames and memory in a corner of the window.</small>
                 </div>
                 <div className="set-control">
-                  <button type="button" role="switch" aria-label="Performance overlay" aria-checked={performanceOverlay} className={`toggle-switch ${performanceOverlay ? "on" : ""}`} onClick={() => setPerformanceOverlayEnabled(!performanceOverlay)}><span /></button>
+                  <Switch checked={performanceOverlay} label="Performance overlay" onChange={() => setPerformanceOverlayEnabled(!performanceOverlay)} />
                 </div>
               </div>
               <RecentPerformancePanel active={open && settingsSection === "system"} />
@@ -2288,44 +2567,14 @@ export function SettingsModal({
 
           {settingsSection === "agents" &&
           <section className="settings-section subagent-settings">
-            <div className="set-group">
-              <h4>Sub-agent workflow</h4>
-              <div className="set-card">
-                {/* The switch stays level with the title, and nothing here appears
-                    or disappears when it is flipped, so the row never moves. */}
-                <div className="set-row set-row-top">
-                  <div className="set-copy">
-                    <strong className="subagent-preview-heading">Mythra Code sub-agents V2 <span className="subagent-preview-badge">Preview</span></strong>
-                    <small id={`${managedSubagentV2Id}-help`}>Lets parents and sub-agents message each other while work continues. Native Claude Code and Codex sub-agents aren&rsquo;t affected.</small>
-                    {managedSubagentV2LockedReason && <p className="subagent-preview-lock" id={`${managedSubagentV2Id}-lock`} role="status"><Info size={13} aria-hidden="true" /><span>{managedSubagentV2LockedReason}</span></p>}
-                    {managedSubagentV2DraftLocked && <>
-                      <small id={`${managedSubagentV2Id}-draft`}>The switch shows your unsaved draft. V2 is still {settings.managedSubagentV2 === true ? "on" : "off"}. Keep the current workflow to save your other settings while this change is waiting.</small>
-                      <button type="button" className="secondary-button subagent-preview-keep-current" aria-describedby={`${managedSubagentV2Id}-draft`} onClick={() => setLocal((draft) => ({ ...draft, managedSubagentV2: settings.managedSubagentV2 === true }))}>Keep current workflow</button>
-                    </>}
-                  </div>
-                  <div className="set-control">
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-label="Mythra Code sub-agents V2"
-                      aria-describedby={`${managedSubagentV2Id}-help${managedSubagentV2LockedReason ? ` ${managedSubagentV2Id}-lock` : ""}${managedSubagentV2DraftLocked ? ` ${managedSubagentV2Id}-draft` : ""}`}
-                      aria-checked={local.managedSubagentV2 === true}
-                      disabled={Boolean(managedSubagentV2LockedReason)}
-                      className={`toggle-switch subagent-preview-toggle ${local.managedSubagentV2 === true ? "on" : ""}`}
-                      onClick={() => setLocal((draft) => ({ ...draft, managedSubagentV2: draft.managedSubagentV2 !== true }))}
-                    ><span /></button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="set-group">
-              <h4>Sub-agent defaults</h4>
+            <SettingsJumpList label="Sub-agents sections" items={SUBAGENT_SECTIONS} scrollRef={contentRef} />
+            <div className="set-group" id="subagents-defaults">
+              <h4 tabIndex={-1}>Defaults</h4>
               <div className="set-card">
                 <div className="set-row">
                   <div className="set-copy">
-                    <strong>Reusable sub-agent setup</strong>
-                    <small>Every new thread starts with sub-agents off. Enable spawning in that thread's composer when needed. Saved crews and limits remain available; existing thread opt-ins are kept.</small>
+                    <strong>Default sub-agent setup</strong>
+                    <small>The crew and limits a thread uses once you turn sub-agents on in its composer. <SettingInfo label="How sub-agent defaults apply">Every new thread starts with sub-agents off; turn them on in that thread&rsquo;s composer when needed. Saved crews and limits stay available, and existing thread opt-ins are kept.</SettingInfo></small>
                   </div>
                   <div className="set-control">
                     <button type="button" className="secondary-button" aria-expanded={agentDefaultsOpen} onClick={() => setAgentDefaultsOpen((open) => !open)}>{agentDefaultsOpen ? "Done editing" : "Edit defaults"}</button>
@@ -2335,7 +2584,7 @@ export function SettingsModal({
             <p className="subagent-applied-note">The saved switch below applies to older threads that still use defaults. It does not enable spawning in new threads.</p>
             <div className="field-label">
               <span>Edit defaults for</span>
-              <AppSelectMenu ariaLabel="Sub-agent defaults scope" value={agentEditScope} options={[
+              <AppSelectMenu portal ariaLabel="Sub-agent defaults scope" value={agentEditScope} options={[
                 { value: "global", label: "App defaults", detail: "Chats and projects without an override" },
                 ...localProjects.map((project) => ({ value: project.id, label: project.name, detail: "This project only" })),
               ]} onChange={setAgentEditScope} />
@@ -2349,110 +2598,13 @@ export function SettingsModal({
               </div>
             </div>
 
-            <div className="set-group">
-              <div className="set-group-head">
-                <h4>Model guidance</h4>
-                <span className="set-group-note">{(local.subagentModelGuidance ?? []).length} of {MAX_SUBAGENT_MODEL_GUIDANCE}</span>
-              </div>
-              <div className="set-card">
-                <div className="set-row">
-                  <div className="set-copy">
-                    <strong>Notes for parent agents</strong>
-                    <small>Tell parent agents when to use each model in their crew. Notes are suggestions only; they never add sub-agents or affect native Claude Code and Codex sub-agents.</small>
-                  </div>
-                </div>
-                <div className="set-body model-guidance-body">
-                  <SubagentModelGuidanceEditor
-                    value={local.subagentModelGuidance ?? []}
-                    draft={guidanceDraft}
-                    onDraftChange={setGuidanceDraft}
-                    modelCatalogs={subAgentModelCatalogs}
-                    modelFavorites={modelFavorites}
-                    onToggleModelFavorite={onToggleModelFavorite}
-                    onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
-                    onChange={(subagentModelGuidance) => setLocal((current) => ({ ...current, subagentModelGuidance }))}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="set-group">
-              <h4>Parent follow-ups</h4>
-              <div className="set-card">
-                <div className="set-row terminal-timeout-row">
-                  <div className="set-copy">
-                    <strong>Automatic parent follow-ups</strong>
-                    <small id={`${followUpLimitId}-help`}>Sets how many times a managed parent on this computer can continue automatically. Each follow-up uses your plan or credits like any model turn. Saved changes apply to the next automatic follow-up. Choose “Continue with” to resume a paused run with a fresh count.</small>
-                  </div>
-                  <div className="set-control">
-                    <AppSelectMenu
-                      ariaLabel={`Automatic parent follow-up limit, ${followUpLimited ? "Limited" : "Unlimited"}`}
-                      value={followUpLimited ? "limited" : "unlimited"}
-                      portal
-                      options={[
-                        { value: "limited", label: "Limited", detail: "Pause after a set number" },
-                        { value: "unlimited", label: "Unlimited", detail: "No count limit" },
-                      ]}
-                      onChange={(value) => setFollowUpLimitUnlimited(value === "unlimited")}
-                    />
-                  </div>
-                  {followUpLimited ? (
-                    <div className="terminal-timeout-detail">
-                      <label id={`${followUpLimitId}-label`} htmlFor={`${followUpLimitId}-count`}>Limit</label>
-                      <input
-                        ref={scrollableNumberInputRef}
-                        id={`${followUpLimitId}-count`}
-                        type="number"
-                        inputMode="numeric"
-                        min={1}
-                        max={MAX_PARENT_FOLLOW_UP_LIMIT}
-                        step={1}
-                        autoComplete="off"
-                        aria-labelledby={`${followUpLimitId}-label ${followUpLimitId}-unit`}
-                        aria-describedby={`${followUpLimitId}-help${followUpLimitInvalid ? ` ${followUpLimitId}-error` : ""}`}
-                        aria-invalid={followUpLimitInvalid}
-                        value={followUpLimitText ?? String(followUpLimit)}
-                        onChange={(event) => editFollowUpLimit(event.target.value)}
-                        onBlur={() => { if (!followUpLimitInvalid) setFollowUpLimitText(null); }}
-                      />
-                      <span id={`${followUpLimitId}-unit`}>follow-ups before pausing</span>
-                      {followUpLimitInvalid && <p id={`${followUpLimitId}-error`} className="terminal-timeout-error" role="alert">
-                        Enter a whole number from 1 to {MAX_PARENT_FOLLOW_UP_LIMIT.toLocaleString()}, or choose Unlimited.
-                      </p>}
-                    </div>
-                  ) : <p className="terminal-timeout-detail">Other pause rules still apply.</p>}
-                </div>
-              </div>
-            </div>
-
-            <div className="set-group">
-              <h4>Thread cleanup</h4>
-              <div className="set-card"><div className="set-row">
-                <div className="set-copy">
-                  <strong>Archive sub-agent threads automatically</strong>
-                  <small>Move settled sub-agent threads to Archived once their parent finishes. V2 assignments also need explicit parent or user sign-off; active work and pending guidance stay visible.</small>
-                </div>
-                <div className="set-control">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-label="Archive sub-agent threads automatically"
-                    aria-checked={local.autoArchiveSubagentThreads}
-                    className={`toggle-switch ${local.autoArchiveSubagentThreads ? "on" : ""}`}
-                    onClick={() => setLocal({ ...local, autoArchiveSubagentThreads: !local.autoArchiveSubagentThreads })}
-                  >
-                    <span />
-                  </button>
-                </div>
-              </div></div>
-            </div>
-
             {policyNotice && <p className="subagent-applied-note" role="status"><Check size={13} aria-hidden="true" /> {policyNotice}</p>}
 
-            <div className="set-group preset-panel">
+            <div className="set-group preset-panel" id="subagents-presets">
                   <div className="set-group-head">
-                    <h4>Sub-agent presets</h4>
-                    <span className="set-group-note">{local.childAgentPresets.length} of {MAX_CHILD_AGENT_PRESETS}</span>
+                    <h4 tabIndex={-1}>Presets</h4>
+                    {/* Limits only show once they're close. */}
+                    {local.childAgentPresets.length >= MAX_CHILD_AGENT_PRESETS - 2 && <span className="set-group-note">{local.childAgentPresets.length} of {MAX_CHILD_AGENT_PRESETS}</span>}
                     <button
                       type="button"
                       className="secondary-button"
@@ -2460,7 +2612,7 @@ export function SettingsModal({
                       disabled={presetsFull || creatingPreset}
                     ><Plus size={12} /> Create preset</button>
                   </div>
-                  <p>Save providers, models, reasoning, and concurrency as one reusable setup.</p>
+                  {local.childAgentPresets.length > 0 && <p>Save providers, models, reasoning and concurrency as one reusable setup.</p>}
                   {creatingPreset && (
                     <div className="preset-create-card">
                       <span className="preset-create-heading"><strong>Create a preset</strong><small>Name the reusable setup before configuring it.</small></span>
@@ -2540,7 +2692,7 @@ export function SettingsModal({
                                   onClick={() => setRenamingPresetId(renaming ? null : preset.id)}
                                 >{renaming ? <Check size={13} /> : <Pencil size={13} />}</button>
                                 <div className="preset-apply-menu">
-                                  <AppSelectMenu
+                                  <AppSelectMenu portal
                                     value=""
                                     options={presetDestinationOptions}
                                     ariaLabel={`Apply ${name}`}
@@ -2581,10 +2733,121 @@ export function SettingsModal({
                       })}
                     </div>
                   ) : !creatingPreset ? (
-                    <p className="preset-empty">
-                      No presets yet. Create one to configure a reusable group of sub-agents, then apply it wherever you need it.
-                    </p>
+                    <EmptyState title="No presets yet" detail="Save a group of sub-agents once, then apply it to any thread or project." />
                   ) : null}
+            </div>
+
+            <div className="set-group" id="subagents-guidance">
+              <div className="set-group-head">
+                <h4 tabIndex={-1}>Model guidance</h4>
+                {(local.subagentModelGuidance ?? []).length >= MAX_SUBAGENT_MODEL_GUIDANCE - 5 && <span className="set-group-note">{(local.subagentModelGuidance ?? []).length} of {MAX_SUBAGENT_MODEL_GUIDANCE}</span>}
+                {/* Section actions sit at the head's right, like Create preset. */}
+                <button type="button" className="secondary-button"
+                  disabled={(local.subagentModelGuidance ?? []).length >= MAX_SUBAGENT_MODEL_GUIDANCE || Boolean(guidanceDraft && guidanceDraft.index === null)}
+                  onClick={() => guidanceAddRef.current?.()}><Plus size={12} aria-hidden="true" /> Add model</button>
+              </div>
+              <div className="set-card">
+                <div className="set-row">
+                  <div className="set-copy">
+                    <strong>When to use each model</strong>
+                    <small>Notes that help parent agents choose a model from their crew. <SettingInfo label="About model guidance">Notes are suggestions only. They never add sub-agents and don&rsquo;t affect native Claude Code and Codex CLI sub-agents.</SettingInfo></small>
+                  </div>
+                </div>
+                <div className="set-body model-guidance-body">
+                  <SubagentModelGuidanceEditor
+                    addRef={guidanceAddRef}
+                    value={local.subagentModelGuidance ?? []}
+                    draft={guidanceDraft}
+                    onDraftChange={setGuidanceDraft}
+                    modelCatalogs={subAgentModelCatalogs}
+                    modelFavorites={modelFavorites}
+                    onToggleModelFavorite={onToggleModelFavorite}
+                    onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
+                    onChange={(subagentModelGuidance) => setLocal((current) => ({ ...current, subagentModelGuidance }))}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="set-group" id="subagents-behavior">
+              <h4 tabIndex={-1}>Behavior</h4>
+              <div className="set-card">
+                <div className="set-row terminal-timeout-row">
+                  <div className="set-copy">
+                    <strong>Automatic follow-ups</strong>
+                    <small id={`${followUpLimitId}-help`}>How many times a parent agent can continue on its own before pausing. <SettingInfo label="How automatic follow-ups work">Applies to managed parents on this computer. Each follow-up uses your plan or credits like any model turn. Saved changes apply to the next automatic follow-up. Choose &ldquo;Continue with&rdquo; to resume a paused run with a fresh count.</SettingInfo></small>
+                  </div>
+                  <div className="set-control">
+                    <AppSelectMenu
+                      ariaLabel={`Automatic follow-up limit, ${followUpLimited ? "Limited" : "Unlimited"}`}
+                      value={followUpLimited ? "limited" : "unlimited"}
+                      portal
+                      options={[
+                        { value: "limited", label: "Limited", detail: "Pause after a set number" },
+                        { value: "unlimited", label: "Unlimited", detail: "No count limit" },
+                      ]}
+                      onChange={(value) => setFollowUpLimitUnlimited(value === "unlimited")}
+                    />
+                  </div>
+                  {followUpLimited ? (
+                    <div className="terminal-timeout-detail">
+                      <label id={`${followUpLimitId}-label`} htmlFor={`${followUpLimitId}-count`}>Limit</label>
+                      <input
+                        ref={scrollableNumberInputRef}
+                        id={`${followUpLimitId}-count`}
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={MAX_PARENT_FOLLOW_UP_LIMIT}
+                        step={1}
+                        autoComplete="off"
+                        aria-labelledby={`${followUpLimitId}-label ${followUpLimitId}-unit`}
+                        aria-describedby={`${followUpLimitId}-help${followUpLimitInvalid ? ` ${followUpLimitId}-error` : ""}`}
+                        aria-invalid={followUpLimitInvalid}
+                        value={followUpLimitText ?? String(followUpLimit)}
+                        onChange={(event) => editFollowUpLimit(event.target.value)}
+                        onBlur={() => { if (!followUpLimitInvalid) setFollowUpLimitText(null); }}
+                      />
+                      <span id={`${followUpLimitId}-unit`}>follow-ups before pausing</span>
+                      {followUpLimitInvalid && <p id={`${followUpLimitId}-error`} className="terminal-timeout-error" role="alert">
+                        Enter a whole number from 1 to {MAX_PARENT_FOLLOW_UP_LIMIT.toLocaleString()}, or choose Unlimited.
+                      </p>}
+                    </div>
+                  ) : <p className="terminal-timeout-detail">Other pause rules still apply.</p>}
+                </div>
+<div className="set-row">
+                <div className="set-copy">
+                  <strong>Archive sub-agent threads automatically</strong>
+                  <small>Moves finished sub-agent threads to Archived once their parent is done. <SettingInfo label="When sub-agent threads are archived">V2 assignments also need sign-off from the parent or you. Active work and pending guidance stay visible.</SettingInfo></small>
+                </div>
+                <div className="set-control">
+                  <Switch checked={local.autoArchiveSubagentThreads} label="Archive sub-agent threads automatically" onChange={() => setLocal({ ...local, autoArchiveSubagentThreads: !local.autoArchiveSubagentThreads })} />
+                </div>
+              </div>              </div>
+            </div>
+
+            <CustomAgentsSettings sectionId="subagents-custom" agents={agents} onAgents={onAgents} drafts={harnessDrafts} onDrafts={setHarnessDrafts} />
+
+            <div className="set-group" id="subagents-preview">
+              <h4 tabIndex={-1}>Preview features</h4>
+              <div className="set-card">
+                {/* The switch stays level with the title, and nothing here appears
+                    or disappears when it is flipped, so the row never moves. */}
+                <div className="set-row set-row-top">
+                  <div className="set-copy">
+                    <strong className="subagent-preview-heading">Mythra Code sub-agents V2 <span className="subagent-preview-badge">Preview</span></strong>
+                    <small id={`${managedSubagentV2Id}-help`}>Lets parents and sub-agents message each other while work continues. Native Claude Code and Codex CLI sub-agents aren&rsquo;t affected.</small>
+                    {managedSubagentV2LockedReason && <p className="subagent-preview-lock" id={`${managedSubagentV2Id}-lock`} role="status"><Info size={13} aria-hidden="true" /><span>{managedSubagentV2LockedReason}</span></p>}
+                    {managedSubagentV2DraftLocked && <>
+                      <small id={`${managedSubagentV2Id}-draft`}>Waiting to switch V2 {local.managedSubagentV2 === true ? "on" : "off"}. It stays {settings.managedSubagentV2 === true ? "on" : "off"} until the current work allows the change.</small>
+                      <button type="button" className="secondary-button subagent-preview-keep-current" aria-describedby={`${managedSubagentV2Id}-draft`} onClick={() => setLocal((draft) => ({ ...draft, managedSubagentV2: settings.managedSubagentV2 === true }))}>Keep current workflow</button>
+                    </>}
+                  </div>
+                  <div className="set-control">
+                    <Switch checked={local.managedSubagentV2 === true} label="Mythra Code sub-agents V2" describedBy={`${managedSubagentV2Id}-help${managedSubagentV2LockedReason ? ` ${managedSubagentV2Id}-lock` : ""}${managedSubagentV2DraftLocked ? ` ${managedSubagentV2Id}-draft` : ""}`} disabled={Boolean(managedSubagentV2LockedReason)} className="subagent-preview-toggle" onChange={() => setLocal((draft) => ({ ...draft, managedSubagentV2: draft.managedSubagentV2 !== true }))} />
+                  </div>
+                </div>
+              </div>
             </div>
 
           </section>}
@@ -2592,8 +2855,7 @@ export function SettingsModal({
           {settingsSection === "models" &&
           <section className="settings-section">
             <div className="set-group">
-              <h4>Accounts & connections</h4>
-              <p>Select a provider to connect or manage its account. This does not change your defaults.</p>
+              <h4>Accounts</h4>
             <div className="account-list" role="list">
               {accountRows.map((row) => {
                 const expanded = accountExpanded && accountProvider === row.id;
@@ -2609,22 +2871,31 @@ export function SettingsModal({
                       {!expanded && row.action && <div className="account-row-action">{row.action}</div>}
                       <ChevronRight className="account-row-chevron" size={14} aria-hidden="true" />
                     </div>
-                    <div className="account-row-detail" id={`account-detail-${row.id}`} hidden={!expanded}>
+                    {/* Grows open and shrinks shut; the content stays in place while it
+                        closes, then is hidden (and is inert from the moment it starts leaving). */}
+                    <SmoothDisclosure open={expanded} animate={accountMotion} id={`account-detail-${row.id}`} role="region" labelledBy={`account-toggle-${row.id}`} className="account-row-disclosure">
+                    <div className="account-row-detail">
+                      {/* Opening an account never edits the defaults; switching is its own action. */}
+                      <div className="account-default-line">
+                        {local.provider === row.id
+                          ? <span className="account-default-tag"><Check size={12} aria-hidden="true" />Default for new threads</span>
+                          : <>
+                            <small>New threads use {TITLE_PROVIDER_LABELS[local.provider]}.</small>
+                            <button type="button" className="secondary-button" onClick={() => setLocal((current) => settingsWithDefaultProvider(current, row.id, lmStudioModels[0]?.id))}>Use {row.name} as default</button>
+                          </>}
+                      </div>
                       {mountedAccounts.includes(row.id) && accountDetail(row.id)}
                     </div>
+                    </SmoothDisclosure>
                   </div>
                 );
               })}
             </div>
 
-            <p className="settings-footnote" role="note" aria-label="Antigravity and Gemini account support">
-              <Info size={14} aria-hidden="true" />
-              <span><strong>Our stance on Antigravity and Gemini.</strong> We strongly advise against Gemini for coding: we do not consider its coding reliability good enough to recommend. We do not plan to add direct Antigravity or Gemini account integration—the complexity and account risks are not worth it. Google warns that third-party Antigravity access can lead to account suspension or termination. We’re not willing to risk our Google accounts—or yours—on that integration. If you want to use Gemini, we recommend its official website in your browser. Models offered through existing providers such as OpenRouter remain available.</span>
-            </p>
             </div>
             <div className="set-group">
               <h4>Defaults for new threads</h4>
-              <p>New threads start with this provider and model. Existing threads keep their own selections.</p>
+              <p>New threads start with this provider and model. Existing threads keep theirs.</p>
               <div className="set-card"><div className="set-row stack default-model-picker">
               <div className="set-control">
               <div className="project-default-grid">
@@ -2658,12 +2929,30 @@ export function SettingsModal({
               </div>
               </div></div>
             </div>
-          </section>}
+            <div className="set-group">
+              <h4>Model options</h4>
+              <div className="set-card">
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>OpenAI speed</strong>
+                  <small>The default for the composer’s Fast switch. Fast uses OpenAI Priority processing, which may cost more or use limits faster.</small>
+                </div>
+                <div className="set-control">
+                  <AppSelectMenu portal value={local.serviceTier ?? ""} options={SERVICE_TIER_OPTIONS} ariaLabel="OpenAI speed" onChange={(value) => setLocal({ ...local, serviceTier: value || null })} />
+                </div>
+              </div>
+                <div className="set-row">
+                <div className="set-copy">
+                  <strong>Warn before using Max reasoning</strong>
+                  <small id={maxReasoningWarningId}>Ask before choosing Max, which can use far more of your allowance.</small>
+                </div>
+                <div className="set-control">
+                <Switch checked={local.warnOnMaxReasoning !== false} label="Warn before using Max reasoning" describedBy={maxReasoningWarningId} onChange={() => setLocal((current) => ({ ...current, warnOnMaxReasoning: current.warnOnMaxReasoning === false }))} />
+                </div>
+              </div>
+              </div>
             </div>
-            <div className="modal-footer">
-              {dirty && <span className="unsaved-hint"><span>{dirtyPanes.size ? `Unsaved changes in ${[...dirtyPanes].map((pane) => SETTINGS_PANES.get(pane)?.label ?? pane).join(", ")}` : "Unsaved changes"}</span>{terminalTimeoutInvalid && <span role="status">· Fix the terminal timeout in Runtime to save</span>}{followUpLimitInvalid && <span role="status">· Fix the follow-up limit in Sub-agents to save</span>}</span>}
-              <button className="secondary-button" onClick={requestClose}>Cancel</button>
-              <button className="primary-button" onClick={() => void saveSettings()} disabled={!projectDefaultsComplete || terminalTimeoutInvalid || followUpLimitInvalid}>Save settings</button>
+          </section>}
             </div>
           </div>
         </div>
@@ -2773,7 +3062,7 @@ function GitHubSettings({
   return <>
     <section className="set-group">
       <h4>GitHub account</h4>
-      <p>Mythra Code uses the official GitHub CLI and never injects its token into prompts or project files. Agents with command access can still run credential-aware CLI tools, so use the same care you would in a terminal.</p>
+      <p>Signs in through the official GitHub CLI. <SettingInfo label="How GitHub access works">Mythra Code never puts your GitHub token into prompts or project files. Agents with command access can still run credential-aware CLI tools, so use the same care you would in a terminal.</SettingInfo></p>
       <div className="credential-panel github-account-panel">
         <span className="github-avatar-placeholder"><GitFork size={18} /></span>
         <div>
@@ -2781,7 +3070,7 @@ function GitHubSettings({
           <small role={!status?.authenticated && status?.error ? "alert" : undefined}>{status?.authenticated ? `@${status.login}${status.email ? ` · ${status.email}` : ""}` : status?.error || (status?.available ? "Sign in to GitHub to connect Mythra Code." : "Install GitHub CLI to connect repositories.")}</small>
         </div>
         {status?.authenticated ? (
-          <span className="connected-badge"><Check size={12} /> Connected</span>
+          <span className="provider-status on">Connected</span>
         ) : status?.available ? (
           <button className="secondary-button" onClick={() => void signIn()} disabled={accountBusy || loginPending}>
             {accountBusy ? <LoaderCircle className="spin" size={14} /> : <GitFork size={14} />} {loginPending ? "Awaiting sign-in" : loginError ? "Retry sign-in" : "Sign in"}
@@ -2803,7 +3092,7 @@ function GitHubSettings({
     </section>
     <section className="set-group">
       <h4>Clone a repository</h4>
-      <p>Download a GitHub repository into a new local folder and add it to Mythra Code as a project.</p>
+      <p>Download a repository and add it as a project.</p>
       <div className="set-card"><div className="set-body">
       <div className="github-clone-grid">
         <label className="field-label"><span>Repository URL</span><input value={cloneUrl} disabled={busy || choosing} onChange={(event) => { setFolderError(""); onCloneUrl(event.target.value); }} placeholder="https://github.com/owner/repository.git" aria-describedby="github-clone-url-help" aria-invalid={Boolean(cloneUrl.trim() && !target)} /></label>
@@ -2817,7 +3106,7 @@ function GitHubSettings({
           </div>
         </div>
       </div>
-      <p id="github-clone-url-help" className="github-clone-hint" role="status">{cloneUrl.trim() && !target ? "Enter a GitHub repository URL with a folder name supported on macOS and Windows." : "Choose the parent folder, not the repository folder itself. Mythra Code creates a new repository-named folder inside that parent. Existing folders are never overwritten."}</p>
+      <p id="github-clone-url-help" className="github-clone-hint" role="status">{cloneUrl.trim() && !target ? "Enter a GitHub repository URL with a folder name supported on macOS and Windows." : "A new folder named after the repository is created inside it. Existing folders are never overwritten."}</p>
       {target && cloneParent && <p id="github-clone-destination" className="github-clone-destination" role="status"><strong>Clone into</strong>{" "}<span className="github-clone-path">{joinPath(cloneParent, target.name)}</span></p>}
       {folderError && <p className="github-clone-error" role="alert">{folderError}</p>}
       <button type="button" className="primary-button" disabled={!status?.authenticated || busy || choosing || !target || !cloneParent} aria-describedby={target && cloneParent ? "github-clone-destination" : "github-clone-url-help"} onClick={() => void clone()}>{busy ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} Clone repository</button>
@@ -2827,37 +3116,34 @@ function GitHubSettings({
 }
 
 const USAGE_DISPLAY_OPTIONS: ReadonlyArray<{ id: UsageDisplayMode; label: string }> = [
-  { id: "remaining", label: "Percentage remaining" },
-  { id: "consumed", label: "Percentage consumed" },
+  { id: "remaining", label: "Remaining" },
+  { id: "consumed", label: "Used" },
 ];
 
 function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; onChange: (value: UsageDisplayMode) => void }) {
   return <section className="set-group">
-    <h4>Provider quota display</h4>
-    <div className="set-card"><div className="set-row usage-display-layout">
+    <h4>Quota display</h4>
+    <div className="set-card"><div className="set-row">
       <div className="set-copy">
         <strong>Read limits as</strong>
-        <small id="usage-display-help">Choose the direction Mythra Code reads subscription limits in. The choice applies everywhere a live provider quota appears — the usage card in the studio dock, OpenAI/Codex rate limits, and Claude Code rate limits — including each window&rsquo;s length and reset time.</small>
+        <small id="usage-display-help">How subscription limits are shown everywhere a live quota appears. <span className="usage-display-preview"><Gauge size={12} aria-hidden="true" />Example: 5h window {usagePercentLabel(42, value)}</span></small>
       </div>
-      <div className="set-control usage-display-controls">
-        <div className="usage-display-options" role="radiogroup" aria-label="Provider quota display" aria-describedby="usage-display-help">
+      <div className="set-control">
+        {/* Rendered through the same helper the live cards use, so the example
+            can never describe a format the app does not actually produce. */}
+        <div className="settings-segmented" role="radiogroup" aria-label="Read limits as" aria-describedby="usage-display-help" onKeyDown={rovingChoiceKeyDown}>
           {USAGE_DISPLAY_OPTIONS.map((option) => (
             <button
               key={option.id}
               type="button"
               role="radio"
               aria-checked={value === option.id}
+              tabIndex={value === option.id ? 0 : -1}
               className={value === option.id ? "selected" : ""}
               onClick={() => onChange(option.id)}
-            >
-              <strong>{option.label}</strong>
-              {value === option.id && <Check size={14} />}
-            </button>
+            >{option.label}</button>
           ))}
         </div>
-        {/* Rendered through the same helper the live cards use, so the example can
-            never describe a format the app does not actually produce. */}
-        <div className="usage-display-preview"><Gauge size={13} /><span>Example · 5h window {usagePercentLabel(42, value)}</span></div>
       </div>
     </div></div>
   </section>;
@@ -2936,7 +3222,7 @@ function ProjectDefaultsSettings({ active, projects, activeProjectId, settings, 
     setProjectToAdd("");
   };
   const removeProject = async (project: Project) => {
-    if (!await confirmDialog(`Remove the project-specific defaults for “${project.name}”? The project itself will stay in Mythra Code.`)) return;
+    if (!await confirmDialog(`Remove the project-specific defaults for “${project.name}”? The project itself stays in Mythra Code.`, { confirmLabel: "Remove overrides" })) return;
     onProjects(projects.map((entry) => {
       if (entry.id !== project.id || !entry.overrides?.defaults) return entry;
       const overrides = { ...(entry.overrides ?? {}) };
@@ -2951,8 +3237,10 @@ function ProjectDefaultsSettings({ active, projects, activeProjectId, settings, 
   };
 
   return (
-    <section className="settings-section project-defaults-settings">
-      {!projects.length && <div className="project-default-empty"><FolderCog size={18} /><span><strong>Add a project first</strong><small>Projects come from the sidebar. Once one exists, give it its own provider, model, app theme, effort-slider theme, or chat font here.</small></span></div>}
+    <section className="set-group project-defaults-settings">
+      <h4>Project overrides</h4>
+      <p>Overrides replace the app defaults for one project&rsquo;s new threads: provider, model and look. Anything not set here follows the app. <SettingInfo label="Other project settings">Sub-agent overrides live in Sub-agents → Defaults. Project instructions open from the &hellip; menu in the top bar.</SettingInfo></p>
+      {!projects.length && <EmptyState icon={FolderCog} title="No projects yet" detail="Add one from the sidebar to give it its own defaults." />}
 
       {!projects.length ? null : configured.length ? <div className="project-default-list">{configured.map((project) => {
         const defaults = project.overrides!.defaults!;
@@ -2971,8 +3259,8 @@ function ProjectDefaultsSettings({ active, projects, activeProjectId, settings, 
         return (
           <article className="project-default-card" key={project.id}>
             <div className="project-default-card-head">
-              <span><strong>{project.name}</strong><small>{project.path}</small></span>
-              <button type="button" className="icon-button project-default-remove" aria-label={`Remove defaults for ${project.name}`} title="Remove project defaults" onClick={() => void removeProject(project)}><Trash2 size={13} /></button>
+              <span><strong>{project.name} <em className="project-default-badge">Overrides</em></strong><small>{project.path}</small></span>
+              <button type="button" className="icon-button project-default-remove" aria-label={`Remove overrides for ${project.name}`} title="Remove project overrides; the project follows the app defaults again" onClick={() => void removeProject(project)}><Trash2 size={13} /></button>
             </div>
             <div className="project-default-grid">
               <div className="project-default-field"><span>Provider</span><AppSelectMenu value={defaults.provider} options={PROJECT_PROVIDER_OPTIONS} ariaLabel={`Default provider for ${project.name}`} menuPlacement="top" onChange={(value) => setProvider(value as Provider)} /></div>
@@ -2981,16 +3269,17 @@ function ProjectDefaultsSettings({ active, projects, activeProjectId, settings, 
               <div className="project-default-field"><span>Effort slider</span><AppSelectMenu value={defaults.effortSlider ?? ""} options={effortOptions} ariaLabel={`Effort slider for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.effortSlider = value as EffortSliderStyle; else delete next.effortSlider; return next; }); if (project.id === activeProjectId) onEffortSliderPreview((value || settings.effortSlider) as EffortSliderStyle); }} /></div>
               <div className="project-default-field"><span>Chat font</span><AppSelectMenu value={selectedFont} options={fontOptions} ariaLabel={`Chat font for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.chatFont = value as ChatFont; else delete next.chatFont; return next; }); if (project.id === activeProjectId) onChatFontPreview((value || settings.chatFont) as ChatFont); }} /></div>
             </div>
-            {!defaults.model && <p className="project-default-warning">Choose a model before saving these project defaults.</p>}
+            {!defaults.model && <p className="project-default-warning" role="alert">Choose a model so these project overrides can be saved.</p>}
           </article>
         );
-      })}</div> : <div className="project-default-empty"><FolderCog size={18} /><span><strong>No projects override the global defaults yet</strong><small>Add a project below to give it its own provider, model, app theme, effort-slider theme, or chat font.</small></span></div>}
+      })}</div> : null}
 
       {projects.length > 0 && <div className="project-default-add">
-        <div className="project-default-field"><span>Choose a project to override global defaults</span><AppSelectMenu value={projectToAdd} options={projectOptions} ariaLabel="Project to configure" placeholder={projects.length ? "Choose a project…" : "No projects available"} searchable={projectOptions.length > 8} menuPlacement="top" emptyMessage="Every existing project already has project-specific defaults." onChange={setProjectToAdd} /></div>
-        <button type="button" onClick={addProject} disabled={!projectToAdd}><Plus size={12} /> Set defaults</button>
+        {/* M11 (round 6): with no overrides yet, this one row is both the
+            empty state and its next action (no separate "nothing here" card). */}
+        <div className="project-default-field"><span>{configured.length ? "Choose a project" : "No overrides yet · every project uses the app defaults. Choose one to change that."}</span><AppSelectMenu value={projectToAdd} options={projectOptions} ariaLabel="Project to configure" placeholder={projects.length ? "Choose a project…" : "No projects available"} searchable={projectOptions.length > 8} menuPlacement="top" emptyMessage="Every existing project already has overrides." onChange={setProjectToAdd} /></div>
+        <button type="button" className="secondary-button" onClick={addProject} disabled={!projectToAdd}><Plus size={12} /> Add project overrides</button>
       </div>}
-      <p className="settings-footnote" role="note"><Info size={13} /><span><strong>Looking for project instructions?</strong> Open that project’s chat, then choose Project instructions beside the project name at the top of the window.</span></p>
     </section>
   );
 }
@@ -3005,10 +3294,6 @@ function ProjectDefaultsSettings({ active, projects, activeProjectId, settings, 
  * before the choice can be made.
  * ------------------------------------------------------------------ */
 
-/** The Luna to fall back on before an account catalog has been read. The same
- *  known id run-command discovery starts from — never a guess at one that
- *  might exist. */
-const FALLBACK_LUNA_MODEL = "gpt-5.6-luna";
 
 const TITLE_PROVIDER_LABELS: Record<Provider, string> = {
   openai: "OpenAI",
@@ -3049,11 +3334,12 @@ function ThreadTitleFields({ settings, catalogs, readiness, onChange, onAccounts
     ? [{
         value: "",
         label: "Luna (automatic)",
+        // Display names only; raw model ids stay out of the picker.
         detail: luna
           ? luna.fromCatalog
-            ? `Newest Luna in your account · ${luna.id}`
-            : `${FALLBACK_LUNA_MODEL} until your account catalog loads`
-          : "Your account catalog has no Luna — pick a model instead",
+            ? `Newest in your account · ${catalog.find((entry) => entry.value === luna.id)?.label ?? "Luna"}`
+            : "Newest Luna, once your models load"
+          : "No Luna model in your account. Choose another",
         icon: <ProviderLogo provider="openai" size={15} />,
       }, ...catalog]
     : catalog;
@@ -3074,8 +3360,8 @@ function ThreadTitleFields({ settings, catalogs, readiness, onChange, onAccounts
   return (
     <div className="set-body thread-title-fields">
       <div className="field-label">
-        <span>Provider</span>
-        <AppSelectMenu
+        <span>Title provider</span>
+        <AppSelectMenu portal
           value={provider}
           options={PROJECT_PROVIDER_OPTIONS}
           ariaLabel="Thread title provider"
@@ -3084,8 +3370,8 @@ function ThreadTitleFields({ settings, catalogs, readiness, onChange, onAccounts
         />
       </div>
       <div className="field-label">
-        <span>Model</span>
-        <AppSelectMenu
+        <span>Title model</span>
+        <AppSelectMenu portal
           value={model}
           options={options}
           ariaLabel="Thread title model"
@@ -3235,9 +3521,17 @@ function DeveloperRuntimeUpdateCard({
         : stale ? `Couldn’t refresh ${name} updates. Showing previously checked information.`
         : status?.installed === false ? `${name} is not installed. Install ${status.latestVersion ? `version ${status.latestVersion}` : "the latest version"} here.`
           : status?.updateAvailable ? `${name} ${status.latestVersion} is available.`
-            : needsRestart ? "The installed Codex runtime differs from the one Mythra Code is running."
+            : needsRestart ? "Mythra Code is still running a different Codex CLI version than the one installed."
             : provablyCurrent ? `${name} is up to date.`
-              : `Check for the latest ${name} release.`;
+              // M13: each component names its own state instead of
+              // repeating the pane's "check for updates" instruction.
+              : !status ? "Not checked yet."
+                : status.installed && status.currentVersion && !status.latestVersion ? `Installed · latest release not checked yet.`
+                  : status.installed && !status.currentVersion ? "Installed · version not reported."
+                    : "Not checked yet.";
+  // M11 (round 6): before the first check the pane's summary already says
+  // "Not checked yet"; each runtime card doesn't repeat it.
+  const unchecked = !status && !updating && !updater.checking;
   const actionLabel = status?.installed === false ? `Install ${name}` : `Update ${name}`;
   return <div className={`update-card developer-runtime-update-card ${state}`}>
     <div className="update-version-row">
@@ -3246,22 +3540,22 @@ function DeveloperRuntimeUpdateCard({
       <span><small>{status?.installedVersionStale ? "Previously detected" : status?.installed ? `Installed · ${status.source ?? "Local runtime"}` : "Local runtime"}</small><strong>{status?.currentVersion ? `${name} ${status.currentVersion}` : status?.installed === false ? `${name} · not installed` : name}</strong></span>
       {status?.latestVersion && <span className={`update-version-available${status.latestVersionStale ? " stale" : ""}`}><small>{status.latestVersionStale ? "Last known latest" : "Latest"}</small><strong>{status.latestVersion}</strong>{status.latestVersionStale && status.latestVersionCheckedAt && <small>Checked {new Date(status.latestVersionCheckedAt).toLocaleString()}</small>}</span>}
     </div>
-    <div className="update-status-row">
+    {!unchecked && <div className="update-status-row">
       {(updating || updater.checking) && <LoaderCircle className="spin" size={15} />}
       {!updating && !updater.checking && provablyCurrent && <Check size={15} />}
       {!updating && !updater.checking && (status?.error || stale) && <Info size={15} />}
       {!updating && !updater.checking && !status?.error && !stale && status?.updateAvailable && <Download size={15} />}
       <span>{detail}</span>
-    </div>
+    </div>}
     {target === "codex" && status?.runningVersion && <div className="runtime-running-version">
       <span>{status.installedVersionStale ? "Previously running in Mythra Code" : "Running in Mythra Code"}</span>
-      <strong>Codex {status.runningVersion}</strong>
+      <strong>Codex CLI {status.runningVersion}</strong>
     </div>}
     {status?.notice && <div className="update-status-row runtime-activation-note"><Info size={15} /><span>{status.installedVersionStale ? `Previously reported: ${status.notice}` : status.notice}</span></div>}
     {needsRestart && !updater.checking && !updating && !status?.notice && <div className="update-status-row runtime-activation-note"><Info size={15} /><span>Finish active work, then restart Mythra Code to use the installed version. Nothing running will be interrupted automatically.</span></div>}
     {target === "claude" && status?.installed && !status.installedVersionStale && <p className="runtime-launch-note">New Mythra Code runs use the installed version. Claude Code already open in a terminal needs a separate restart.</p>}
     {(status?.path || status?.runningPath) && <details className="runtime-executable-paths">
-      <summary>{status.installedVersionStale ? "Previously detected executable locations" : "Executable locations"}</summary>
+      <summary className="set-disclosure"><ChevronRight size={13} aria-hidden="true" className="set-disclosure-chevron" />{status.installedVersionStale ? "Previously detected executable locations" : "Executable locations"}</summary>
       <dl>
         {status.path && <><dt>Installed</dt><dd title={status.path}>{status.path}</dd></>}
         {status.runningPath && <><dt>Running in Mythra Code</dt><dd title={status.runningPath}>{status.runningPath}</dd></>}
@@ -3281,7 +3575,7 @@ function DeveloperRuntimeUpdateCard({
   </div>;
 }
 
-function UpdateSettings({ appUpdater, developerRuntimeUpdater }: { appUpdater: AppUpdater; developerRuntimeUpdater: DeveloperRuntimeUpdater }) {
+function UpdateSettings({ appUpdater, developerRuntimeUpdater, checkAll }: { appUpdater: AppUpdater; developerRuntimeUpdater: DeveloperRuntimeUpdater; checkAll: ReactNode }) {
   const progress = updateProgress(appUpdater.downloadedBytes, appUpdater.totalBytes);
   const busy = ["checking", "downloading", "installing", "restarting"].includes(appUpdater.phase);
   const detail = appUpdater.phase === "checking" ? "Checking GitHub Releases…"
@@ -3294,9 +3588,19 @@ function UpdateSettings({ appUpdater, developerRuntimeUpdater }: { appUpdater: A
                 : "Check the public Mythra Code repository for a newer signed release.";
 
 
+  const runtimeStatus = developerRuntimeUpdater.status;
+  const runtimeUpdate = Boolean(runtimeStatus?.claude.updateAvailable || runtimeStatus?.codex.updateAvailable);
+  const summary = appUpdater.phase === "checking" || developerRuntimeUpdater.checking ? "Checking for updates…"
+    : appUpdater.phase === "available" || runtimeUpdate ? "Updates are available"
+      : appUpdater.phase === "current" && runtimeStatus && !runtimeStatus.claude.error && !runtimeStatus.codex.error ? "Everything is up to date"
+        : "Not checked yet";
   return <section className="update-settings-section">
+    <div className="update-overview">
+      <span role="status">{summary}</span>
+      {checkAll}
+    </div>
     <div className="set-group">
-    <div className="set-group-head"><h4>Mythra Code</h4><span className="set-group-note">signed releases from the public repository</span></div>
+    <div className="set-group-head"><h4>Mythra Code</h4></div>
     <div className={`update-card ${appUpdater.phase}`}>
       <div className="update-version-row">
         <span><small>{appUpdater.restartPending ? "Running" : "Installed"}</small><strong>Mythra Code {appUpdater.currentVersion}</strong></span>
@@ -3327,14 +3631,14 @@ function UpdateSettings({ appUpdater, developerRuntimeUpdater }: { appUpdater: A
     </div>
     </div>
     <div className="set-group">
-    <div className="set-group-head"><h4>Developer runtimes</h4><span className="set-group-note">the local Claude Code and Codex installs Mythra Code drives</span></div>
+    <div className="set-group-head"><h4>Developer runtimes</h4></div>
     <div className="developer-runtime-update-grid">
       <DeveloperRuntimeUpdateCard target="claude" name="Claude Code" status={developerRuntimeUpdater.status?.claude ?? null} updater={developerRuntimeUpdater} />
-      <DeveloperRuntimeUpdateCard target="codex" name="Codex" status={developerRuntimeUpdater.status?.codex ?? null} updater={developerRuntimeUpdater} />
+      <DeveloperRuntimeUpdateCard target="codex" name="Codex CLI" status={developerRuntimeUpdater.status?.codex ?? null} updater={developerRuntimeUpdater} />
     </div>
     {developerRuntimeUpdater.error && <div className="update-card developer-runtime-result error" role="alert"><div className="update-status-row"><Info size={13} /><span>{developerRuntimeUpdater.error}</span></div><div className="update-actions"><button className="secondary-button" disabled={developerRuntimeUpdater.checking || developerRuntimeUpdater.updating !== null} onClick={() => void developerRuntimeUpdater.checkForUpdates()}><RotateCcw size={13} /> Check again</button></div></div>}
     {developerRuntimeUpdater.message && <div className="update-card developer-runtime-result" role="status"><div className="update-status-row"><Check size={13} /><span>{developerRuntimeUpdater.message.slice(-2_000)}</span></div></div>}
     </div>
-    <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Official distribution channels</strong><small>Mythra Code packages must match this app’s updater key. Claude Code and Codex installers are fetched over HTTPS from their official publishers and verify the release assets they install.</small></span></div>
+    <p className="settings-footnote"><ShieldCheck size={13} aria-hidden="true" /><span>Updates come only from official channels. <SettingInfo label="How updates are verified">Mythra Code packages must match this app’s updater key. Claude Code and Codex CLI installers are fetched over HTTPS from their official publishers and verify the release assets they install.</SettingInfo></span></p>
   </section>;
 }

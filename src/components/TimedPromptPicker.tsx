@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { CalendarClock, Info, X } from "lucide-react";
+import { CalendarClock, Info } from "lucide-react";
 import { effectiveZoom, supportsTopLayer } from "../lib/floatingLayer";
 import {
   dateInputValue,
@@ -113,7 +113,9 @@ export function TimedPromptPicker({
     // Focus once on opening, not whenever the parent supplies a new onClose
     // callback (for example after a background Git refresh). Refocusing a
     // native date input steals the hour/minute selection back to the month.
-    const frame = requestAnimationFrame(() => dateRef.current?.focus());
+    // Focus the dialog itself: a focused native date field opens with its
+    // month segment highlighted, which reads as an error. Tab reaches it next.
+    const frame = requestAnimationFrame(() => panelRef.current?.focus({ preventScroll: true }));
     return () => cancelAnimationFrame(frame);
   }, []);
 
@@ -170,6 +172,7 @@ export function TimedPromptPicker({
       aria-labelledby={titleId}
       aria-describedby={hintId}
       popover={topLayer ? "manual" : undefined}
+      tabIndex={-1}
       style={{ position: "fixed", inset: "auto", margin: 0, ...style }}
     >
       <form
@@ -180,7 +183,6 @@ export function TimedPromptPicker({
       >
         <header>
           <span id={titleId}><CalendarClock size={14} aria-hidden="true" /> {title}</span>
-          <button type="button" className="timed-prompt-close" onClick={close} aria-label="Close scheduling"><X size={13} /></button>
         </header>
         {contextLabel && <p className="timed-prompt-context">{contextLabel}</p>}
         <div className="timed-prompt-fields">
@@ -206,10 +208,7 @@ export function TimedPromptPicker({
         </p>
         <p id={hintId} className="timed-prompt-disclosure">
           <Info size={12} aria-hidden="true" />
-          <span>
-            Mythra Code must be open and awake at that time. If it is closed or asleep, the prompt is marked missed and waits for you; it is never sent late.
-            After a restart, open this thread or draft before then so it can send. When due it joins the queue and never interrupts a running task.
-          </span>
+          <span>Mythra Code must be open then, with this thread or draft opened since launch. Otherwise the prompt waits for you; it's never sent late.</span>
         </p>
         {submitError && <p className="timed-prompt-summary is-error" role="alert">{submitError}</p>}
         <footer>

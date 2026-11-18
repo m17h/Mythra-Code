@@ -55,11 +55,11 @@ Threads can keep working in the background while you view another conversation. 
 
 Agents can ask structured questions. Claude pauses for an answer; supported Codex questions can stay open while work continues. Answering can steer an active turn or start a follow-up when the turn has finished. Exact support depends on the provider runtime.
 
-To give precise feedback, select text in a completed reply or a file's diff in Review, then add a feedback note. Send one or more notes on their own or alongside a normal prompt.
+To give precise feedback, select text in a completed reply or a file's diff in **Changes → Diff**, then add a feedback note. Send one or more notes on their own or alongside a normal prompt.
 
 ### Instruction files and prompt presets
 
-**Settings → Prompts** has one instruction editor with **Every provider**,
+**Settings → Instructions** has one instruction editor with **Every provider**,
 **Codex** and **Claude** tabs (a dot marks tabs that have text), a profile menu
 for switching saved sets, and a **What the agent receives** summary with a
 preview of your combined instructions. Learned preferences live in
@@ -103,7 +103,7 @@ menus and dialogs while the stop shortcut is disabled.
 | **Ask to act** | Coding with the runtime's workspace protections and approval requests for actions that need permission. |
 | **Full access** | Trusted work where the agent may edit files and run commands without those approval prompts. |
 
-Enforcement uses each provider runtime's capabilities; the modes are not an identical OS sandbox across all providers. Read only is not a guarantee that every third-party tool is side-effect free. Review the permissions of any tools or MCP servers you enable in **Settings → Tools & MCP**, and use Full access only where you intend to grant it.
+Enforcement uses each provider runtime's capabilities; the modes are not an identical OS sandbox across all providers. Read only is not a guarantee that every third-party tool is side-effect free. Review the permissions of any tools or MCP servers you enable in **Settings → MCP & language servers**, and use Full access only where you intend to grant it.
 
 ### Sub-agents
 
@@ -116,26 +116,28 @@ Enable **Sub-agents** in the composer and configure the models allowed to help. 
 
 Delegation uses Mythra Code's managed bridge rather than giving the model an unrestricted second set of native sub-agent tools. Parallel work consumes usage on each selected provider and can use subscription limits faster.
 
-## Workspace tools
+## Tools panel
 
-Open the right-side Workspace with **⌘B** on macOS or **Ctrl+B** on Windows. Use **⌘K / Ctrl+K** for the command palette.
+Open the right-side Tools panel with **⌘B** on macOS or **Ctrl+B** on Windows. Use **⌘K / Ctrl+K** for the command palette.
+
+The tabs are grouped on the panel's rail: **Changes, Git, Checkpoints, Worktree** | **Files, Terminal, Actions** | **Sub-agents, Usage, Skills & MCP**.
 
 | Tab | What it does |
 | --- | --- |
-| **Files** | Search project files, preview text, and attach context. |
-| **Review** | Inspect changes, add feedback, request an AI review, and run project checks. |
-| **Agents** | Follow sub-agent status, inspect their work, and interrupt them. |
-| **Terminal** | Run commands in a terminal scoped to the project or isolated worktree. |
+| **Changes** | Review what changed. **Files** lists changed files to stage, unstage or discard; **Diff** shows every file's patch to read, comment on (feedback for the agent) and widen. Commit from the footer, request an AI review, and run project checks. |
+| **Git** | Work with local branches and commits, fetch, pull and push, connect GitHub, and manage a thread's pull request. |
 | **Checkpoints** | Inspect source snapshots, restore or reapply changes, and access conversation recovery actions. |
-| **Worktrees** | Review isolated work, copy changes to the shared project, merge locally, or clean up a finished worktree. |
-| **Context** | Manage files and images attached to the next message. |
-| **Usage** | Inspect thread usage and request information. |
-| **Tools** | Use project actions, skills, and MCP controls. |
-| **Git** | Work with local branches and commits, connect GitHub, and manage a thread's pull request. |
+| **Worktree** | Review isolated work, copy changes to the shared project, merge locally, or clean up a finished worktree. |
+| **Files** | Search project files, preview text, and attach files and images to the next message. |
+| **Terminal** | Run commands in a terminal scoped to the project or isolated worktree. |
+| **Actions** | Run the project's Run command and checks, quick actions and workflows. |
+| **Sub-agents** | Follow sub-agent status, inspect their work, and interrupt them. |
+| **Usage** | Inspect thread usage, cost and context. |
+| **Skills & MCP** | Turn skills on or off and connect the MCP servers available to this thread. Set them up in **Settings → Skills** and **Settings → MCP & language servers**. |
 
 **Run your project.** From the top-bar **Run** control, save a Run command once, or use **Find run command** to have your chosen provider/model inspect the project and save a command. Discovery does not launch the app or install dependencies. Review the saved command, then press Run. An optional **Before each run** command handles repeatable setup; setup failure prevents launch. Commands run from the thread's working folder, including its worktree.
 
-**Run checks.** Review has a separate **Run checks** action for a saved test or validation command. Agents can save that command when working on tests, and **Find checks** can discover an existing check setup. It does not create missing tests. Checks run on demand, independently of the development server, and failures can be added as feedback for the agent.
+**Run checks.** **Changes** (and **Actions**) have a separate **Run checks** action for a saved test or validation command. Agents can save that command when working on tests, and **Find checks** can discover an existing check setup. It does not create missing tests. Checks run on demand, independently of the development server, and failures can be added as feedback for the agent.
 
 **Recover source changes.** Git-project checkpoints capture tracked and untracked non-ignored files without moving your branch or staging index. Restoring creates a safety snapshot first. Ignored files and build output are excluded; checkpoints are not a replacement for backups. Rolling back conversation history is a separate action from restoring files.
 
@@ -157,7 +159,7 @@ PR availability and merge methods depend on repository permissions and branch ru
 
 > **Use your other computers.** Turn on *Let my other computers use this one* on the computer you want to use. On the computer in front of you, open the machine picker at the top of the sidebar, choose the other computer, and choose *Request access*. Allow it on the other computer and you are connected, both ways if you left the box ticked. Both need Mythra Code open and the same network.
 
-Mythra Code can use another computer on the same network as if you were sitting at it: the same sidebar, conversation, composer, and Workspace, filled with that computer's projects, threads, models, and files. Prompts, model calls, and file changes all happen on the computer you select, with its accounts and its copy of the code. The computer in front of you only shows the work. Switching between them never interrupts what's running on either one.
+Mythra Code can use another computer on the same network as if you were sitting at it: the same sidebar, conversation, composer, and Tools panel, filled with that computer's projects, threads, models, and files. Prompts, model calls, and file changes all happen on the computer you select, with its accounts and its copy of the code. The computer in front of you only shows the work. Switching between them never interrupts what's running on either one.
 
 This is off by default. Until you turn it on, Mythra Code doesn't listen for connections or look for nearby devices. There's no cloud relay and no account: the two computers talk directly over your network, encrypted, and only after you pair them. Both need Mythra Code open and the same network. The computer being used can be minimized, but work can't reach it once Mythra Code quits.
 
@@ -225,7 +227,7 @@ Mythra Code workflows are app-managed recipes, not an import of every Claude Cod
 
 Automatic titles use a separate request to your chosen provider/model; the default OpenAI selection follows an available Luna model. A soft animated placeholder covers the title while it is generated, and manually chosen names take precedence. This feature shares part of the first prompt with the title provider even when the main conversation uses a different provider.
 
-**Settings → Prompts** holds your global and provider-specific instructions. The user-defined prompt starts empty. Project-instruction loading is opt-in for Codex-backed providers. Mythra Code also supplies operational guidance for its tools, delegation, completion, and project commands; an empty user prompt does **not** mean an instruction-free request. Provider policies and runtime tool instructions still apply.
+**Settings → Instructions** holds your global and provider-specific instructions. The user-defined prompt starts empty. Project-instruction loading is opt-in for Codex-backed providers. Mythra Code also supplies operational guidance for its tools, delegation, completion, and project commands; an empty user prompt does **not** mean an instruction-free request. Provider policies and runtime tool instructions still apply.
 
 To keep a local instruction record, enable **Settings → Usage → Record last-turn instructions** (off by default, saved immediately per device). The workspace panel's **Usage & audit → Last confirmed turn's instructions** shows the assembled system text and separately represented user-invoked skill context for the latest provider-confirmed start. It lists layer sizes, referenced skills and attachment counts, but omits ordinary user-message and attachment content, Mythra's additional operating guidance, and provider-built-in instructions. It confirms the provider accepted the start, not that the model followed every instruction.
 

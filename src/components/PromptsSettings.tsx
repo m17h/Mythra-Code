@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { Brain, Check, ChevronRight, Eye, Info, RotateCcw, Save, Trash2 } from "lucide-react";
+import { Switch } from "./SettingsBits";
+import { Brain, Check, ChevronRight, Eye, Info, NotebookPen, RotateCcw, Save, Trash2 } from "lucide-react";
 import type { AppSettings, PromptProfile } from "../types";
 import type { LocalSkill } from "../lib/skills";
 import type { AnalyzeSkillDependencies } from "../hooks/useSkillDependencyPreview";
@@ -17,7 +18,7 @@ export type PromptLayer = "global" | "codex" | "claude";
 
 const LAYERS: ReadonlyArray<{ id: PromptLayer; label: string; caption: string; placeholder: string }> = [
   { id: "global", label: "Every provider", caption: "Sent first, to every provider.", placeholder: "Empty. Add instructions every agent should follow, for example: Use pnpm. Explain risky changes before making them." },
-  { id: "codex", label: "Codex", caption: "Added after the shared instructions in Codex threads, with subscription or API billing.", placeholder: "Optional Codex-only instructions" },
+  { id: "codex", label: "OpenAI", caption: "Added after the shared instructions in OpenAI threads, with subscription or API billing.", placeholder: "Optional OpenAI-only instructions" },
   { id: "claude", label: "Claude", caption: "Added after the shared instructions in Claude threads, with subscription or API billing.", placeholder: "Optional Claude-only instructions" },
 ];
 
@@ -36,7 +37,7 @@ function withLayerText(settings: AppSettings, layer: PromptLayer, text: string):
 }
 
 /**
- * Settings → Prompts. One editor with provider tabs instead of three stacked
+ * Settings → Instructions. One editor with provider tabs instead of three stacked
  * editors; profiles as a menu; global instruction files as one line in their
  * provider's tab. Every earlier capability stays reachable, and the saved
  * settings and profiles keep their shape.
@@ -62,8 +63,9 @@ export function PromptsSettings({
   onRefreshGlobalInstructionFiles,
   onGlobalInstructionFileSaved,
   onOpenMemory,
+  projectInstructions,
 }: {
-  /** The Prompts pane is the one showing. */
+  /** The Instructions pane is the one showing. */
   active: boolean;
   /** Settings is open. */
   visible: boolean;
@@ -82,6 +84,8 @@ export function PromptsSettings({
   onRefreshGlobalInstructionFiles?: () => Promise<void> | void;
   onGlobalInstructionFileSaved?: (file: InstructionFileDescriptor) => void;
   onOpenMemory: () => void;
+  /** The open project's instructions editor (top bar … menu), when a project is open. */
+  projectInstructions?: { name: string; open: () => void };
 }) {
   const panelId = useId();
   const tabId = (id: PromptLayer) => `${panelId}-tab-${id}`;
@@ -140,7 +144,7 @@ export function PromptsSettings({
       label: profile.name,
       icon: profile.source ? <ProviderLogo provider={profile.source.provider} size={14} /> : undefined,
       detail: profile.source
-        ? `Saved file copy · ${profile.source.provider === "openai" ? "Codex" : "Claude"} only`
+        ? `Saved file copy · ${profile.source.provider === "openai" ? "OpenAI" : "Claude"} only`
         : total ? characters(total) : "Empty prompt set",
     };
   });
@@ -165,7 +169,7 @@ export function PromptsSettings({
     // The review warning appears when it matters: before the file's contents
     // start going out with requests.
     const confirmed = await confirmDialog(
-      `Use ${path} for ${providerLabel}?\n\nIts instructions will be sent with future ${providerLabel} requests after you save Settings. Review it first: instruction files can contain personal information or credentials.`,
+      `Use ${path} for ${providerLabel}?\n\nIts instructions will be sent with future ${providerLabel} requests. Review it first: instruction files can contain personal information or credentials.`,
       { confirmLabel: `Use for ${providerLabel}` },
     );
     if (confirmed) onSettings((current) => applyPromptProfile(current, profile));
@@ -180,7 +184,7 @@ export function PromptsSettings({
     const editorState = editorStates[key];
     const editorPending = Boolean(editorState?.dirty || editorState?.saving || editorState?.failed);
     const profile = discoveredProfiles.find((item) => item.source?.path === file.path && item.source.provider === (file.provider === "codex" ? "openai" : "claude"));
-    const providerLabel = file.provider === "codex" ? "Codex" : "Claude";
+    const providerLabel = file.provider === "codex" ? "Codex CLI" : "Claude Code";
     const filename = file.path.split(/[\\/]/).pop() || file.name;
     const previewOpen = Boolean(profile && profile.id === previewId);
     const selected = Boolean(profile && promptProfileIsSelected(settings, profile));
@@ -202,7 +206,7 @@ export function PromptsSettings({
           }}><Save size={12} /> Save copy</button>
         </span>}
       </div>
-      {savedCopyNotice === key && <p className="prompt-file-note" role="status">Copy added to your profiles. Save Settings to keep it.</p>}
+      {savedCopyNotice === key && <p className="prompt-file-note" role="status">Copy added to your profiles.</p>}
       {previewOpen && profile && <div className="instruction-file-preview" id={previewElementId}><label>{cachedSnapshots ? "Cached instructions" : "Instructions"} from {file.path}<textarea aria-label={`${profile.name} preview`} value={file.content ?? ""} readOnly rows={8} spellCheck={false} /></label></div>}
       <GlobalInstructionFileEditor
         file={file}
@@ -248,7 +252,8 @@ export function PromptsSettings({
               if (profile) onSettings((current) => applyPromptProfile(current, profile));
             }}
           />
-          <button type="button" className="secondary-button" aria-expanded={savingProfile} onClick={() => setSavingProfile((current) => !current)}><Save size={12} /> Save as profile</button>
+          <button type="button" className="secondary-button" aria-expanded={savingProfile} onClick={() => setSavingProfile((current) => !current)}><Save size={12} /> Save a copy as profile</button>
+          {(profiles.length > 0) && <button type="button" className="secondary-button" aria-expanded={managingProfiles} onClick={() => setManagingProfiles((current) => !current)}>{managingProfiles ? "Done" : `Manage (${profiles.length})`}</button>}
         </div>
       </div>
       {savingProfile && <div className="inline-create prompts-save-profile">
@@ -258,6 +263,22 @@ export function PromptsSettings({
         }} placeholder="Profile name" />
         <button type="button" onClick={saveProfile} disabled={!profileName.trim()}><Save size={12} /> Save all three layers</button>
       </div>}
+      {managingProfiles && <div className="set-card prompts-profiles-card"><ul className="prompts-profile-list" aria-label="Saved prompt profiles">
+          {profiles.map((profile) => {
+            const open = previewId === `saved:${profile.id}`;
+            const savedText = profile.source ? (profile.source.provider === "openai" ? profile.codexPrompt : profile.claudePrompt) ?? "" : "";
+            return <li key={profile.id}>
+              <span className="prompts-profile-name">{profile.source && <ProviderLogo provider={profile.source.provider} size={13} />}<strong>{profile.name}</strong>{promptProfileIsSelected(settings, profile) && <Check size={12} aria-label="In use" />}{profile.source && <small title={profile.source.path}>{profile.source.path}</small>}</span>
+              {profile.source && <button type="button" className="secondary-button" aria-expanded={open} onClick={() => setPreviewId(open ? null : `saved:${profile.id}`)}><Eye size={12} /> {open ? "Hide" : "Preview"}</button>}
+              <button type="button" className="prompts-icon-button" aria-label={`Delete ${profile.name}`} onClick={async () => {
+                if (!await confirmDialog(`Delete the prompt profile “${profile.name}”?`, { confirmLabel: "Delete profile" })) return;
+                onProfiles((current) => current.filter((item) => item.id !== profile.id));
+                onSettings((current) => current.promptProfileId === profile.id ? { ...current, promptProfileId: "" } : current);
+              }}><Trash2 size={12} /></button>
+              {open && <textarea aria-label={`${profile.name} saved preview`} readOnly rows={6} spellCheck={false} value={savedText} />}
+            </li>;
+          })}
+      </ul></div>}
       <div className="set-card prompts-card">
         <div className="prompts-tabs" role="tablist" aria-label="Instruction layer">
           {LAYERS.map((entry) => {
@@ -293,7 +314,7 @@ export function PromptsSettings({
             <SkillPromptEditor
               ref={promptRefs[entry.id]}
               skills={skills}
-              aria-label={entry.id === "global" ? "Global Mythra Code prompt" : entry.id === "codex" ? "Codex prompt" : "Claude Code prompt"}
+              aria-label={entry.id === "global" ? "Global Mythra Code prompt" : entry.id === "codex" ? "OpenAI prompt" : "Claude Code prompt"}
               onAnalyze={visible ? analyze?.[entry.id] : undefined}
               className="prompt-editor"
               value={layerText(settings, entry.id)}
@@ -322,20 +343,31 @@ export function PromptsSettings({
     </div>
 
     {active && <section className="set-group">
-      <div className="set-group-head"><h4>Project files</h4></div>
-      <div className="set-card"><div className="set-row prompts-project-files">
-        <div className="set-copy">
-          <strong>Read instruction files from each project</strong>
-          <small>Off by default. Applies to future turns.</small>
+      <div className="set-group-head"><h4>Project files</h4>
+        <InfoPopover label="How project instruction files are read" triggerClassName="prompts-info" trigger={<Info size={14} aria-hidden="true" />}>
+          <p className="prompts-info-text">Both are off by default. Files are read fresh from the project root (or the thread&rsquo;s isolated worktree) for every provider. A non-empty AGENTS.override.md takes precedence over AGENTS.md. CLAUDE.md falls back to .claude/CLAUDE.md. The combined limit is 32&nbsp;KB. Nested folders and file imports are not read.</p>
+        </InfoPopover>
+      </div>
+      <div className="set-card">
+        <div className="set-row">
+          <div className="set-copy">
+            <strong>Read AGENTS.md from projects</strong>
+            <small>Adds each project&rsquo;s AGENTS.md to every provider&rsquo;s instructions. Applies to future turns.</small>
+          </div>
+          <div className="set-control">
+            <Switch checked={settings.projectInstructionsEnabled} label="Read AGENTS.md from projects" onChange={() => onSettings((current) => ({ ...current, projectInstructionsEnabled: !current.projectInstructionsEnabled }))} />
+          </div>
         </div>
-        <div className="set-control prompts-file-toggles">
-          <button type="button" role="switch" aria-label="Project AGENTS.md discovery" aria-checked={settings.projectInstructionsEnabled} className={`prompts-chip${settings.projectInstructionsEnabled ? " on" : ""}`} onClick={() => onSettings((current) => ({ ...current, projectInstructionsEnabled: !current.projectInstructionsEnabled }))}><span className="prompts-check" aria-hidden="true">{settings.projectInstructionsEnabled && <Check size={10} />}</span>AGENTS.md</button>
-          <button type="button" role="switch" aria-label="Project CLAUDE.md discovery" aria-checked={settings.projectClaudeInstructionsEnabled} className={`prompts-chip${settings.projectClaudeInstructionsEnabled ? " on" : ""}`} onClick={() => onSettings((current) => ({ ...current, projectClaudeInstructionsEnabled: !current.projectClaudeInstructionsEnabled }))}><span className="prompts-check" aria-hidden="true">{settings.projectClaudeInstructionsEnabled && <Check size={10} />}</span>CLAUDE.md</button>
-          <InfoPopover label="How project instruction files are read" triggerClassName="prompts-info" trigger={<Info size={14} aria-hidden="true" />}>
-            <p className="prompts-info-text">Files are read fresh from the project root (or the thread&rsquo;s isolated worktree) for every provider. A non-empty AGENTS.override.md takes precedence over AGENTS.md. CLAUDE.md falls back to .claude/CLAUDE.md. The combined limit is 32&nbsp;KB. Nested folders and file imports are not read.</p>
-          </InfoPopover>
+        <div className="set-row">
+          <div className="set-copy">
+            <strong>Read CLAUDE.md from projects</strong>
+            <small>Adds each project&rsquo;s CLAUDE.md the same way. Applies to future turns.</small>
+          </div>
+          <div className="set-control">
+            <Switch checked={settings.projectClaudeInstructionsEnabled} label="Read CLAUDE.md from projects" onChange={() => onSettings((current) => ({ ...current, projectClaudeInstructionsEnabled: !current.projectClaudeInstructionsEnabled }))} />
+          </div>
         </div>
-      </div></div>
+      </div>
     </section>}
 
     {active && <section className="set-group">
@@ -343,11 +375,13 @@ export function PromptsSettings({
       <div className="set-card prompts-stack">
         <div className="prompts-layer">
           <span className="prompts-layer-name">Your instructions</span>
-          <span className="prompts-layer-value">{settings.systemPrompt.trim() ? characters(settings.systemPrompt.trim().length) : "Empty"}{" · Codex "}{settings.codexSystemPrompt.trim() ? characters(settings.codexSystemPrompt.trim().length) : "none"}{" · Claude "}{settings.claudeSystemPrompt.trim() ? characters(settings.claudeSystemPrompt.trim().length) : "none"}</span>
+          <span className="prompts-layer-value">{settings.systemPrompt.trim() ? characters(settings.systemPrompt.trim().length) : "Empty"}{" · OpenAI "}{settings.codexSystemPrompt.trim() ? characters(settings.codexSystemPrompt.trim().length) : "none"}{" · Claude "}{settings.claudeSystemPrompt.trim() ? characters(settings.claudeSystemPrompt.trim().length) : "none"}</span>
         </div>
         <div className="prompts-layer">
           <span className="prompts-layer-name">Project instructions</span>
-          <span className="prompts-layer-value">Set beside a project&rsquo;s name. They replace or add to yours.</span>
+          {projectInstructions
+            ? <button type="button" className="prompts-link" onClick={projectInstructions.open}><NotebookPen size={12} /> Edit {projectInstructions.name}&rsquo;s instructions <ChevronRight size={12} /></button>
+            : <span className="prompts-layer-value">Open a project, then use the top bar&rsquo;s &hellip; menu → Project instructions. They replace or add to yours.</span>}
         </div>
         <div className="prompts-layer">
           <span className="prompts-layer-name">Project files</span>
@@ -361,31 +395,14 @@ export function PromptsSettings({
         </div>
         <div className="prompts-layer prompts-layer-actions">
           <button type="button" className="secondary-button" aria-expanded={fullPreview} onClick={() => setFullPreview((current) => !current)}><Eye size={12} /> {fullPreview ? "Hide preview" : "Preview your instructions"}</button>
-          {(profiles.length > 0) && <button type="button" className="secondary-button" aria-expanded={managingProfiles} onClick={() => setManagingProfiles((current) => !current)}>{managingProfiles ? "Done" : `Manage profiles (${profiles.length})`}</button>}
         </div>
         {fullPreview && <div className="prompts-full-preview">
           <div className="prompts-tabs compact" role="radiogroup" aria-label="Preview for provider">
-            {(["openai", "claude", "other"] as const).map((provider) => <button key={provider} type="button" role="radio" aria-checked={previewProvider === provider} className={previewProvider === provider ? "selected" : ""} onClick={() => setPreviewProvider(provider)}>{provider === "openai" ? "Codex" : provider === "claude" ? "Claude" : "Other providers"}</button>)}
+            {(["openai", "claude", "other"] as const).map((provider) => <button key={provider} type="button" role="radio" aria-checked={previewProvider === provider} className={previewProvider === provider ? "selected" : ""} onClick={() => setPreviewProvider(provider)}>{provider === "openai" ? "OpenAI" : provider === "claude" ? "Claude" : "Other providers"}</button>)}
           </div>
           <textarea aria-label="Your combined instructions" readOnly rows={8} spellCheck={false} value={fullPrompt(previewProvider) || ""} placeholder="Nothing yet. Your instructions are empty for this provider." />
           <small>Project instructions, project files and Memory are added per project when a turn starts. Mythra Code also sends its own operating guidance for tools and delegation.</small>
         </div>}
-        {managingProfiles && <ul className="prompts-profile-list" aria-label="Saved prompt profiles">
-          {profiles.map((profile) => {
-            const open = previewId === `saved:${profile.id}`;
-            const savedText = profile.source ? (profile.source.provider === "openai" ? profile.codexPrompt : profile.claudePrompt) ?? "" : "";
-            return <li key={profile.id}>
-              <span className="prompts-profile-name">{profile.source && <ProviderLogo provider={profile.source.provider} size={13} />}<strong>{profile.name}</strong>{promptProfileIsSelected(settings, profile) && <Check size={12} aria-label="In use" />}{profile.source && <small title={profile.source.path}>{profile.source.path}</small>}</span>
-              {profile.source && <button type="button" className="secondary-button" aria-expanded={open} onClick={() => setPreviewId(open ? null : `saved:${profile.id}`)}><Eye size={12} /> {open ? "Hide" : "Preview"}</button>}
-              <button type="button" className="prompts-icon-button" aria-label={`Delete ${profile.name}`} onClick={async () => {
-                if (!await confirmDialog(`Delete the prompt profile “${profile.name}”?`)) return;
-                onProfiles((current) => current.filter((item) => item.id !== profile.id));
-                onSettings((current) => current.promptProfileId === profile.id ? { ...current, promptProfileId: "" } : current);
-              }}><Trash2 size={12} /></button>
-              {open && <textarea aria-label={`${profile.name} saved preview`} readOnly rows={6} spellCheck={false} value={savedText} />}
-            </li>;
-          })}
-        </ul>}
       </div>
     </section>}
   </div>;

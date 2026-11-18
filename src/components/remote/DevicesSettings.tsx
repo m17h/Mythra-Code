@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { Switch } from "../SettingsBits";
 import { Info, LoaderCircle, Radar } from "lucide-react";
 import { confirmDialog } from "../../lib/confirmDialog";
 import { safeErrorText } from "../../lib/errors";
@@ -31,28 +32,8 @@ import "./DevicesSettings.css";
 import { LocalNetworkActions } from "./LocalNetworkActions";
 import { askableNearby, DeclinedRow, DeclineUndo, HOSTING_LABEL, IncomingRequestCard, NearbyRow, OutgoingRequestCard, showsLocalNetwork, useDeclines, visibleOutgoing } from "./AccessRequests";
 
-export const HOSTING_HELP = "Your other computers on the same network can then ask to use this one. Nothing is shared until you allow it here. Turning this on also shows this computer's name on your network.";
+export const HOSTING_HELP = "Computers on your network can ask to use this one. Nothing is shared until you allow it.";
 
-function Switch({ label, checked, disabled, describedBy, onChange }: {
-  label: string;
-  checked: boolean;
-  disabled?: boolean;
-  describedBy?: string;
-  onChange: (next: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-label={label}
-      aria-checked={checked}
-      aria-describedby={describedBy}
-      disabled={disabled}
-      className={`toggle-switch ${checked ? "on" : ""}`}
-      onClick={() => onChange(!checked)}
-    ><span /></button>
-  );
-}
 
 function lastSeenLabel(device: RemoteDevice): string {
   if (deviceDotState(device) !== "offline" || !device.lastSeenAt) return deviceStateLabel(device);
@@ -180,7 +161,7 @@ function PairedDeviceRow({ device, snapshot, projects, onError }: { device: Remo
     if (grantPending.current) return;
     const confirmed = await confirmDialog(
       `Forget ${device.name}?\n\nThis computer stops using it. To go back, ask ${device.name} for access again. Nothing changes on ${device.name}.`,
-      { confirmLabel: "Forget", cancelLabel: "Cancel" },
+      { confirmLabel: "Forget device", cancelLabel: "Cancel" },
     );
     if (confirmed) await remoteDeviceForget(device.fingerprint).then(acceptRemoteSnapshot).catch(fail("Mythra Code couldn't remove that device. Try again."));
   };
@@ -306,7 +287,6 @@ export function DevicesSettings({ projects }: { projects: readonly Project[] }) 
   const nearby = askableNearby(snapshot);
   return (
     <section className="settings-section devices-settings">
-      <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Changes on this page take effect right away. There's nothing to save.</span></p>
       <div className="set-group">
         <h4>This computer</h4>
         <div className="set-card">
@@ -340,18 +320,15 @@ export function DevicesSettings({ projects }: { projects: readonly Project[] }) 
               />
             </div>
           </div>
-          <details className="devices-more">
-            <summary>More</summary>
-            <div className="set-row">
+          <div className="set-row">
               <div className="set-copy">
                 <strong>Show this name to nearby computers</strong>
-                <small id={shareHelpId}>When this is off, your other computers see a plain network name until they're connected.</small>
+                <small id={shareHelpId}>When off, other computers see a generic name until they connect.</small>
               </div>
               <div className="set-control">
                 <Switch label="Show this name to nearby computers" describedBy={shareHelpId} checked={snapshot.shareName} onChange={setShare} />
               </div>
-            </div>
-          </details>
+          </div>
         </div>
         {snapshot.hostError && <p className="settings-footnote devices-error" role="alert"><Info size={13} aria-hidden="true" /><span>{snapshot.hostError}</span></p>}
         {network && (
@@ -384,7 +361,7 @@ export function DevicesSettings({ projects }: { projects: readonly Project[] }) 
             <div className="set-row">
               <div className="set-copy">
                 <strong>{snapshot.browsing ? "Looking for your other computers…" : "No other computers found"}</strong>
-                <small>On the other computer, open Mythra Code and turn on {HOSTING_LABEL}. It shows up here, and you can ask to use it.</small>
+                <small>On the other computer, turn on {HOSTING_LABEL}. It will appear here.</small>
               </div>
               {!snapshot.browsing && (
                 <div className="set-control">
@@ -396,7 +373,7 @@ export function DevicesSettings({ projects }: { projects: readonly Project[] }) 
             </div>
           )}
         </div>
-        <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Both computers need Mythra Code open and the same network. Once you're connected, switch between them from the menu at the top of the sidebar.</span></p>
+        <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Both computers need Mythra Code open on the same network. Switch between them from the top of the sidebar.</span></p>
       </div>
 
       {declined.length > 0 && (

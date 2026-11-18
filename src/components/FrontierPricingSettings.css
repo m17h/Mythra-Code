@@ -4,7 +4,7 @@
    line up without a heavier grid. Below ~560px each model becomes a small
    labelled card instead of a table that scrolls sideways. */
 .frontier-pricing { container-type: inline-size; display: flex; flex-direction: column; gap: var(--s-4); min-width: 0; }
-.frontier-pricing-intro, .frontier-pricing-footnote { margin: 0; max-width: 72ch; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
+.frontier-pricing-footnote { margin: 0; max-width: 72ch; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
 .frontier-pricing-footnote { margin-top: calc(-1 * var(--s-1)); }
 
 .frontier-pricing-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); }
@@ -27,7 +27,7 @@
 .frontier-pricing-provider-head > h4 { display: inline-flex; align-items: center; gap: 7px; margin: 0; color: var(--ink-2); font-size: var(--fs-ui); font-weight: 650; letter-spacing: var(--track-tight); }
 .frontier-pricing-status { display: inline-flex; align-items: center; gap: 6px; margin: 0; min-width: 0; color: var(--muted-2); font-size: var(--fs-meta); }
 .frontier-pricing-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); opacity: .7; }
-.frontier-pricing-status.ok .frontier-pricing-dot { background: var(--green); opacity: 1; }
+.frontier-pricing-status.ok .frontier-pricing-dot { background: var(--accent); opacity: 1; }
 .frontier-pricing-status.warn { color: var(--ink-2); }
 .frontier-pricing-status.warn .frontier-pricing-dot { background: var(--orange, var(--red)); opacity: 1; }
 .frontier-pricing-source { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 2px 4px; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-meta); cursor: pointer; }
@@ -41,6 +41,8 @@
 .frontier-pricing-table :is(th, td):first-child { width: 34%; padding-left: var(--s-4); text-align: left; }
 .frontier-pricing-table :is(th, td):last-child { padding-right: var(--s-4); }
 .frontier-pricing-table thead th { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; border-bottom: 1px solid var(--line); }
+/* M09 (round 6): the unit sits on the table itself, not only in the footnote. */
+.frontier-pricing-table thead th .frontier-pricing-unit { font-weight: 450; white-space: nowrap; }
 .frontier-pricing-model + .frontier-pricing-model { border-top: 1px solid var(--line); }
 .frontier-pricing-name { display: block; color: var(--ink-2); font-weight: 600; overflow-wrap: anywhere; }
 .frontier-pricing-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 2px; }
@@ -49,7 +51,7 @@
 .frontier-pricing-badge { padding: 0 5px; border: 1px solid var(--line); border-radius: var(--r-chip, 4px); color: var(--muted); font-size: var(--fs-micro); line-height: 16px; white-space: nowrap; }
 .frontier-pricing-tier { display: block; margin-top: 2px; color: var(--muted-2); font-size: var(--fs-micro); }
 .frontier-pricing-rate { color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.frontier-pricing-missing { color: var(--muted-2); font-size: var(--fs-micro); font-style: italic; white-space: nowrap; }
+.frontier-pricing-missing { color: var(--ink-2); font-size: var(--fs-meta); white-space: nowrap; }
 .frontier-pricing-cache-write { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 1px; }
 .frontier-pricing-cache-write small { color: var(--muted-2); font-size: var(--fs-micro); }
 

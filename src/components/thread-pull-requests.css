@@ -50,8 +50,8 @@
 .thread-pr-note strong { color: var(--text); font-weight: 620; }
 .thread-pr-note.bad { color: color-mix(in srgb, var(--red) 70%, var(--text)); border-color: color-mix(in srgb, var(--red) 30%, var(--line)); background: color-mix(in srgb, var(--red) 8%, transparent); }
 .thread-pr-note.bad svg { color: var(--red); }
-.thread-pr-note.good { color: var(--ink-2); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 2%, transparent); }
-.thread-pr-note.good svg { color: var(--green); }
+.thread-pr-note.good { color: var(--ink-2); border-color: var(--accent-line); background: color-mix(in srgb, var(--text) 2%, transparent); }
+.thread-pr-note.good svg { color: var(--accent); }
 
 .thread-pr-inline-button { min-height: 22px; display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: var(--r-xs); color: inherit; background: transparent; font-size: var(--fs-micro); white-space: nowrap; cursor: pointer; transition: background var(--t-fast) ease, border-color var(--t-fast) ease; }
 .thread-pr-inline-button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); }
@@ -63,14 +63,14 @@
 /* ---- The pull request card ---- */
 
 .thread-pr-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--text) 2.5%, transparent); animation: thread-pr-pop var(--t-mid) var(--ease) both; }
-.thread-pr-card.open { border-color: var(--green-line); background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.thread-pr-card.open { border-color: var(--accent-line); background: color-mix(in srgb, var(--text) 2.5%, transparent); }
 .thread-pr-card.merged { border-color: color-mix(in srgb, var(--info) 30%, var(--line)); background: color-mix(in srgb, var(--info) 6%, transparent); }
 .thread-pr-card.candidate { border-style: dashed; border-color: var(--line-strong); }
 .thread-pr-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
 .thread-pr-number { color: var(--muted-2); font: 600 var(--fs-meta) var(--font-mono); }
 
 .thread-pr-state { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--r-chip, 4px); color: var(--muted); background: color-mix(in srgb, var(--text) 4%, transparent); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-tight); white-space: nowrap; }
-.thread-pr-state.open { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 4%, transparent); }
+.thread-pr-state.open { color: var(--accent); border-color: var(--accent-line); background: color-mix(in srgb, var(--text) 4%, transparent); }
 .thread-pr-state.draft { color: var(--muted-2); }
 .thread-pr-state.merged { color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, var(--line)); background: color-mix(in srgb, var(--info) 9%, transparent); }
 .thread-pr-state.closed { color: var(--red); border-color: color-mix(in srgb, var(--red) 28%, var(--line)); background: color-mix(in srgb, var(--red) 8%, transparent); }
@@ -96,7 +96,7 @@
 .thread-pr-signal svg { flex: 0 0 auto; color: var(--muted-2); }
 .thread-pr-signal dt { flex: 0 0 auto; color: var(--muted-2); }
 .thread-pr-signal dd { min-width: 0; margin: 0; overflow: hidden; color: var(--ink-2); white-space: nowrap; text-overflow: ellipsis; }
-.thread-pr-signal.good svg { color: var(--green); }
+.thread-pr-signal.good svg { color: var(--accent); }
 .thread-pr-signal.bad svg { color: var(--red); }
 .thread-pr-signal.bad dd { color: color-mix(in srgb, var(--red) 66%, var(--text)); }
 .thread-pr-signal.wait svg { color: var(--orange); animation: thread-pr-breathe 2.1s ease-in-out infinite; }
@@ -109,15 +109,15 @@
 .thread-pr-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .thread-pr-actions button:active:not(:disabled) { transform: none; }
 .thread-pr-actions button:disabled { opacity: .38; cursor: default; }
-.thread-pr-actions button.primary { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 5%, transparent); }
-.thread-pr-actions button.primary:hover:not(:disabled) { color: var(--green); border-color: color-mix(in srgb, var(--green) 44%, var(--line-strong)); background: color-mix(in srgb, var(--text) 9%, transparent); }
+.thread-pr-actions button.primary { color: var(--accent); border-color: var(--accent-line); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.thread-pr-actions button.primary:hover:not(:disabled) { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 44%, var(--line-strong)); background: color-mix(in srgb, var(--text) 9%, transparent); }
 
 .thread-pr-wide-button { width: 100%; min-height: var(--ctl-md); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: color-mix(in srgb, var(--text) 3.5%, transparent); font-size: var(--fs-meta); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .thread-pr-wide-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 7%, transparent); }
 .thread-pr-wide-button:active:not(:disabled) { transform: none; }
 .thread-pr-wide-button:disabled { opacity: .4; cursor: default; }
-.thread-pr-wide-button.primary { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 5%, transparent); font-weight: 600; }
-.thread-pr-wide-button.primary:hover:not(:disabled) { color: var(--green); border-color: color-mix(in srgb, var(--green) 44%, var(--line-strong)); background: color-mix(in srgb, var(--text) 9%, transparent); }
+.thread-pr-wide-button.primary { color: var(--accent); border-color: var(--accent-line); background: color-mix(in srgb, var(--text) 5%, transparent); font-weight: 600; }
+.thread-pr-wide-button.primary:hover:not(:disabled) { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 44%, var(--line-strong)); background: color-mix(in srgb, var(--text) 9%, transparent); }
 
 /* ---- Slots, fields, inline editors ---- */
 
@@ -137,17 +137,17 @@
 .thread-pr-field input, .thread-pr-field textarea { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font: var(--fs-meta)/1.5 var(--font-mono); transition: border-color var(--t-fast) ease; }
 .thread-pr-field input { height: 32px; padding-block: 0; }
 .thread-pr-field textarea { resize: vertical; font-family: var(--font-sans); font-size: var(--fs-ui); }
-.thread-pr-field input:focus, .thread-pr-field textarea:focus { border-color: var(--green-line); }
+.thread-pr-field input:focus, .thread-pr-field textarea:focus { border-color: var(--accent-line); }
 .thread-pr-field input::placeholder, .thread-pr-field textarea::placeholder { color: var(--muted-2); }
 .thread-pr-field input[aria-invalid="true"] { border-color: color-mix(in srgb, var(--red) 46%, var(--line)); }
 
 .thread-pr-check { display: grid; grid-template-columns: 15px minmax(0, 1fr); gap: var(--s-2); align-items: start; cursor: pointer; }
-.thread-pr-check input { width: 15px; height: 15px; margin: 1px 0 0; accent-color: var(--green); cursor: pointer; }
+.thread-pr-check input { width: 15px; height: 15px; margin: 1px 0 0; accent-color: var(--accent); cursor: pointer; }
 .thread-pr-check strong { display: block; color: var(--ink-2); font-size: var(--fs-meta); font-weight: 620; }
 .thread-pr-check small { display: block; margin-top: 2px; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
 
 .thread-pr-editor { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); padding: var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-md); background: color-mix(in srgb, var(--text) 3%, transparent); animation: thread-pr-expand var(--t-mid) var(--ease) both; }
-.thread-pr-editor.confirm { border-color: var(--green-line); background: color-mix(in srgb, var(--text) 3%, transparent); }
+.thread-pr-editor.confirm { border-color: var(--accent-line); background: color-mix(in srgb, var(--text) 3%, transparent); }
 /* A confirmation that cannot go ahead must not be dressed as a go signal.
    Green framing around a red refusal reads as two instructions at once. */
 .thread-pr-editor.confirm.stopped { border-color: color-mix(in srgb, var(--red) 26%, var(--line)); background: color-mix(in srgb, var(--red) 6%, transparent); }
@@ -157,7 +157,7 @@
 
 .thread-pr-methods { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); margin: 0; padding: 0; border: 0; }
 .thread-pr-methods legend { padding: 0 0 var(--s-1); color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; }
-.thread-pr-methods input { accent-color: var(--green); }
+.thread-pr-methods input { accent-color: var(--accent); }
 
 /* ---- A merge method and the question people have about it ----
    The row is the option; the bubble under it is the answer, and it is not
@@ -201,7 +201,7 @@
 .thread-pr-fineprint.local-effect b { color: var(--text); font-family: var(--font-mono); font-weight: 600; }
 
 .thread-pr-editor-head { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
-.thread-pr-editor-head > svg { color: var(--green); }
+.thread-pr-editor-head > svg { color: var(--accent); }
 .thread-pr-editor-head strong { font-size: var(--fs-ui); font-weight: 650; letter-spacing: var(--track-tight); }
 
 .thread-pr-empty { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 6px; padding: var(--s-5) var(--s-4); border: 1px dashed var(--line-strong); border-radius: var(--r-md); text-align: center; }
@@ -234,7 +234,7 @@
 .thread-pr-checks li > svg { color: var(--muted-2); }
 .thread-pr-checks li.bad > svg { color: var(--red); }
 .thread-pr-checks li.wait > svg { color: var(--orange); }
-.thread-pr-checks li.good > svg { color: var(--green); }
+.thread-pr-checks li.good > svg { color: var(--accent); }
 .thread-pr-check-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .thread-pr-check-state { color: var(--muted-2); font-size: var(--fs-micro); white-space: nowrap; }
 .thread-pr-checks li.bad .thread-pr-check-state { color: color-mix(in srgb, var(--red) 66%, var(--text)); }

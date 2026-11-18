@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { ImageIcon, X } from "lucide-react";
 import { adoptPortalTheme, effectiveZoom } from "../lib/floatingLayer";
-import { useModalFocus } from "../hooks/useModalFocus";
+import { containTab, useModalFocus } from "../hooks/useModalFocus";
 import { useTimelineEnvironment } from "./TimelineEnvironment";
 import "./MessageImagePreview.css";
 
@@ -230,6 +230,9 @@ export function LocalMessageImagePreview({ path, name }: { path: string; name: s
           event.preventDefault();
           dismiss();
         }
+        // Tab cycles inside, as in every dialog (a native modal would let it
+        // leave for the WebView chrome).
+        else if (event.key === "Tab") containTab(event.currentTarget, event.nativeEvent);
       }}
       onClick={(event) => {
         if (event.target !== event.currentTarget) return;

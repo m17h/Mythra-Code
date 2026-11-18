@@ -123,7 +123,7 @@ export function hostProcessPolicy(input: {
   const repositoryReason = input.repositoryBusy ? "Wait for the repository operation to finish." : null;
   return {
     readOnly: input.permission === "read-only",
-    readOnlyReason: input.permission === "read-only" ? `Read only: commands run without permission to write inside ${scope}. Switch this thread to Ask or Full access before running anything that edits files.` : null,
+    readOnlyReason: input.permission === "read-only" ? `Read only: commands run without permission to write inside ${scope}. Switch this thread to Ask to act or Full access before running anything that edits files.` : null,
     terminalBusy: input.terminalBusy, checksBusy: input.checksBusy, repositoryBusy: input.repositoryBusy,
     runBlockedReason: processPolicyReason ?? repositoryReason ?? (input.terminalBusy ? "The terminal is busy." : null),
     checksBlockedReason: processPolicyReason ?? (!input.runtimeAvailable ? "Start the local runtime to run checks." : repositoryReason),

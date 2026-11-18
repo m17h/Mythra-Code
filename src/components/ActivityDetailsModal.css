@@ -11,10 +11,14 @@
   inset: 0;
   box-sizing: border-box;
   width: min(920px, calc((100vw - 48px) / var(--ui-scale, 1)));
-  height: min(720px, calc((100vh - 48px) / var(--ui-scale, 1)));
-  height: min(720px, calc((100dvh - 48px) / var(--ui-scale, 1)));
+  /* Sized to its content, up to the same reading-window maximum (a fixed
+     box with inset: 0 would otherwise stretch to the cap). */
+  height: -webkit-fit-content;
+  height: fit-content;
+  min-height: min(260px, calc((100vh - 48px) / var(--ui-scale, 1)));
+  max-height: min(720px, calc((100vh - 48px) / var(--ui-scale, 1)));
+  max-height: min(720px, calc((100dvh - 48px) / var(--ui-scale, 1)));
   max-width: none;
-  max-height: none;
   margin: auto;
   padding: 0;
   overflow: hidden;
@@ -27,24 +31,24 @@
   line-height: 1.45;
 }
 .activity-details-dialog[open] { display: flex; flex-direction: column; }
-.activity-details-fallback { position: fixed; top: 0; left: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; touch-action: none; }
+.activity-details-fallback { position: fixed; top: 0; left: 0; z-index: var(--z-top); display: flex; align-items: center; justify-content: center; touch-action: none; }
 /* Settings' dim and blur (styles/lumen/settings.css); keep the two in step,
    Windows override included. This sits outside the shell scope for the
    body-portaled fallback. ::backdrop keeps rules of its own so an engine that
    cannot parse it does not drop the fallback's, and it only inherits
-   --lm-scrim from Chrome 122 / Safari 17.4: older engines take the literals,
+   --scrim from Chrome 122 / Safari 17.4: older engines take the literals,
    so light themes need theirs. */
 .activity-details-fallback {
-  background: var(--lm-scrim, rgba(0, 0, 0, .42));
+  background: var(--scrim, rgba(0, 0, 0, .5));
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
 .activity-details-dialog::backdrop {
-  background: var(--lm-scrim, rgba(0, 0, 0, .42));
+  background: var(--scrim, rgba(0, 0, 0, .5));
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
-.app-shell[data-color-scheme="light"] .activity-details-dialog::backdrop { background: var(--lm-scrim, rgba(0, 0, 0, .22)); }
+.app-shell[data-color-scheme="light"] .activity-details-dialog::backdrop { background: var(--scrim, rgba(15, 20, 30, .26)); }
 @media (prefers-reduced-transparency: reduce) {
   .activity-details-fallback:not([data-backdrop-blur="always"]) {
     -webkit-backdrop-filter: none;
@@ -71,7 +75,7 @@
 .activity-details-heading h2 { margin: 0; color: var(--text); font-size: var(--fs-lede); font-weight: 600; letter-spacing: 0; }
 .activity-details-status { min-width: 0; display: flex; align-items: baseline; gap: 8px; margin-top: 3px; font-size: var(--fs-meta); }
 .activity-details-state { flex: 0 0 auto; color: var(--ink-2); font-weight: 560; }
-.activity-details-state.state-running { color: color-mix(in srgb, var(--green) 70%, var(--ink-2)); }
+.activity-details-state.state-running { color: color-mix(in srgb, var(--accent) 70%, var(--ink-2)); }
 .activity-details-state.state-failed { color: var(--red); }
 .activity-details-state.state-partial { color: var(--orange); }
 .activity-details-state.state-interrupted { color: var(--orange); }
@@ -149,7 +153,7 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
   background: var(--menu-surface, var(--panel, #292d32));
 }
 .activity-step.kind-command .activity-step-node { color: var(--muted); }
-.activity-step.kind-file .activity-step-node { color: color-mix(in srgb, var(--green) 72%, var(--muted)); }
+.activity-step.kind-file .activity-step-node { color: color-mix(in srgb, var(--accent) 72%, var(--muted)); }
 .activity-step.kind-reasoning .activity-step-node,
 .activity-step.kind-agents .activity-step-node,
 .activity-step.kind-agent .activity-step-node { color: var(--info); }
@@ -157,7 +161,7 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
 /* A failed operation is flagged on its node and keeps a readable title. */
 .activity-step.is-failed .activity-step-node { color: var(--red); border-color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--line)); }
 /* Thinking that is happening now shows the working mark, not a glyph. */
-.activity-step.kind-reasoning .activity-step-node.working { color: var(--text); }
+.activity-step.kind-reasoning .activity-step-node.working { color: var(--accent); }
 .activity-step.from-user .activity-step-node { color: var(--text); background: var(--field); }
 
 .activity-step-body { min-width: 0; padding-top: 2px; }
@@ -180,7 +184,7 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
 .activity-step-chip { flex: 0 0 auto; padding: 1px 6px; border-radius: var(--r-chip, 4px); color: var(--muted-2); background: var(--lm-press, var(--line-quiet)); font-size: var(--fs-meta); font-weight: 500; }
 /* Routine "Done" is a word, not a badge; live and failed states keep theirs. */
 .activity-step-chip.tone-quiet { padding: 1px 2px; background: transparent; font-weight: 500; }
-.activity-step-chip.tone-live { color: color-mix(in srgb, var(--green) 80%, var(--ink-2)); background: var(--green-soft); }
+.activity-step-chip.tone-live { color: color-mix(in srgb, var(--accent) 80%, var(--ink-2)); background: var(--accent-soft); }
 .activity-step-chip.tone-bad { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
 .activity-step-chip.tone-stopped { color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, transparent); }
 
@@ -199,7 +203,7 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
 }
 /* Thinking reads like the agent's updates: plain prose, no box. */
 .activity-step-thought {
-  max-width: 72ch;
+  max-width: none;
   margin: 6px 0 0;
   color: var(--text);
   font-family: var(--chat-font, var(--font-sans));
@@ -219,17 +223,18 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
 .activity-step-more:hover { color: var(--text); background: var(--lm-hover, var(--line-quiet)); }
 .activity-step-more:focus-visible { outline: none; box-shadow: var(--ring); }
 /* Collapsed thinking keeps one readable line, not a dim fragment. */
-.activity-step-preview { display: -webkit-box; overflow: hidden; max-width: 72ch; margin: 4px 0 0; color: var(--muted); font-family: var(--chat-font, var(--font-sans)); font-size: var(--fs-ui); line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
+.activity-step-preview { display: -webkit-box; overflow: hidden; max-width: none; margin: 4px 0 0; color: var(--muted); font-family: var(--chat-font, var(--font-sans)); font-size: var(--fs-ui); line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
 .activity-step-note { margin: 2px 0 0; color: var(--muted-2); font-size: var(--fs-meta); }
 .activity-step.kind-warning .activity-step-output { color: var(--ink-2); border-color: color-mix(in srgb, var(--orange) 24%, var(--line)); white-space: pre-wrap; font-family: var(--font-sans); font-size: var(--fs-meta); }
 
 /* Agent prose reads at chat size and full contrast so updates come first. */
-.activity-step-message { max-width: 72ch; margin-top: 6px; color: var(--text); font-family: var(--chat-font, var(--font-sans)); font-size: var(--fs-body); line-height: 1.65; overflow-wrap: anywhere; }
+.activity-step-message { max-width: none; margin-top: 6px; color: var(--text); font-family: var(--chat-font, var(--font-sans)); font-size: var(--fs-body); line-height: 1.65; overflow-wrap: anywhere; }
 .activity-step-message .message-text > :first-child { margin-top: 0; }
 .activity-step-message .message-text > :last-child { margin-bottom: 0; }
 .activity-step.in-chat .activity-step-message,
-.activity-step.from-user .activity-step-message { color: var(--muted); }
-.activity-step-action { margin-top: 6px; min-height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-control, 6px); color: var(--text); background: var(--lm-press, var(--green-soft)); font: 500 12px/1.3 var(--font-sans); cursor: pointer; }
+/* The quoted prompt reads at body contrast (G11); its node marks it as yours. */
+.activity-step.from-user .activity-step-message { color: var(--ink-2); }
+.activity-step-action { margin-top: 6px; min-height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-control, 6px); color: var(--text); background: var(--lm-press, var(--accent-soft)); font: 500 12px/1.3 var(--font-sans); cursor: pointer; }
 .activity-step-action:hover { border-color: var(--line-strong); }
 .activity-step-action:focus-visible { outline: none; box-shadow: var(--ring); }
 .activity-step.kind-agents .subagent-relay-card,
@@ -248,9 +253,9 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
 
 .activity-details-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 60%; color: var(--muted); text-align: center; }
 .activity-details-empty p { margin: 0; font-size: var(--fs-ui); }
-.activity-details-empty-mark { position: relative; width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-md, 8px); color: color-mix(in srgb, var(--green) 75%, var(--ink-2)); background: var(--green-soft); }
+.activity-details-empty-mark { position: relative; width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-md, 8px); color: color-mix(in srgb, var(--accent) 75%, var(--ink-2)); background: var(--accent-soft); }
 .activity-details-empty-mark.live { color: var(--text); background: none; }
-.activity-details-empty-mark .pixel-working-mark { --pixel-size: 3px; }
+.activity-details-empty-mark .working-indicator { color: var(--accent); }
 
 .activity-details-latest {
   position: absolute;
@@ -298,4 +303,4 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
 
 @keyframes activity-details-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @keyframes activity-details-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes activity-step-target { from { background: var(--green-soft); } to { background: transparent; } }
+@keyframes activity-step-target { from { background: var(--accent-soft); } to { background: transparent; } }

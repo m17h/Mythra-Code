@@ -37,7 +37,7 @@
 .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"],
 .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"],
 .app-shell[data-theme][data-color-scheme] .slider-style-preview.poet {
-  --cc-clay: #d97757;
+  --cc-clay: var(--brand-claude);
   --cc-glint: #f2b393;
   --cc-slot: rgba(255, 255, 255, .1);
   --cc-pip: rgba(255, 255, 255, .22);

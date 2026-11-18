@@ -29,7 +29,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   componentDidCatch(error: unknown, info: ErrorInfo) {
     // Mirror boundary catches into the error log so they surface in
-    // Settings → Diagnostics and exports, not only in this fallback.
+    // Settings → Advanced → Diagnostics and exports, not only in this fallback.
     try { recordError(`The ${this.props.label} view crashed: ${friendlyError(error)}`); } catch { /* Diagnostics must not crash the fallback. */ }
     try {
       const reported = this.props.onError?.(error, info);

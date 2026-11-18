@@ -14,6 +14,14 @@ import { SkillDependencyNotice } from "./SkillDependencyNotice";
 import { useSkillDependencyPreview } from "../hooks/useSkillDependencyPreview";
 import { OfficialSkillDownloads } from "./OfficialSkillDownloads";
 import { AnthropicLogo, OpenAILogo } from "./BrandLogos";
+import { RowMenu } from "./RowMenu";
+import { EmptyState, Switch } from "./SettingsBits";
+
+/** The loader icon, spinning, in the shape EmptyState expects. */
+function SpinningLoader(props: { size?: number | string; "aria-hidden"?: boolean | "true" | "false" }) {
+  return <LoaderCircle {...props} className="spin" />;
+}
+import "./SkillLibrary.css";
 import "./SkillLibrary.navigation.css";
 
 export interface OpenSkillRequest {
@@ -44,6 +52,7 @@ export function SkillLibrary({
   officialInstallFailure,
   officialInstallingId,
   active = true,
+  menuScale = 1,
 }: {
   folder: string;
   skills: LocalSkill[];
@@ -67,6 +76,8 @@ export function SkillLibrary({
   officialInstallFailure?: OfficialSkillInstallFailure | null;
   officialInstallingId?: string;
   active?: boolean;
+  /** The app's interface scale, so row menus open beside their trigger. */
+  menuScale?: number;
 }) {
   const fieldId = useId();
   const [query, setQuery] = useState("");
@@ -293,7 +304,7 @@ export function SkillLibrary({
     }
     const requestFolder = folder;
     void (async () => {
-      const discard = !sourceLoaded || sourceDraft === sourceOriginal || await confirmDialog("Discard your unsaved skill changes?");
+      const discard = !sourceLoaded || sourceDraft === sourceOriginal || await confirmDialog("Discard your unsaved skill changes?", { confirmLabel: "Discard changes", cancelLabel: "Keep editing" });
       const latest = navigationSnapshot.current;
       if (!navigationMounted.current || latest.folder !== requestFolder || latest.openSkillRequest?.nonce !== openSkillRequest.nonce) return;
       latest.onOpenSkillRequestConsumed?.(openSkillRequest.nonce);
@@ -315,7 +326,7 @@ export function SkillLibrary({
       confirmDiscard
       && sourceLoaded
       && sourceDraft !== sourceOriginal
-      && !await confirmDialog("Discard your unsaved skill changes?")
+      && !await confirmDialog("Discard your unsaved skill changes?", { confirmLabel: "Discard changes", cancelLabel: "Keep editing" })
     ) return;
     sourceRequestRef.current += 1;
     setSourceEditorSkill(null);
@@ -409,13 +420,6 @@ export function SkillLibrary({
       {navigationError && <p className="skill-library-alert" role="alert">{navigationError}</p>}
       {!downloadsOpen && officialInstallFailure && <p className="skill-library-alert" role="alert">{officialInstallFailure.message}</p>}
 
-      {onInstallOfficial && <details className="official-skill-library" onToggle={(event) => setDownloadsOpen(event.currentTarget.open)}>
-        {/* The title stays the summary's own text so the disclosure keeps one
-            plain name; the icon, hint and chevron are decoration around it. */}
-        <summary><span className="official-skill-library-icon" aria-hidden="true"><Download size={14} /></span>Download Anthropic &amp; OpenAI skills<small>Curated packages with their source and license</small><ChevronRight className="official-skill-library-chevron" size={15} aria-hidden="true" /></summary>
-        {downloadsOpen && active && <OfficialSkillDownloads folder={folder} skills={skills} removedSkills={removedSkills} busy={busy} pendingInstallId={officialInstallingId} installFailure={officialInstallFailure} onChooseFolder={onChooseFolder} onInstall={onInstallOfficial} onRestore={onRestore} />}
-      </details>}
-
       {folder && <>
         <div className="skill-library-toolbar">
           <div className="skill-search">
@@ -431,21 +435,14 @@ export function SkillLibrary({
             <h4 id={`${fieldId}-list`}>Your skills</h4>
             {skills.length > 0 && <span>{query.trim()
               ? `${filtered.length} of ${skills.length} matching`
-              : <><b>{enabledCount}</b> of {skills.length} enabled</>}</span>}
+              : enabledCount === skills.length ? `${skills.length} skill${skills.length === 1 ? "" : "s"}` : `${enabledCount} of ${skills.length} on`}</span>}
           </div>
 
           {filtered.length > 0 && <ul className="skill-card-list" aria-labelledby={`${fieldId}-list`}>
             {filtered.map((skill) => (
               <li className={`skill-card ${skill.enabled ? "enabled" : "disabled"}${sourceEditorSkill?.path === skill.path ? " skill-card-selected" : ""}`} key={skill.path}
                 ref={(element) => { if (element) skillCardRefs.current.set(skill.path, element); else skillCardRefs.current.delete(skill.path); }}>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={skill.enabled}
-                  aria-label={`${skill.enabled ? "Disable" : "Enable"} ${skill.name}`}
-                  className={`mini-toggle ${skill.enabled ? "on" : ""}`}
-                  onClick={() => onToggle(skill.path)}
-                ><span /></button>
+                <Switch checked={skill.enabled} label={`Use ${skill.name}`} className="skill-card-switch" onChange={() => onToggle(skill.path)} />
                 <div className="skill-card-copy">
                   {editingPath === skill.path ? (
                     <form
@@ -476,11 +473,14 @@ export function SkillLibrary({
                   <p className={skill.description ? "" : "empty"} title={skill.description || undefined}>{skill.description || "No description in this file yet."}</p>
                   <small className="skill-card-path">{skill.relativePath}{skill.supportingMarkdownCount ? ` · ${skill.supportingMarkdownCount} supporting Markdown file${skill.supportingMarkdownCount === 1 ? "" : "s"}` : ""}</small>
                 </div>
+                {/* One visible action; the rest share an overflow menu. */}
                 <div className="skill-card-actions">
-                  <button type="button" onClick={(event) => { event.currentTarget.focus(); openSourceEditor(skill); }} aria-label={`${skill.source ? "View" : "Edit"} ${skill.name} skill`} title={skill.source ? "View downloaded skill (read-only) and source details" : "Edit skill Markdown in Mythra Code"}>{skill.source ? <Eye size={13} /> : <FilePenLine size={13} />}</button>
-                  {editingPath !== skill.path && <button type="button" onClick={() => { setEditingPath(skill.path); setNameDraft(skill.name); }} aria-label={`Rename ${skill.name}`} title="Change the app-only invocation name"><Pencil size={13} /></button>}
-                  <button type="button" onClick={() => void revealItemInDir(skill.path)} aria-label={`Show ${skill.name} in folder`} title="Show source file"><FolderOpen size={13} /></button>
-                  <button type="button" className="danger-icon-button" onClick={() => setPendingRemoval(skill)} aria-label={`Remove ${skill.name}`} title="Remove skill"><Trash2 size={13} /></button>
+                  <button type="button" className="secondary-button compact" onClick={(event) => { event.currentTarget.focus(); openSourceEditor(skill); }} aria-label={`${skill.source ? "View" : "Edit"} ${skill.name} skill`} title={skill.source ? "View downloaded skill (read-only) and source details" : "Edit skill Markdown in Mythra Code"}>{skill.source ? <Eye size={12} aria-hidden="true" /> : <FilePenLine size={12} aria-hidden="true" />}{skill.source ? "View" : "Edit"}</button>
+                  <RowMenu label={`More actions for ${skill.name}`} scale={menuScale} items={() => [
+                    ...(editingPath !== skill.path ? [{ label: "Rename", icon: <Pencil size={13} />, onSelect: () => { setEditingPath(skill.path); setNameDraft(skill.name); } }] : []),
+                    { label: "Show in folder", icon: <FolderOpen size={13} />, onSelect: () => void revealItemInDir(skill.path) },
+                    { label: "Remove…", icon: <Trash2 size={13} />, danger: true, separatorBefore: true, onSelect: () => setPendingRemoval(skill) },
+                  ]} />
                 </div>
               </li>
             ))}
@@ -489,20 +489,11 @@ export function SkillLibrary({
           {/* A search that matches nothing is reported as such even mid-rescan;
               the scanning state is only for a library we know nothing about. */}
           {!filtered.length && (skills.length ? (
-            <div className="skill-empty-state">
-              <Search size={20} aria-hidden="true" />
-              <strong>No skills match “{query.trim()}”</strong>
-              <small>Try a shorter search, or clear it to see all {skills.length} detected skills.</small>
-              <button type="button" className="secondary-button" onClick={() => setQuery("")}>Clear search</button>
-            </div>
+            <EmptyState icon={Search} title={<>No skills match “{query.trim()}”</>} action={<button type="button" className="secondary-button" onClick={() => setQuery("")}>Clear search</button>} />
           ) : busy ? (
-            <div className="skill-empty-state"><LoaderCircle className="spin" size={20} aria-hidden="true" /><strong>Scanning your skills folder…</strong></div>
+            <EmptyState icon={SpinningLoader} title="Scanning your skills folder…" />
           ) : (
-            <div className="skill-empty-state">
-              <Boxes size={20} aria-hidden="true" />
-              <strong>No skills in this folder yet</strong>
-              <small>Import an existing Markdown file, or add your first skill below. Top-level <code>.md</code> files and nested <code>SKILL.md</code> packages are both detected.</small>
-            </div>
+            <EmptyState icon={Boxes} title="No skills in this folder yet" detail="Import a Markdown file, or add your first skill below." />
           ))}
         </div>
 
@@ -578,13 +569,11 @@ export function SkillLibrary({
           )}
         </div>
 
-        <ul className="skill-notes">
-          <li><Check size={13} aria-hidden="true" /><span>Top-level <code>.md</code> files and nested <code>SKILL.md</code> packages are detected. Renaming changes only the invocation name inside Mythra Code.</span></li>
-          <li><Check size={13} aria-hidden="true" /><span>Skill dependencies are checked before each turn. A broken nested reference blocks the turn and shows its full chain. Its source changes only when you explicitly save it in the editor.</span></li>
-        </ul>
         <details className="skill-reference-guide" onToggle={(event) => setReferenceGuideOpen(event.currentTarget.open)}>
-          <summary>How skill references work</summary>
+          <summary className="set-disclosure"><ChevronRight size={13} aria-hidden="true" className="set-disclosure-chevron" />How skill references work</summary>
           {referenceGuideOpen && <div>
+            <p>Top-level <code>.md</code> files and nested <code>SKILL.md</code> packages are detected. Renaming changes only the invocation name inside Mythra Code.</p>
+            <p>Skill dependencies are checked before each turn. A broken nested reference blocks the turn and shows its full chain. Its source changes only when you explicitly save it in the editor.</p>
             <p>Type a standalone plain <code>@review</code> in your message or system instructions to load an enabled skill from this folder. Inside a skill or reference document, visible <code>@tests</code> mentions invoke another enabled skill, including bold <code>**@tests**</code> and italic <code>*@tests*</code> text. Names use the invocation aliases shown above.</p>
             <p>Mentions in inline code, fenced code blocks, images, or escaped with a backslash stay examples and do not load nested skills.</p>
             <p>Unknown or disabled names typed directly in a message or system prompt stay ordinary text. An unknown or disabled nested skill reference blocks the turn.</p>
@@ -713,6 +702,14 @@ export function SkillLibrary({
           </div>
         )}
       </>}
+
+      {/* M11: your own skills come first; downloading more is secondary. */}
+      {onInstallOfficial && <details className="official-skill-library" onToggle={(event) => setDownloadsOpen(event.currentTarget.open)}>
+        {/* The title stays the summary's own text so the disclosure keeps one
+            plain name; the icon, hint and chevron are decoration around it. */}
+        <summary><span className="official-skill-library-icon" aria-hidden="true"><Download size={14} /></span>Download Anthropic &amp; OpenAI skills<small>Curated packages with their source and license</small><ChevronRight className="official-skill-library-chevron" size={15} aria-hidden="true" /></summary>
+        {downloadsOpen && active && <OfficialSkillDownloads folder={folder} skills={skills} removedSkills={removedSkills} busy={busy} pendingInstallId={officialInstallingId} installFailure={officialInstallFailure} onChooseFolder={onChooseFolder} onInstall={onInstallOfficial} onRestore={onRestore} />}
+      </details>}
     </section>
   );
 }

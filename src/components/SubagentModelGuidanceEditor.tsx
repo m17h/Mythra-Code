@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { EmptyState } from "./SettingsBits";
 import { AlertTriangle, Pencil, Plus, Trash2 } from "lucide-react";
 import { AppSelectMenu } from "./AppSelectMenu";
 import { ProviderLogo } from "./BrandLogos";
@@ -90,10 +91,13 @@ function guidanceStatus(value: SubagentModelGuidance[]) {
  * Saved entries show as rows; one entry at a time opens in a form. Its Save
  * writes the Settings draft, which Save settings applies.
  */
-export function SubagentModelGuidanceEditor({ value, draft, onDraftChange, modelCatalogs, modelFavorites = {}, onToggleModelFavorite, onDiscoverOpenRouterModels, onChange }: {
+export function SubagentModelGuidanceEditor({ addRef, value, draft, onDraftChange, modelCatalogs, modelFavorites = {}, onToggleModelFavorite, onDiscoverOpenRouterModels, onChange }: {
   value: SubagentModelGuidance[];
   draft: SubagentModelGuidanceDraft | null;
   onDraftChange: (next: SubagentModelGuidanceDraft | null) => void;
+  /** When given, the section head owns the "Add model" button and calls this;
+   * the editor then shows no add button of its own. */
+  addRef?: { current: (() => void) | null };
   modelCatalogs?: Partial<Record<Provider, ChildAgentModelOption[]>>;
   modelFavorites?: ModelFavorites;
   onToggleModelFavorite?: (provider: Provider, model: string) => void;
@@ -218,7 +222,6 @@ export function SubagentModelGuidanceEditor({ value, draft, onDraftChange, model
     const shownIssue = issue && (issue.live || attempted) ? issue.message : null;
     const titleId = `${idPrefix}-form-title`;
     const issueId = `${idPrefix}-form-issue`;
-    const hintId = `${idPrefix}-form-hint`;
     const title = index === null ? "New model guidance" : `Edit guidance for ${entryName(open.initial)}`;
     // Models another entry already covers stay visible but cannot be chosen.
     const modelOptions = modelOptionsFor(entry.provider, modelCatalogs, model).map((option) => taken(entry.provider, option.value, index)
@@ -270,7 +273,7 @@ export function SubagentModelGuidanceEditor({ value, draft, onDraftChange, model
         <label className="model-guidance-note">
           <span>When and how to use it</span>
           <textarea
-            aria-describedby={shownIssue ? `${issueId} ${hintId}` : hintId}
+            aria-describedby={shownIssue ? issueId : undefined}
             aria-invalid={shownIssue ? true : undefined}
             rows={3}
             maxLength={MAX_SUBAGENT_MODEL_GUIDANCE_NOTE}
@@ -281,7 +284,6 @@ export function SubagentModelGuidanceEditor({ value, draft, onDraftChange, model
         </label>
         {shownIssue && <p className="model-guidance-issue" id={issueId} role="alert"><AlertTriangle size={12} aria-hidden="true" /> {shownIssue}</p>}
         <div className="model-guidance-form-actions">
-          <small id={hintId}>Save stages this entry. Save settings applies it; closing Settings without saving discards it.</small>
           <button type="button" className="secondary-button" onClick={cancel}>Cancel</button>
           <button type="button" className="primary-button" disabled={Boolean(issue?.live)} onClick={save}>Save</button>
         </div>
@@ -290,6 +292,7 @@ export function SubagentModelGuidanceEditor({ value, draft, onDraftChange, model
   };
 
   const addingNew = Boolean(draft) && editingIndex === null;
+  if (addRef) addRef.current = add;
   return (
     <div className="model-guidance" ref={rootRef}>
       {value.length > 0 && (
@@ -346,10 +349,10 @@ export function SubagentModelGuidanceEditor({ value, draft, onDraftChange, model
           })}
         </ul>
       )}
-      {value.length === 0 && !addingNew && <p className="worker-empty">No model guidance yet. Parent agents use their own judgment for every model.</p>}
+      {value.length === 0 && !addingNew && <EmptyState inline title="No model guidance yet" detail="Parent agents use their own judgment for every model." />}
       {addingNew && draft ? renderForm(draft, null) : (
         <>
-          <button type="button" className="secondary-button model-guidance-add" disabled={full} onClick={add}><Plus size={12} aria-hidden="true" /> Add model</button>
+          {!addRef && <button type="button" className="secondary-button model-guidance-add" disabled={full} onClick={add}><Plus size={12} aria-hidden="true" /> Add model</button>}
           {full && <p className="worker-empty">You have reached the {MAX_SUBAGENT_MODEL_GUIDANCE}-model limit. Edit or remove an entry to make room.</p>}
         </>
       )}

@@ -14,7 +14,7 @@
    keeps that behaviour as a flush inspector sheet with a soft edge shadow. */
 @media (max-width: 1250px) {
   /* The sheet starts below the chat header, so the header (including the
-     Workspace toggle that closes it, Search and Run) is never covered while
+     Tools toggle that closes it, Search and Run) is never covered while
      the dock is open. The header is raised above the sheet for the rare case
      where a very narrow column wraps it onto two rows. */
   .app-shell[data-theme][data-color-scheme] .studio-dock {
@@ -22,11 +22,43 @@
     right: var(--lm-gutter);
     bottom: var(--lm-gutter);
     margin-left: 0;
+    z-index: var(--z-drawer);
     border-left: 1px solid var(--line);
-    box-shadow: -16px 0 40px -12px rgba(0, 0, 0, .35);
+    box-shadow: var(--lm-drawer-shadow);
   }
   .app-shell[data-theme][data-color-scheme] .studio-dock.closed { box-shadow: none; }
-  .app-shell[data-theme][data-color-scheme] .topbar { z-index: 31; }
+  .app-shell[data-theme][data-color-scheme] .topbar { z-index: var(--z-drawer-chrome); }
+}
+
+/* ---- D11: 901-1250px keeps the Tools panel in the layout ----
+   An overlay here covered the chat and the composer's Send button. Instead
+   the dock takes its column and the chat narrows; App tucks the sidebar away
+   while the dock is open at these widths, so the chat keeps ~590px at 1024.
+   Below 901px the overlay sheet above remains, with a dimmed backdrop. */
+@media (min-width: 901px) and (max-width: 1250px) {
+  .app-shell[data-theme][data-color-scheme] .studio-dock {
+    position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    z-index: auto;
+    flex: 0 0 var(--dock-width, 430px);
+    width: var(--dock-width, 430px);
+    max-width: min(var(--dock-width, 430px), calc(100vw - 520px));
+    box-shadow: none;
+    transform: none;
+  }
+  .app-shell[data-theme][data-color-scheme] .studio-dock.closed {
+    flex-basis: 0;
+    width: 0;
+    border-left-color: transparent;
+    opacity: 0;
+    transform: translateX(28px);
+  }
+  .app-shell[data-theme][data-color-scheme] .topbar { z-index: auto; }
+}
+@media (max-width: 900px) {
+  .app-shell[data-theme][data-color-scheme] .studio-dock:not(.closed) { box-shadow: var(--lm-drawer-shadow), 0 0 0 100vmax var(--scrim); }
 }
 
 /* ---- Reading measure and composer gutters (legacy 1180 / 1000 / 700) ---- */
@@ -54,9 +86,11 @@
 
 /* ---- Settings: short windows (legacy max-height 720) ---- */
 @media (max-height: 720px) {
-  .app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 0; }
-  .app-shell[data-theme][data-color-scheme] .settings-nav-label { display: none; }
-  .app-shell[data-theme][data-color-scheme] .settings-nav button { min-height: 30px; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 2px; }
+  /* Short windows keep each category's name (M04), just tighter, so the
+     groups never become unlabeled runs separated by lines. */
+  .app-shell[data-theme][data-color-scheme] .settings-nav-label { display: block; padding: 6px 8px 1px; font-size: 10.5px; line-height: 1.2; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button { min-height: 26px; }
   .app-shell[data-theme][data-color-scheme] .settings-nav button > svg:first-child { width: 22px; height: 22px; padding: 4px; }
   .app-shell[data-theme][data-color-scheme] .settings-nav-head { padding-top: 12px; }
   .app-shell[data-theme][data-color-scheme] .settings-pane-heading { padding-top: 16px; padding-bottom: 12px; }
@@ -83,7 +117,6 @@
   .app-shell[data-theme][data-color-scheme] .settings-pane-heading { padding: 12px 12px 12px 16px; }
   .app-shell[data-theme][data-color-scheme] .settings-pane-heading h3 { font-size: 20px; }
   .app-shell[data-theme][data-color-scheme] .settings-content { --settings-content-end: 16px; padding: 16px 16px var(--settings-content-end); }
-  .app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer { padding: 12px 16px; }
   .app-shell[data-theme][data-color-scheme] .set-row { padding: 12px 14px; }
   .app-shell[data-theme][data-color-scheme] .theme-grid { grid-template-columns: minmax(0, 1fr); }
   .app-shell[data-theme][data-color-scheme] .settings-modal { border-radius: 14px; }

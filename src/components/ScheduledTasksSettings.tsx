@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { EmptyState, Switch } from "./SettingsBits";
 import { createPortal } from "react-dom";
-import { CalendarClock, Check, Clock3, Info, Pencil, Play, Plus, Trash2, Workflow, X } from "lucide-react";
+import { CalendarClock, Check, ChevronRight, Clock3, Info, Pencil, Play, Plus, Trash2, Workflow, X } from "lucide-react";
 import type { AppSettings, Project, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, ScheduleIntervalUnit, ScheduleThreadMode } from "../types";
 import { localScheduleTimeZone, nextScheduledRunAt, normalizedDailyTimes, scheduleTimingLabel, scheduleIntervalMinutes, scheduleIntervalParts } from "../lib/schedules";
 import { scheduleRunSnapshot } from "../lib/turnConfig";
@@ -13,6 +14,7 @@ import { workflowFromSchedule, type WorkflowDefinition } from "../lib/workflows"
 import { ProviderLogo } from "./BrandLogos";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import type { ChildAgentModelCatalogs } from "./subAgentModelOptions";
+import { containTab } from "../hooks/useModalFocus";
 import "./ScheduledTasksSettings.css";
 
 const PROVIDERS: Provider[] = ["openai", "openrouter", "lmstudio"];
@@ -113,8 +115,8 @@ export function ScheduledTasksSettings({ visible, settings, schedules, projects,
   };
   const activeCount = schedules.filter((task) => task.enabled).length;
   return <section className="set-group scheduled-tasks-settings" ref={rootRef}>
-    <div className="set-group-head"><h4>Scheduled tasks</h4><span className="scheduled-task-count">{schedules.length ? `${activeCount} active · ${schedules.length - activeCount} inactive` : ""}</span></div>
-    <p>Recurring prompts for your chats and projects. Tasks run while Mythra Code is open; changes here are saved immediately.</p>
+    <div className="set-group-head"><h4>Your tasks</h4><span className="set-group-note scheduled-task-count">{schedules.length ? `${activeCount} active · ${schedules.length - activeCount} inactive` : ""}</span>{schedules.length > 0 && <button type="button" className="secondary-button scheduled-task-add" onClick={(event) => openEditor(undefined, event.currentTarget)}><Plus size={12} />New task</button>}</div>
+    <p>Recurring prompts for your chats and projects. Tasks run while Mythra Code is open.</p>
     {notice && <p className="scheduled-task-error" role="alert">{notice}</p>}
     {schedules.length ? <div className="scheduled-task-list">{schedules.map((schedule) => {
       const run = schedule.run;
@@ -128,23 +130,24 @@ export function ScheduledTasksSettings({ visible, settings, schedules, projects,
           : schedule.unconfirmedThreadId ? <p className="scheduled-task-timing"><Clock3 size={13} />Waiting for confirmation of the previous run</p>
             : <p className="scheduled-task-timing"><Clock3 size={13} />{schedule.enabled ? `Next run: ${timeLabel(schedule.nextRunAt)}` : "Not running until enabled"}{schedule.lastRunAt ? ` · Last started: ${timeLabel(schedule.lastRunAt)}` : ""}</p>}
         <div className="scheduled-task-actions">
-          <label className="scheduled-task-switch"><button type="button" role="switch" className={`toggle-switch ${schedule.enabled ? "on" : ""}`} aria-label={`${schedule.name} active`} aria-checked={schedule.enabled} disabled={missingProject && !schedule.enabled} onClick={() => onSchedules((current) => current.map((item) => item.id === schedule.id ? { ...item, enabled: !item.enabled, nextRunAt: !item.enabled ? nextScheduledRunAt(item) : item.nextRunAt } : item))}><span /></button><span>{schedule.enabled ? "Enabled" : "Disabled"}</span></label>
+          <label className="scheduled-task-switch"><Switch checked={schedule.enabled} label={`${schedule.name} active`} disabled={missingProject && !schedule.enabled} onChange={() => onSchedules((current) => current.map((item) => item.id === schedule.id ? { ...item, enabled: !item.enabled, nextRunAt: !item.enabled ? nextScheduledRunAt(item) : item.nextRunAt } : item))} /><span>{schedule.enabled ? "Enabled" : "Disabled"}</span></label>
           <button type="button" className="secondary-button" onClick={(event) => openEditor(schedule, event.currentTarget)} aria-label={`Edit ${schedule.name}`}><Pencil size={12} />Edit</button>
           <button type="button" className="icon-button" disabled={!schedule.projectId || missingProject || schedule.scheduleMode === "daily"} aria-label={`Convert ${schedule.name} to workflow`} title={schedule.scheduleMode === "daily" ? "Daily times are supported in scheduled tasks, not workflows" : "Convert to a project workflow"} onClick={() => {
             try { onWorkflows([workflowFromSchedule(schedule, schedule.run ?? scheduleRunSnapshot(settings)), ...workflows]); }
             catch (reason) { setNotice(friendlyError(reason)); }
           }}><Workflow size={14} /></button>
           <button type="button" className="icon-button" aria-label={`Delete ${schedule.name}`} onClick={async () => {
-            if (await confirmDialog(`Delete the scheduled task “${schedule.name}”? It will stop running.`)) onSchedules((current) => current.filter((item) => item.id !== schedule.id));
+            if (await confirmDialog(`Delete the scheduled task “${schedule.name}”? It will stop running.`, { confirmLabel: "Delete task" })) onSchedules((current) => current.filter((item) => item.id !== schedule.id));
           }}><Trash2 size={14} /></button>
         </div>
       </article>;
-    })}</div> : <div className="scheduled-task-empty"><CalendarClock size={26} /><strong>No scheduled tasks exist</strong><span>Add a task to have a prompt run on a regular schedule.</span></div>}
-    {scheduleRuns.length > 0 && <details className="scheduled-task-history"><summary>Recent runs <span>{Math.min(scheduleRuns.length, 10)}</span></summary><div className="schedule-run-list">{scheduleRuns.slice(0, 10).map((run) => <div key={run.id} className={run.status === "failed" ? "failed" : ""}>
+    })}</div> : <EmptyState icon={CalendarClock} title="No scheduled tasks" detail="Run a prompt on a schedule, in a chat or a project."
+      // Sol R6 M09: with no tasks, the one next action sits in the empty card.
+      action={<button type="button" className="secondary-button scheduled-task-add" onClick={(event) => openEditor(undefined, event.currentTarget)}><Plus size={12} />New task</button>} />}
+    {scheduleRuns.length > 0 && <details className="scheduled-task-history"><summary className="set-disclosure"><ChevronRight size={13} aria-hidden="true" className="set-disclosure-chevron" />Recent runs <span>{Math.min(scheduleRuns.length, 10)}</span></summary><div className="schedule-run-list">{scheduleRuns.slice(0, 10).map((run) => <div key={run.id} className={run.status === "failed" ? "failed" : ""}>
       <span className={`status-orb ${run.status === "failed" ? "failed" : "ready"}`} /><span className="schedule-run-copy"><strong>{run.scheduleName} · {run.status === "failed" ? "Failed" : "Started"}</strong><small title={run.error}>{timeLabel(run.at)}{run.error ? ` · ${run.error}` : ""}</small></span>
       {run.threadId && onOpenRun && <button type="button" onClick={() => onOpenRun(run.threadId!)} aria-label={`Open run thread for ${run.scheduleName}`}><Play size={11} />Open</button>}
     </div>)}</div></details>}
-    <button type="button" className="secondary-button scheduled-task-add" onClick={(event) => openEditor(undefined, event.currentTarget)}><Plus size={15} />Add a task</button>
     {visible && draft && rootRef.current && createPortal(<ScheduleEditor initial={draft} settings={settings} projects={projects} modelCatalogs={modelCatalogs} onDiscoverOpenRouterModels={onDiscoverOpenRouterModels} onClose={closeEditor} onSave={save} />, rootRef.current.closest(".app-shell") ?? rootRef.current)}
   </section>;
 }
@@ -202,6 +205,7 @@ function ScheduleEditor({ initial, settings, projects, modelCatalogs, onDiscover
   };
   return <dialog ref={dialogRef} role="dialog" aria-modal="true" className="scheduled-task-dialog" data-closing={closing || undefined} aria-labelledby={titleId} onCancel={(event) => { event.preventDefault(); close(); }} onKeyDown={(event) => {
     if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); close(); }
+    else if (event.key === "Tab") containTab(event.currentTarget, event.nativeEvent);
   }} onPointerDown={(event) => {
     if (event.target !== event.currentTarget) return;
     const box = event.currentTarget.getBoundingClientRect();
@@ -224,7 +228,7 @@ function ScheduleEditor({ initial, settings, projects, modelCatalogs, onDiscover
           <div className="schedule-field scheduled-task-wide"><span>Each run</span><AppSelectMenu ariaLabel="Task thread behavior" value={draft.threadMode} options={[{ value: "new", label: "New thread each time" }, { value: "reuse", label: "Continue the same thread" }]} portal onChange={(threadMode) => setDraft({ ...draft, threadMode: threadMode as ScheduleThreadMode })} /></div>
         </div>
         <label className="schedule-prompt-control"><span>Prompt</span><textarea required spellCheck aria-label="Task prompt" value={draft.prompt} placeholder="What should the model do?" rows={5} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} /></label>
-        <div className="scheduled-task-enabled"><div><strong>Task is active</strong><small>{draft.enabled ? draft.scheduleMode === "daily" ? "Its first run is at the next chosen time." : "Its first run is scheduled after the chosen interval." : "Save it without running it until you enable it."}</small></div><button type="button" role="switch" aria-label="Task is active" aria-checked={draft.enabled} className={`toggle-switch ${draft.enabled ? "on" : ""}`} onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}><span /></button></div>
+        <div className="scheduled-task-enabled"><div><strong>Task is active</strong><small>{draft.enabled ? draft.scheduleMode === "daily" ? "Its first run is at the next chosen time." : "Its first run is scheduled after the chosen interval." : "Save it without running it until you enable it."}</small></div><Switch checked={draft.enabled} label="Task is active" onChange={() => setDraft({ ...draft, enabled: !draft.enabled })} /></div>
         <p className="schedule-runtime-note"><Info size={13} />Mythra Code must be open. Scheduled runs use this task’s saved settings and do not ask for approvals.</p>
         {projectMissing && <p role="alert" className="scheduled-task-error">This project is no longer available. Choose Chats or another project.</p>}
         {providerUnsupported && <p role="alert" className="scheduled-task-error">Choose OpenAI, OpenRouter, or LM Studio for scheduled tasks.</p>}

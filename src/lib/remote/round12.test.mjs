@@ -102,7 +102,7 @@ test("no projects offers adding one only to a device allowed to", () => {
 test("no ready provider names where to sign in, and an unanswered list isn't called empty", () => {
   const shown = guide({ providers: [{ ready: false }] });
   assert.equal(shown.kind, "noProviders");
-  assert.match(shown.body, /Accounts & connections/);
+  assert.match(shown.body, /Models & accounts/);
   assert.equal(guide({ providers: [] }).kind, "noProviders");
   assert.equal(guide({ providers: null }), null);
 });

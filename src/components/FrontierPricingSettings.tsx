@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { AnthropicLogo, OpenAILogo } from "./BrandLogos";
 import { useFrontierPricing } from "../hooks/useFrontierPricing";
 import type { FrontierPricingEntry, FrontierPricingProvider, FrontierPricingSource, FrontierTokenRates } from "../lib/frontierPricing";
+import { SettingInfo } from "./SettingsBits";
 import "./FrontierPricingSettings.css";
 
 const PROVIDERS: ReadonlyArray<{ id: FrontierPricingSource; label: string; page: string }> = [
@@ -33,7 +34,7 @@ export function formatRate(value: number | undefined): string | null {
 
 function Rate({ value }: { value: number | undefined }) {
   const text = formatRate(value);
-  return text ? <span className="frontier-pricing-rate">{text}</span> : <span className="frontier-pricing-missing">Not published</span>;
+  return text ? <span className="frontier-pricing-rate">{text}</span> : <span className="frontier-pricing-missing" title="The provider hasn’t published this rate">Not published</span>;
 }
 
 function when(at: number): string {
@@ -168,7 +169,7 @@ function ProviderSection({ provider, label, page, status, models, checking, quer
       ? <div className="frontier-pricing-table-wrap">
         <table className="frontier-pricing-table" aria-labelledby={headingId}>
           <thead>
-            <tr><th scope="col">Model</th><th scope="col">Input</th><th scope="col">Cache read</th><th scope="col">Cache write</th><th scope="col">Output</th></tr>
+            <tr><th scope="col">Model <span className="frontier-pricing-unit">· USD per 1M tokens</span></th><th scope="col">Input</th><th scope="col">Cache read</th><th scope="col">Cache write</th><th scope="col">Output</th></tr>
           </thead>
           {models.map((entry) => <ModelRows key={entry.id} entry={entry} verifiedDay={verifiedDay} />)}
         </table>
@@ -205,10 +206,6 @@ export function FrontierPricingView({ entries, providers, checking, onRefresh }:
   };
 
   return <div className="frontier-pricing">
-    <p className="frontier-pricing-intro">
-      Pay-as-you-go API list prices for active models in US dollars per 1M tokens.
-      Claude and ChatGPT subscription allowances are separate.
-    </p>
     <div className="frontier-pricing-toolbar">
       <div className="frontier-pricing-filter" role="radiogroup" aria-label="Company">
         {FILTERS.map(({ id, label }, index) => (
@@ -258,8 +255,7 @@ export function FrontierPricingView({ entries, providers, checking, onRefresh }:
       />
     ))}
     <p className="frontier-pricing-footnote">
-      Cache read is the discounted rate for cached input. Anthropic lists separate 5-minute and 1-hour cache-write rates, and OpenAI lists 30-minute and 12-hour rates where published.
-      Long-context rates apply above the model’s input-token threshold. The table covers standard global pricing and shows thresholds where available.
+      US dollars per 1M tokens. Subscription allowances are separate. <SettingInfo label="About these rates">Cache read is the discounted rate for cached input. Anthropic lists separate 5-minute and 1-hour cache-write rates, and OpenAI lists 30-minute and 12-hour rates where published. Long-context rates apply above the model’s input-token threshold. The table covers standard global pricing and shows thresholds where available.</SettingInfo>
     </p>
   </div>;
 }

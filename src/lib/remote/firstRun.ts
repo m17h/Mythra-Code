@@ -22,12 +22,12 @@ export function remoteGuide({ name, loading, workspaces, chosenWorkspace, provid
     body: `On ${name}, open ${DEVICES}, choose this device, and pick what it can use. Then check again here.`, actions: ["checkAgain"] };
   const chats = workspaces.some((entry) => entry.isChat);
   if (!workspaces.some((entry) => !entry.isChat) && !chosenWorkspace) return { kind: "noProjects", title: `No projects on ${name} yet`,
-    body: canAddProjects ? `Add a folder from ${name} to work on it from here.${chats ? " You can also start a normal chat." : ""}`
+    body: canAddProjects ? `Add a folder from ${name} to work on it from here.${chats ? " You can also start a chat." : ""}`
       : `Add a project on ${name} itself, or on ${name} turn on Work with all projects and Manage projects for this device in ${DEVICES}. Then check again here.`,
     actions: [...(canAddProjects ? ["addProject" as const] : []), ...(chats ? ["openChats" as const] : []), ...(canAddProjects ? [] : ["checkAgain" as const])] };
   if (!chosenWorkspace) return { kind: "chooseProject", title: `Choose a project on ${name}`, body: "Pick one on the left to see its threads.", actions: [] };
   if (providers && !providers.some((provider) => provider.ready)) return { kind: "noProviders", title: `${name} isn't signed in to an AI service yet`,
-    body: `Work runs on ${name}, with its own accounts, so nothing can start until one is connected there. On ${name}, open Settings → Accounts & connections and sign in. Then check again here.`, actions: ["checkAgain"] };
+    body: `Work runs on ${name}, with its own accounts, so nothing can start until one is connected there. On ${name}, open Settings → Models & accounts and sign in. Then check again here.`, actions: ["checkAgain"] };
   if (!canWork) return { kind: "viewOnly", title: `This device can look at ${name}, but not work on it`,
     body: remoteWorkAccessHint(name), actions: ["checkAgain"] };
   return null;

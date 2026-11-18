@@ -114,23 +114,27 @@
   --mythra-logo-dy: -4px;
   animation-delay: 1.05s;
 }
-.mythra-logo__button[data-idle] .mythra-logo__bob {
-  animation-name: mythra-logo-breathe;
-  animation-duration: 5.6s;
-  animation-timing-function: ease-in-out;
-  animation-iteration-count: infinite;
-}
-.mythra-logo__button[data-idle] .mythra-logo__sheen {
-  animation: mythra-logo-sheen 7.5s cubic-bezier(.45, .05, .55, .95) 1.2s infinite;
+/* Idle: one breath, one sheen and one caret blink after the logo assembles,
+   then it rests. Pro UI has no infinite decorative loops (docs/design/pro-ui.md). */
+@media (prefers-reduced-motion: no-preference) {
+  .mythra-logo__button[data-idle] .mythra-logo__bob {
+    animation-name: mythra-logo-breathe;
+    animation-duration: 5.6s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: 1;
+  }
+  .mythra-logo__button[data-idle] .mythra-logo__sheen {
+    animation: mythra-logo-sheen 7.5s cubic-bezier(.45, .05, .55, .95) 1.2s 1;
+  }
+  .mythra-logo__button[data-idle] .mythra-logo__cursor {
+    animation: mythra-logo-blink 1.1s steps(1) 2;
+  }
 }
 
 .mythra-logo__cursor {
   /* Follows the active theme (see MythraMarkColors.css / Lumen tokens). */
   fill: var(--mythra-mark-caret, #dffbfe);
   opacity: 0;
-}
-.mythra-logo__button[data-idle] .mythra-logo__cursor {
-  animation: mythra-logo-blink 1.1s steps(1) infinite;
 }
 
 .mythra-logo__button[aria-pressed="true"] .mythra-logo__bob { animation-play-state: paused; }

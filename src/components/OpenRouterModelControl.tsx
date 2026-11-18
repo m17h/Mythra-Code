@@ -1,13 +1,17 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { Check, ChevronDown, Gauge, Search } from "lucide-react";
-import { ModelCatalogHeader } from "./ModelCatalogHeader";
+import { withShortcut } from "../lib/shortcuts";
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { ChevronDown, Gauge, Search } from "lucide-react";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
-import { ModelFavoriteStar, type ModelFavoriteProps } from "./ModelFavoriteStar";
+import { EmptyState } from "./EmptyState";
+import { ModelCatalogHeader } from "./ModelCatalogHeader";
+import type { ModelFavoriteProps } from "./ModelFavoriteStar";
+import { ModelCatalogRow } from "./ModelCatalogRow";
 import type { ReasoningEffort } from "./ModelPowerControl";
 import { OpenRouterLogo } from "./BrandLogos";
-import { filterOpenRouterModels, looksLikeModelSlug, type OpenRouterModel } from "../lib/openRouterCatalog";
+import { filterOpenRouterModels, looksLikeModelSlug, openRouterVendor, type OpenRouterModel } from "../lib/openRouterCatalog";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 import { closesModelMenu } from "../lib/composerMenus";
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
 
 export type { OpenRouterModel };
 
@@ -33,8 +37,7 @@ function compactContext(value?: number): string {
 }
 
 function providerName(id: string): string {
-  const provider = id.split("/")[0] || "OpenRouter";
-  return provider.replace(/(^|-)([a-z])/g, (_, separator: string, letter: string) => `${separator}${letter.toUpperCase()}`);
+  return openRouterVendor(id).name;
 }
 
 export function OpenRouterModelControl({
@@ -74,7 +77,7 @@ export function OpenRouterModelControl({
   const [showAll, setShowAll] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const menuId = useId();
   const normalizedEffort = effort === "ultra" ? "max" : effort;
   const effortIndex = Math.max(0, EFFORTS.findIndex((entry) => entry.value === normalizedEffort));
   const fill = (effortIndex / (EFFORTS.length - 1)) * 100;
@@ -99,29 +102,20 @@ export function OpenRouterModelControl({
     function handlePointerDown(event: PointerEvent) {
       if (closesModelMenu(event, rootRef.current)) setOpen(false);
     }
-    // Capture phase + stopPropagation: Escape closes only this menu and never
-    // reaches the app-level handler that stops the running turn.
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        setOpen(false);
-        rootRef.current?.querySelector<HTMLButtonElement>(".openrouter-trigger")?.focus();
-      }
-    }
     document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("click", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown, true);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("click", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [open]);
 
-  useEffect(() => {
-    if (open) requestAnimationFrame(() => searchRef.current?.focus());
-    else setShowAll(false);
-  }, [open]);
+  useEffect(() => { if (!open) setShowAll(false); }, [open]);
+
+  // Shared search-first menu contract (see useMenuKeyboard).
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuKeys = useMenuKeyboard({ open, setOpen, menuRef, triggerRef, searchRef, answersModelShortcut: true });
 
   // The account catalog is complete. Only a complete custom slug needs a
   // direct lookup; ordinary searches remain instant and exhaustive locally.
@@ -131,78 +125,63 @@ export function OpenRouterModelControl({
     return () => window.clearTimeout(timer);
   }, [onDiscover, open, query]);
 
-  const chooseModel = (id: string) => {
+  const chooseModel = (id: string) => menuKeys.select(() => {
     onModel(id);
     setSearch("");
-    setOpen(false);
-  };
-
-  const handleOptionKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    // Filtering shrinks the list without truncating the ref array; only
-    // connected nodes are real navigation targets.
-    const enabled = optionRefs.current.filter((item): item is HTMLButtonElement => Boolean(item?.isConnected));
-    const index = enabled.indexOf(event.currentTarget);
-    if (event.key === "ArrowDown") { event.preventDefault(); enabled[(index + 1) % enabled.length]?.focus(); }
-    if (event.key === "ArrowUp") { event.preventDefault(); (index <= 0 ? searchRef.current : enabled[index - 1])?.focus(); }
-  };
+  });
 
   return (
     <div className="openrouter-control" ref={rootRef} style={{ "--router-fill": `${fill}%` } as CSSProperties}>
       {providerControl}
       <div className={`openrouter-picker ${open ? "open" : ""}`}>
-        <button type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`OpenRouter model: ${selected?.name || model || "not selected"}`} onClick={() => setOpen((value) => !value)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }}>
+        <button ref={triggerRef} type="button" className="openrouter-trigger" aria-haspopup="menu" aria-expanded={open} aria-controls={menuId} aria-label={`OpenRouter model: ${selected?.name || model || "not selected"}`} title={withShortcut(`Model: ${selected?.name || model || "not selected"}`, "modelPicker")} onPointerDown={menuKeys.onTriggerPointerDown} onClick={() => setOpen((value) => !value)} onKeyDown={menuKeys.onTriggerKeyDown}>
           <span className="openrouter-logo openrouter-brand-logo"><OpenRouterLogo size={16} /></span>
           <span className="openrouter-trigger-copy">
             <small>Model</small>
-            <strong>{selected?.name || model || "Choose a model"}</strong>
+            <strong>{selected?.name || model || "Model"}</strong>
             <em>{model ? `${providerName(model)}${selected?.context_length ? ` · ${compactContext(selected.context_length)}` : ""}` : `${models.length || "Live"} tool-capable models`}</em>
           </span>
           <ChevronDown size={15} />
         </button>
 
-        <div className="openrouter-menu">
+        <div className="openrouter-menu" inert={!open || undefined} onKeyDown={menuKeys.onMenuKeyDown}>
           <ModelCatalogHeader provider="OpenRouter" heading={query ? `${matches.length} match${matches.length === 1 ? "" : "es"}` : `${models.length} available`} description={searching ? "Searching OpenRouter…" : favorites.length ? "Favorites first · tool-capable catalog" : "Tool-capable catalog"} loading={loading} onRefresh={onRefresh} />
           <div className="openrouter-search-row">
             <Search size={14} />
-            <input ref={searchRef} aria-label="Search OpenRouter models" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); optionRefs.current.find((item) => item?.isConnected)?.focus(); } }} placeholder="Search models or enter provider/model…" />
+            <input ref={searchRef} aria-label="Search OpenRouter models" aria-controls={menuId} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search models or enter provider/model…" />
           </div>
-          <div className="openrouter-options" role="menu" aria-label="OpenRouter model selector">
+          <div ref={menuRef} id={menuId} className="openrouter-options" role="menu" aria-label="OpenRouter model selector">
             {visible.map((entry, index) => (
               <Fragment key={entry.id}>
-                {starredVisible > 0 && index === 0 && <p className="model-group-label">Favorites</p>}
-                {starredVisible > 0 && index === starredVisible && <p className="model-group-label">All models</p>}
-                <div className="model-row" role="none">
-                <button
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={entry.id === model}
-                  aria-label={`${entry.name || entry.id}, ${providerName(entry.id)}`}
-                  className={entry.id === model ? "selected" : ""}
-                  ref={(node) => { optionRefs.current[index] = node; }}
-                  onKeyDown={handleOptionKeyDown}
-                  onClick={() => chooseModel(entry.id)}
-                >
-                  <span className="openrouter-provider-mark">{providerName(entry.id).slice(0, 2).toUpperCase()}</span>
-                  <span><strong>{entry.name || entry.id}</strong><small>{entry.id}</small></span>
-                  <span className="openrouter-model-meta">{compactContext(entry.context_length)}{entry.supported_parameters?.includes("reasoning") ? " · reasoning" : ""}</span>
-                  {entry.id === model && <Check size={13} />}
-                </button>
-                {onToggleFavorite && <ModelFavoriteStar model={entry.id} label={entry.name || entry.id} favorite={favorites.includes(entry.id)} onToggle={onToggleFavorite} />}
-                </div>
+                {starredVisible > 0 && index === 0 && <p className="model-group-label" role="presentation">Favorites</p>}
+                {starredVisible > 0 && index === starredVisible && <p className="model-group-label" role="presentation">All models</p>}
+                <ModelCatalogRow
+                  id={entry.id}
+                  name={entry.name || entry.id}
+                  detail={entry.id}
+                  art={<span className="openrouter-provider-mark">{(entry.id.split("/")[0] || "OpenRouter").slice(0, 2).toUpperCase()}</span>}
+                  meta={`${compactContext(entry.context_length)}${entry.supported_parameters?.includes("reasoning") ? " · reasoning" : ""}`}
+                  selected={entry.id === model}
+                  groupEnd={false}
+                  ariaLabel={`${entry.name || entry.id}, ${providerName(entry.id)}`}
+                  favorite={onToggleFavorite ? favorites.includes(entry.id) : undefined}
+                  onToggleFavorite={onToggleFavorite}
+                  onSelect={() => chooseModel(entry.id)}
+                />
               </Fragment>
             ))}
             {hidden > 0 && (
-              <button type="button" className="model-show-all" onClick={() => setShowAll(true)}>
+              <button type="button" role="menuitem" tabIndex={-1} className="model-show-all" onClick={() => setShowAll(true)}>
                 Show all {matches.length} models ({hidden} more)
               </button>
             )}
             {canUseCustom && (
-              <button type="button" role="menuitemradio" aria-checked={false} className="custom-model-option" onClick={() => chooseModel(query)}>
+              <button type="button" role="menuitemradio" aria-checked={false} tabIndex={-1} className="custom-model-option" onClick={() => chooseModel(query)}>
                 <span className="openrouter-provider-mark">+</span>
                 <span><strong>Use model slug directly</strong><small>{query}</small></span>
               </button>
             )}
-            {!loading && !searching && !visible.length && !canUseCustom && <div className="openrouter-empty"><strong>No matching models</strong><span>{error || "Enter a complete provider/model slug to use it directly."}</span></div>}
+            {!loading && !searching && !visible.length && !canUseCustom && <EmptyState variant="compact" className="model-menu-empty" icon={Search} role="status" title="No matching models" text="Enter a complete provider/model slug to use it directly." />}
           </div>
           {error && <div className="openrouter-catalog-warning" role={open ? "status" : undefined}>{error} · Custom slugs still work.</div>}
         </div>
@@ -211,7 +190,7 @@ export function OpenRouterModelControl({
       <div className={`openrouter-reasoning ${effortIndex === EFFORTS.length - 1 ? "effort-max" : ""}`} style={effortFlairStyle(effortIndex, EFFORTS.length)}>
         <div className="openrouter-reasoning-heading"><Gauge size={13} /><span>Reasoning</span><strong key={EFFORTS[effortIndex].value}>{EFFORTS[effortIndex].label}</strong></div>
         <EffortSlider variant="router" index={effortIndex} count={EFFORTS.length} effortValues={EFFORTS.map((entry) => entry.value)} ariaLabel="OpenRouter reasoning effort" valueText={EFFORTS[effortIndex].label} onIndex={(next) => onEffort(EFFORTS[next].value)} />
-        <div className="openrouter-reasoning-labels">{EFFORTS.map((entry, index) => <span key={entry.value} className={index === effortIndex ? "active" : ""}>{entry.shortLabel}</span>)}</div>
+        <div className="openrouter-reasoning-labels" aria-hidden="true">{EFFORTS.map((entry, index) => <span key={entry.value} className={index === effortIndex ? "active" : ""}>{entry.shortLabel}</span>)}</div>
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Info } from "lucide-react";
+import { Switch } from "./SettingsBits";
+import { Check, ChevronRight, Info } from "lucide-react";
 import type { Project, Provider } from "../types";
 import type { PreferenceHistoryProgress } from "../hooks/usePreferenceLearning";
 import { providerDisplayName } from "../lib/childAgents";
@@ -19,7 +20,7 @@ import {
 } from "../lib/preferenceLearningStore";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import type { ChildAgentModelOption } from "./ChildAgentRoster";
-import { PixelWorkingMark } from "./PixelWorkingMark";
+import { WorkingIndicator } from "./WorkingIndicator";
 import { InfoPopover } from "./InfoPopover";
 import "./PreferenceLearningSettings.css";
 
@@ -79,8 +80,8 @@ export function PreferenceLearningSettings(props: Props) {
   const scopeKey = selectedScopeAvailable ? selectedScope : "app";
   useEffect(() => { if (!selectedScopeAvailable) setSelectedScope("app"); }, [selectedScopeAvailable]);
   return <div className="set-group preference-learning-settings">
-    <div className="set-group-head"><h4>Learned preferences</h4><span className="set-group-note">Saves automatically</span><LearningExperimentalNotice /></div>
-    <p>Learn how you like to work from finished conversations. Learned instructions are added as their own layer; your prompts are never edited. You get a notification whenever they change.</p>
+    <div className="set-group-head"><h4>Learned preferences</h4><LearningExperimentalNotice /></div>
+    <p>Learn how you like to work from finished conversations. Your own prompts are never edited.</p>
     <fieldset ref={scopePickerRef} className="preference-learning-scope" disabled={scopeBusy}>
       <span>Scope</span>
       <AppSelectMenu ariaLabel="Preference learning scope" value={scopeKey} options={scopes} portal searchable={scopes.length > 8} onChange={setSelectedScope} />
@@ -103,6 +104,7 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
   const [busy, setBusy] = useState(false);
   const [historyPending, setHistoryPending] = useState(false);
   const lastRequestedHistoryRun = useRef<string | undefined>(undefined);
+  const modelRowRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<{ markdown: string; revision: number; baseMarkdown: string } | null>(null);
   const [recoverable, setRecoverable] = useState<{ markdown: string; revision: number } | null>(null);
   const mounted = useRef(true);
@@ -125,7 +127,7 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
   const catalog = modelCatalogs[scope.provider] ?? [];
   const luna = resolvePreferenceLearningModel("openai", "", modelCatalogs);
   const options: AppSelectOption[] = [
-    ...(scope.provider === "openai" ? [{ value: "", label: "Automatic · latest GPT-6 Luna", detail: luna ?? "Unavailable until the live catalog includes GPT-6 Luna" }] : []),
+    ...(scope.provider === "openai" ? [{ value: "", label: "Automatic", detail: luna ?? "Newest GPT-6 Luna in your account" }] : []),
     ...catalog.map((entry) => ({ value: entry.id, label: entry.label, detail: entry.detail ?? entry.id, keywords: entry.keywords })),
   ];
   const missingModel = Boolean(scope.model && !catalog.some((entry) => entry.id === scope.model));
@@ -201,7 +203,7 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
 
   const historyStatus = <div className="preference-learning-history-progress" aria-live="polite">
     {!historyWorking && !history && <p className="preference-learning-history-state">{historyActiveElsewhere ? "Another history analysis is running. Select that scope to view its progress." : removedProject ? "History analysis is unavailable for this removed project." : scope.enabled ? "Ready to analyze recent conversations." : "Enable this scope to analyze recent conversations."}</p>}
-    {historyWorking && <p className="preference-learning-history-state" data-history-status={history?.status ?? "reading"}><PixelWorkingMark /><span>{historyPhase}</span></p>}
+    {historyWorking && <p className="preference-learning-history-state" data-history-status={history?.status ?? "reading"}><WorkingIndicator size={12} /><span>{historyPhase}</span></p>}
     {historyWorking && <p>{providerDisplayName(analysisProvider)} · {analysisModel ?? "No available learning model"}</p>}
     {historyFinished && <p className="preference-learning-history-state complete" data-history-status={history?.status}><Check size={16} aria-hidden="true" /><span>{completion}</span></p>}
     {historyFinished && <p className="preference-learning-history-coverage">This bounded history pass does not cover all history.</p>}
@@ -224,18 +226,32 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
       </div>
       <fieldset className="preference-learning-controls" disabled={removedProject}>
       <div className="set-row">
-        <div className="set-copy"><strong>Automatically learn preferences</strong><small>Changes are saved immediately, independently of Save settings.</small></div>
-        <div className="set-control"><button type="button" role="switch" aria-label="Automatically learn preferences" aria-checked={scope.enabled} className={`toggle-switch ${scope.enabled ? "on" : ""}`} disabled={!scope.enabled && !usableModel} onClick={() => void run(() => configurePreferenceLearning(scopeKey, { enabled: !scope.enabled }), `Preference learning ${scope.enabled ? "disabled" : "enabled"} for ${scopeName}.`)}><span /></button></div>
+        <div className="set-copy"><strong>Automatically learn preferences</strong><small>{!scope.enabled && !usableModel
+          // M11: say exactly what is missing. "Automatic" can be showing
+          // below while its model isn't listed yet, so don't just say "choose".
+          ? scope.provider === "openai" && !scope.model
+            ? "Needs GPT-6 Luna for Automatic, which your OpenAI account doesn’t list yet. Choose another learning model below to turn this on."
+            : `Needs a learning model. Choose one of ${providerDisplayName(scope.provider)}’s models below to turn this on.`
+          : "Learn from conversations in this scope."}</small></div>
+        <div className="set-control">
+          {/* M10 (round 6): the remedy sits beside the blocked switch. It
+              opens the learning-model menu below; nothing is turned on. */}
+          {!scope.enabled && !usableModel && <button type="button" className="secondary-button preference-learning-remedy" onClick={() => {
+            const trigger = modelRowRef.current?.querySelector<HTMLButtonElement>(".set-control button");
+            trigger?.scrollIntoView?.({ block: "nearest" });
+            trigger?.focus();
+            trigger?.click();
+          }}>Choose a learning model</button>}
+          <Switch checked={scope.enabled} label="Automatically learn preferences" disabled={!scope.enabled && !usableModel} onChange={() => void run(() => configurePreferenceLearning(scopeKey, { enabled: !scope.enabled }), `Preference learning ${scope.enabled ? "disabled" : "enabled"} for ${scopeName}.`)} /></div>
       </div>
       <div className="set-row">
         <div className="set-copy"><strong>Learning provider</strong><small>The account used to learn preferences.</small></div>
         <div className="set-control"><AppSelectMenu ariaLabel="Preference learning provider" value={scope.provider} options={PROVIDERS.map((provider) => ({ value: provider, label: providerDisplayName(provider) }))} portal onChange={(provider) => void run(() => configurePreferenceLearning(scopeKey, { provider: provider as Provider, model: "", enabled: false }))} /></div>
       </div>
-      <div className="set-row">
-        <div className="set-copy"><strong>Learning model</strong><small>{missingModel ? "The saved model is absent from this live catalog; its exact ID is preserved." : scope.provider === "openai" ? "Automatic follows the newest available GPT-6 Luna." : "Choose from this provider's live catalog."}</small></div>
-        <div className="set-control"><AppSelectMenu ariaLabel="Preference learning model" value={scope.model} options={options} portal selectedDisplay={missingModel ? { label: scope.model, detail: "Saved model · not in current catalog" } : undefined} placeholder={scope.provider === "openai" ? "Automatic · latest GPT-6 Luna" : "Choose a model"} searchable={options.length > 8} emptyMessage="No live models available. Refresh this provider's catalog in Models & accounts." onChange={(model) => void run(() => configurePreferenceLearning(scopeKey, { model }))} /></div>
+      <div className="set-row" ref={modelRowRef}>
+        <div className="set-copy"><strong>Learning model</strong><small>{missingModel ? "Your saved model isn’t in this provider’s current list. It’s kept as is." : scope.provider === "openai" ? (luna ? "Automatic uses the newest GPT-6 Luna." : "Automatic uses GPT-6 Luna once your account lists it.") : "Choose from this provider’s models."}</small></div>
+        <div className="set-control"><AppSelectMenu ariaLabel="Preference learning model" value={scope.model} options={options} portal selectedDisplay={missingModel ? { label: scope.model, detail: "Saved model" } : scope.provider === "openai" && !scope.model ? { label: "Automatic", detail: luna ?? "GPT-6 Luna" } : undefined} placeholder={scope.provider === "openai" ? "Automatic" : "Choose a model"} searchable={options.length > 8} emptyMessage="No live models available. Refresh this provider's catalog in Models & accounts." onChange={(model) => void run(() => configurePreferenceLearning(scopeKey, { model }))} /></div>
       </div>
-      {!usableModel && <p className="preference-learning-unavailable" role="status">{scope.provider === "openai" ? "Automatic learning is waiting for GPT-6 Luna in the live model catalog. Choose an available model or refresh Models & accounts." : "Choose a learning model before enabling."}</p>}
       </fieldset>
       {showDocument && <div className="set-row stack">
         <div className="set-copy"><strong>Learned instructions</strong><small>Added as a separate system prompt layer. Your global, provider, project, and profile prompts stay as you wrote them. Disabling this scope stops learning and applying its layer.</small></div>
@@ -256,7 +272,7 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
       </div>}
     </fieldset>
       {onLearnPastConversations && <details className="set-body preference-learning-history" open={historyOpen} onToggle={(event) => setHistoryOpen(event.currentTarget.open)}>
-        <summary>Learn from past conversations</summary>
+        <summary className="set-disclosure"><ChevronRight size={13} aria-hidden="true" className="set-disclosure-chevron" />Learn from past conversations</summary>
         <p>Analyze a bounded selection of recent conversations in this scope: up to eight chats and three pages per chat in one pass, not all history. The chosen provider receives those older messages, using additional quota or credits. Older conversations may contain unmarked automated input, so review what is learned.</p>
         {historyStatus}
         <div className="preference-learning-actions">

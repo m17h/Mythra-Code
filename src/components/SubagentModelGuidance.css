@@ -1,7 +1,7 @@
 .model-guidance { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
 
 /* Saved entries: one compact row each, separated by hairlines. */
-.model-guidance-list { min-width: 0; display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: var(--r-sm); background: rgba(255,255,255,.012); }
+.model-guidance-list { min-width: 0; display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-quiet); }
 .model-guidance-list > li + li { border-top: 1px solid var(--line); }
 .model-guidance-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; align-items: center; gap: var(--s-2); min-height: 44px; padding: 5px 5px 5px var(--s-2); }
 .model-guidance-model { min-width: 0; display: flex; align-items: center; gap: 8px; }
@@ -29,7 +29,7 @@
 
 /* The one open editor: inline in place of its row, or below the list. */
 .model-guidance-editing { padding: 6px; }
-.model-guidance-form { min-width: 0; display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-2); border: 1px solid color-mix(in srgb, var(--info) 24%, var(--line)); border-radius: var(--r-sm); background: rgba(255,255,255,.012); }
+.model-guidance-form { min-width: 0; display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-2); border: 1px solid color-mix(in srgb, var(--info) 24%, var(--line)); border-radius: var(--r-sm); background: var(--surface-quiet); }
 .model-guidance-form-title { margin: 0; color: var(--text); font-size: var(--fs-meta); font-weight: 600; overflow-wrap: anywhere; }
 .model-guidance-pickers { display: grid; grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr); align-items: center; gap: 6px; }
 .model-guidance-pickers > div { min-width: 0; }

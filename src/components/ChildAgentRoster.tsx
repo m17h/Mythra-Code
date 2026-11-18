@@ -1,3 +1,4 @@
+import "./ChildAgentRoster.css";
 import { defaultChildAgentModel, defaultChildAgentModelIssue, defaultChildAgentModelNotice, modelOptionsFor, REASONING_OPTIONS, type ChildAgentModelCatalogs } from "./subAgentModelOptions";
 import { useId, useState } from "react";
 import { AlertTriangle, ChevronDown, Plus, Trash2 } from "lucide-react";
@@ -161,7 +162,7 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
                           label: providerDisplayName(provider),
                           disabled: provider !== target.provider && Boolean(defaultChildAgentModelIssue(provider, modelCatalogs)),
                           detail: provider !== target.provider && (defaultChildAgentModelIssue(provider, modelCatalogs) || defaultChildAgentModelNotice(provider, modelCatalogs)) || (provider === "openai"
-                            ? "Codex · subscription or API key"
+                            ? "ChatGPT plan or API key"
                             : provider === "claude"
                               ? "Claude Code · subscription or API key"
                               : provider === "cursor"

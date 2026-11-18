@@ -1,4 +1,6 @@
+import "./WorkflowManager.css";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { EmptyState, SettingInfo, Switch } from "./SettingsBits";
 import {
   ArrowDown,
   ArrowUp,
@@ -213,7 +215,9 @@ export function WorkflowManager({
           "Agent workflows New workflow" is no heading at all to a screen reader. */}
       <div className="set-group-head">
         <h4>Agent workflows</h4>
-        <button
+        {/* M11 (round 6): with no workflows, "New workflow" lives in the
+            empty card as its one next step; the header keeps Import. */}
+        {(workflows.length > 0 || draft) && <button
           className="secondary-button compact"
           onClick={() => {
             setDraft(newWorkflow(settings, ""));
@@ -222,9 +226,9 @@ export function WorkflowManager({
           disabled={Boolean(draft)}
         >
           <Plus size={12} /> New workflow
-        </button>
-        <button className="secondary-button compact" disabled={Boolean(draft)} onClick={() => importInputRef.current?.click()}><Upload size={12} /> Import recipe</button>
-        <input ref={importInputRef} type="file" accept=".json" hidden aria-label="Import workflow recipe" onChange={async (event) => {
+        </button>}
+        <button className="secondary-button compact" disabled={Boolean(draft)} onClick={() => importInputRef.current?.click()}><Upload size={12} /> Import workflow</button>
+        <input ref={importInputRef} type="file" accept=".json" hidden aria-label="Import a workflow file" onChange={async (event) => {
           const file = event.target.files?.[0];
           event.target.value = "";
           if (!file) return;
@@ -237,15 +241,12 @@ export function WorkflowManager({
         }} />
       </div>
       {transferStatus && <p role="status">{transferStatus}</p>}
-      <p>Build ordered recipes from agent prompts and deterministic commands. Reuse them in any project. Automatic runs use the saved default project. Workflows keep the saved provider and model, including Claude Code and Cursor.</p>
+      <p>Ordered agent prompts and commands, reusable in any project. <SettingInfo label="How workflows run">Automatic runs use the saved default project. Workflows keep their saved provider and model, including Claude Code and Cursor. Every agent step appears as a user message in its project thread, so commands, selected skills, model settings and permissions stay visible. Use current settings to refresh a workflow&rsquo;s saved run settings.</SettingInfo></p>
 
-      <div className="workflow-safety-note">
-        <Check size={13} />
-        <span><strong>Transparent by design</strong><small>Every agent step appears as a user message in its project thread. Commands, selected skills, model settings, and permissions remain visible. Use current settings to refresh the saved run settings.</small></span>
-      </div>
-
-      {!projects.length && (
-        <div className="workflow-empty"><Workflow size={19} /><span>You can create or import recipes now. Add a project when you are ready to run them.</span></div>
+      {!workflows.length && !draft && (
+        <EmptyState icon={Workflow} title="No workflows yet"
+          detail={projects.length ? "Ordered steps you can rerun in any project. Start one here, or import a file." : "You can create or import workflows now, and run them once a project exists."}
+          action={<button className="secondary-button compact" onClick={() => { setDraft(newWorkflow(settings, "")); setDraftError(""); }}><Plus size={12} /> New workflow</button>} />
       )}
 
       {workflows.length > 0 && (
@@ -257,11 +258,10 @@ export function WorkflowManager({
             return (
               <article key={workflow.id} className={`workflow-card ${workflow.enabled ? "" : "disabled"}`}>
                 <div className="workflow-card-main">
-                  <button
-                    className={`mini-toggle ${workflow.enabled ? "on" : ""}`}
-                    aria-label={`${workflow.enabled ? "Disable" : "Enable"} ${workflow.name}`}
-                    aria-pressed={workflow.enabled}
-                    onClick={() => {
+                  <Switch
+                    checked={workflow.enabled}
+                    label={`${workflow.name} enabled`}
+                    onChange={() => {
                       const now = Date.now();
                       onWorkflows(workflows.map((item) => item.id === workflow.id ? {
                         ...item,
@@ -270,9 +270,7 @@ export function WorkflowManager({
                         updatedAt: now,
                       } : item));
                     }}
-                  >
-                    <span />
-                  </button>
+                  />
                   <span className="workflow-card-icon"><Workflow size={14} /></span>
                   <span className="workflow-card-copy">
                     <strong>{workflow.name}</strong>
@@ -290,11 +288,11 @@ export function WorkflowManager({
                     try {
                       const contents = exportWorkflowRecipe(workflow);
                       const defaultPath = await join(await downloadDir(), `${workflow.name.replace(/[^a-z0-9-]/gi, "-").slice(0, 60) || "workflow"}.mythra-workflow.json`);
-                      const path = await save({ title: "Export workflow recipe", defaultPath, filters: [{ name: "Workflow recipe", extensions: ["json"] }] });
+                      const path = await save({ title: "Export workflow", defaultPath, filters: [{ name: "Workflow file", extensions: ["json"] }] });
                       if (!path) return;
                       await exportTextFile(path, contents);
                       setTransferStatus("Recipe exported. Steps and input values are included; project bindings, model settings, schedules, and run history are not.");
-                    } catch (error) { setTransferStatus(friendlyError(error).replace(/Diagnostics/g, "Recipes")); }
+                    } catch (error) { setTransferStatus(friendlyError(error).replace(/Diagnostics/g, "Workflows")); }
                   }}><Download size={11} /> Export</button>
                   {latest && <button onClick={() => setSelectedRunId(latest.id)}><Eye size={11} /> Details</button>}
                   {workflow.lastThreadId && onOpenRun && <button onClick={() => onOpenRun(workflow.lastThreadId!)}><MessageSquare size={11} /> Last thread</button>}
@@ -302,7 +300,7 @@ export function WorkflowManager({
                     className="danger-action"
                     aria-label={`Delete ${workflow.name}`}
                     onClick={async () => {
-                      if (await confirmDialog(`Delete the workflow “${workflow.name}”? Its existing threads will remain available.`)) {
+                      if (await confirmDialog(`Delete the workflow “${workflow.name}”? Its existing threads stay available.`, { confirmLabel: "Delete workflow" })) {
                         onWorkflows(workflows.filter((item) => item.id !== workflow.id));
                       }
                     }}
@@ -386,10 +384,10 @@ export function WorkflowManager({
                   })}
                   placeholder="Default value"
                 />
-                <label><input type="checkbox" checked={variable.promptOnRun} onChange={(event) => setDraft({
+                <label className="workflow-variable-ask"><Switch checked={variable.promptOnRun} label={`Ask for ${variable.name || "this variable"} when run`} onChange={(promptOnRun) => setDraft({
                   ...draft,
-                  variables: (draft.variables ?? []).map((item) => item.id === variable.id ? { ...item, promptOnRun: event.target.checked } : item),
-                })} /> Ask when run</label>
+                  variables: (draft.variables ?? []).map((item) => item.id === variable.id ? { ...item, promptOnRun } : item),
+                })} /><span>Ask when run</span></label>
                 <button className="danger-action" aria-label={`Delete variable ${variable.name}`} onClick={() => setDraft({
                   ...draft,
                   variables: (draft.variables ?? []).filter((item) => item.id !== variable.id),
@@ -417,10 +415,10 @@ export function WorkflowManager({
                       <button className="danger-action" onClick={() => setDraft({ ...draft, steps: draft.steps.filter((item) => item.id !== step.id) })} aria-label={`Delete ${step.name}`}><Trash2 size={11} /></button>
                     </div>
                   </div>
-                  <input value={step.name} onChange={(event) => updateStep(step.id, { name: event.target.value })} placeholder="Step name" />
+                  <input aria-label={`Step ${index + 1} name`} value={step.name} onChange={(event) => updateStep(step.id, { name: event.target.value })} placeholder="Step name" />
                   {step.type === "agent"
-                    ? <textarea value={step.prompt} onChange={(event) => updateStep(step.id, { prompt: event.target.value })} rows={4} placeholder="Tell the agent exactly what to accomplish and how to verify it." />
-                    : <textarea value={step.command} onChange={(event) => updateStep(step.id, { command: event.target.value })} rows={2} className="monospace" placeholder="npm test" />}
+                    ? <textarea aria-label={`Step ${index + 1} agent instructions`} value={step.prompt} onChange={(event) => updateStep(step.id, { prompt: event.target.value })} rows={4} placeholder="Tell the agent exactly what to accomplish and how to verify it." />
+                    : <textarea aria-label={`Step ${index + 1} command`} value={step.command} onChange={(event) => updateStep(step.id, { command: event.target.value })} rows={2} className="monospace" placeholder="npm test" />}
                   <div className="workflow-step-behavior">
                     <div className="workflow-select-field"><span>Run when</span><AppSelectMenu ariaLabel={`Run when for ${step.name}`} value={workflowStepCondition(step).type} options={CONDITION_OPTIONS} portal onChange={(type) => {
                       updateStep(step.id, {
@@ -436,7 +434,7 @@ export function WorkflowManager({
                     <label><span>Retries</span><input type="number" min={0} max={5} value={workflowStepRetries(step).count} onChange={(event) => updateStep(step.id, { retryCount: Math.min(5, Math.max(0, Number(event.target.value) || 0)) })} /></label>
                     <label><span>Delay (sec)</span><input type="number" min={0} max={300} value={workflowStepRetries(step).delaySeconds} onChange={(event) => updateStep(step.id, { retryDelaySeconds: Math.min(300, Math.max(0, Number(event.target.value) || 0)) })} /></label>
                   </div>
-                  <label className="workflow-continue"><input type="checkbox" checked={step.continueOnError} onChange={(event) => updateStep(step.id, { continueOnError: event.target.checked })} /> Continue if this step fails</label>
+                  <label className="workflow-continue"><Switch checked={step.continueOnError} label={`Continue if step ${index + 1} fails`} onChange={(continueOnError) => updateStep(step.id, { continueOnError })} /><span>Continue if this step fails</span></label>
                 </div>
               </div>
             ))}

@@ -7,7 +7,7 @@
 
 .app-shell[data-theme][data-color-scheme] .composer-zone {
   padding: 6px 22px 12px;
-  background: linear-gradient(to top, var(--bg) 60%, rgba(0, 0, 0, 0));
+  background: linear-gradient(to top, var(--bg) 60%, var(--lm-clear));
 }
 /* No ambient provider glow behind the composer. */
 .app-shell[data-theme][data-color-scheme] .composer-zone::before { content: none; display: none; }
@@ -19,19 +19,19 @@
   border: 1px solid var(--line-strong);
   border-radius: var(--r-xl);
   background: var(--panel);
-  box-shadow: 0 8px 24px -14px rgba(0, 0, 0, .55), 0 1px 3px rgba(0, 0, 0, .18);
+  box-shadow: var(--lm-composer-shadow);
 }
-.app-shell[data-theme][data-color-scheme="light"] .composer { box-shadow: 0 8px 22px -14px rgba(0, 0, 0, .2), 0 1px 2px rgba(0, 0, 0, .06); }
+.app-shell[data-theme][data-color-scheme="light"] .composer { box-shadow: var(--lm-composer-shadow); }
 /* Focus: the edge takes a soft accent; no outer ring on so large a field. */
 .app-shell[data-theme][data-color-scheme] .composer:focus-within {
-  border-color: var(--green-line);
-  box-shadow: 0 8px 24px -14px rgba(0, 0, 0, .55), 0 1px 3px rgba(0, 0, 0, .18);
+  border-color: var(--accent-line);
+  box-shadow: var(--lm-composer-shadow);
 }
-.app-shell[data-theme][data-color-scheme="light"] .composer:focus-within { box-shadow: 0 8px 22px -14px rgba(0, 0, 0, .2), 0 1px 2px rgba(0, 0, 0, .06); }
+.app-shell[data-theme][data-color-scheme="light"] .composer:focus-within { box-shadow: var(--lm-composer-shadow); }
 /* A running provider does not tint or glow the composer. */
-.app-shell[data-theme][data-color-scheme] .composer-zone.ambiance-live .composer { border-color: var(--line-strong); box-shadow: 0 8px 24px -14px rgba(0, 0, 0, .55), 0 1px 3px rgba(0, 0, 0, .18); }
-.app-shell[data-theme][data-color-scheme] .composer-zone.ambiance-live .composer:focus-within { border-color: var(--green-line); }
-.app-shell[data-theme][data-color-scheme] .composer.drop-target { border-style: dashed; border-color: var(--green); background-image: none; background-color: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .composer-zone.ambiance-live .composer { border-color: var(--line-strong); box-shadow: var(--lm-composer-shadow); }
+.app-shell[data-theme][data-color-scheme] .composer-zone.ambiance-live .composer:focus-within { border-color: var(--accent-line); }
+.app-shell[data-theme][data-color-scheme] .composer.drop-target { border-style: dashed; border-color: var(--accent); background-image: none; background-color: var(--panel-2); }
 .app-shell[data-theme][data-color-scheme] .composer-input-wrap { --composer-input-padding-block-start: 14px; --composer-input-padding-inline: 16px; }
 .app-shell[data-theme][data-color-scheme] .composer textarea { color: var(--text); font-size: var(--fs-body); }
 .app-shell[data-theme][data-color-scheme] .composer textarea::placeholder { color: var(--muted-2); }
@@ -51,11 +51,11 @@
 .app-shell[data-theme][data-color-scheme] .toolbar-button:hover:not(:disabled) { color: var(--text); border-color: transparent; background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .toolbar-button[aria-expanded="true"] { color: var(--text); border-color: transparent; background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .toolbar-button.has-attachments { color: var(--text); border-color: transparent; background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .toolbar-button.has-attachments > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .toolbar-button.has-attachments > svg { color: var(--accent); }
 .app-shell[data-theme][data-color-scheme] .agents-button.enabled,
 .app-shell[data-theme][data-color-scheme] .agents-button.live { color: var(--text); border-color: transparent; background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .agents-button.enabled > svg,
-.app-shell[data-theme][data-color-scheme] .agents-button.live > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .agents-button.live > svg { color: var(--accent); }
 
 .app-shell[data-theme][data-color-scheme] .send-button {
   width: 30px;
@@ -102,10 +102,10 @@
 }
 .app-shell[data-theme][data-color-scheme] .voice-input-button:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .schedule-button:hover:not(:disabled) { color: var(--text); border-color: transparent; background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .voice-input-button.busy { color: var(--green); }
-.app-shell[data-theme][data-color-scheme] .voice-input-button.busy:hover:not(:disabled) { color: var(--green); }
-.app-shell[data-theme][data-color-scheme] .voice-input-button.recording { color: var(--red); background: rgba(240, 136, 132, .14); }
-.app-shell[data-theme][data-color-scheme] .voice-input-button.recording:hover:not(:disabled) { color: var(--red); background: rgba(240, 136, 132, .18); }
+.app-shell[data-theme][data-color-scheme] .voice-input-button.busy { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .voice-input-button.busy:hover:not(:disabled) { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .voice-input-button.recording { color: var(--red); background: var(--red-soft); }
+.app-shell[data-theme][data-color-scheme] .voice-input-button.recording:hover:not(:disabled) { color: var(--red); background: linear-gradient(var(--red-soft), var(--red-soft)) var(--red-soft); }
 .app-shell[data-theme][data-color-scheme] .schedule-button[aria-expanded="true"] { color: var(--info); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .schedule-button[aria-expanded="true"]:hover:not(:disabled) { color: var(--info); background: var(--lm-press); }
 
@@ -121,8 +121,8 @@
 /* Queue and schedule groups form one card. Only its outer top edge curves. */
 .app-shell[data-theme][data-color-scheme] .composer > .queued-turns:first-child { border-radius: var(--r-xl) var(--r-xl) 0 0; }
 .app-shell[data-theme][data-color-scheme] .queued-turn { min-height: 38px; padding: 4px 6px; border-color: var(--line); border-radius: var(--r-md); background: var(--panel); }
-.app-shell[data-theme][data-color-scheme] .queued-turn.failed { border-color: rgba(240, 136, 132, .45); }
-.app-shell[data-theme][data-color-scheme] .queued-turn.sending { border-color: var(--green-line); }
+.app-shell[data-theme][data-color-scheme] .queued-turn.failed { border-color: var(--red-line); }
+.app-shell[data-theme][data-color-scheme] .queued-turn.sending { border-color: var(--accent-line); }
 .app-shell[data-theme][data-color-scheme] .queued-turn-index {
   display: grid;
   place-items: center;
@@ -150,6 +150,30 @@
 .app-shell[data-theme][data-color-scheme] .mention-menu button.active,
 .app-shell[data-theme][data-color-scheme] .mention-menu button:hover { color: var(--text); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .mention-menu button > em { font-family: var(--font-sans); }
+.app-shell[data-theme][data-color-scheme] .mention-menu .mention-menu-hint {
+  position: sticky;
+  bottom: -5px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px -5px -5px;
+  padding: 6px 13px 7px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--menu-surface);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.app-shell[data-theme][data-color-scheme] .mention-menu .mention-menu-hint kbd {
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-chip);
+  color: var(--muted);
+  background: transparent;
+  box-shadow: none;
+  font: 500 11px/16px var(--font-sans);
+}
+.app-shell[data-theme][data-color-scheme] .mention-menu .mention-menu-hint > span { display: inline-flex; align-items: center; gap: 4px; }
 
 /* ---- Permission menu ---- */
 .app-shell[data-theme][data-color-scheme] .permission-menu {
@@ -164,7 +188,7 @@
 .app-shell[data-theme][data-color-scheme] .permission-menu button:hover { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .permission-menu button.selected { color: var(--text); background: var(--lm-press); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .permission-menu button > svg:first-child { width: 28px; height: 28px; padding: 6px; border-radius: var(--r-md); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .permission-menu button.selected > svg:first-child { color: var(--green); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .permission-menu button.selected > svg:first-child { color: var(--accent); background: var(--accent-soft); }
 
 /* ---- Model rails (every provider) ----
    Morgan (2026-11-01): the middle of the composer should fit the pro design.
@@ -238,13 +262,11 @@
   background: var(--lm-press);
   box-shadow: none;
 }
-.app-shell[data-theme][data-color-scheme] .composer .provider-pill:focus-visible,
-.app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger:focus-visible,
-.app-shell[data-theme][data-color-scheme] .composer .model-picker-trigger:focus-visible {
-  outline: 2px solid var(--green);
-  outline-offset: 1px;
-  border-radius: var(--r-control);
-}
+/* One rule per :focus-visible selector (Lumen contract: Safari 13 drops a
+   whole list when one selector is unknown). */
+.app-shell[data-theme][data-color-scheme] .composer .provider-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .composer .model-picker-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-control); }
 .app-shell[data-theme][data-color-scheme] .composer .provider-pill:disabled,
 .app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger:disabled,
 .app-shell[data-theme][data-color-scheme] .composer .model-picker-trigger:disabled { opacity: .5; cursor: default; }
@@ -353,10 +375,39 @@
 .app-shell[data-theme][data-color-scheme] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
   width: 14px;
   height: 14px;
-  border: 2px solid #fff;
+  border: 2px solid var(--lm-thumb-edge);
   transform: none;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  box-shadow: var(--lm-thumb-shadow);
 }
+/* G21: keyboard focus on the effort slider. Studio, Poet, Astra, Coil, Comet
+   and Reactor mark focus in their own skins; Pixel, Aurora and Ink had no
+   mark once the thumb lost the legacy ring, so their thumb gets the accent
+   ring. One :focus-visible per rule (see tokens.css); the keyboard-modality
+   :focus copies cover engines without :focus-visible. */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="pixel"] .composer .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme][data-effort-slider="pixel"] .composer .reasoning-control input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme][data-effort-slider="pixel"] .composer .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme][data-effort-slider="pixel"] .composer .openrouter-reasoning input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="pixel"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="pixel"] .reasoning-control input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="pixel"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="pixel"] .openrouter-reasoning input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme][data-effort-slider="aurora"] .composer .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme][data-effort-slider="aurora"] .composer .reasoning-control input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme][data-effort-slider="aurora"] .composer .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme][data-effort-slider="aurora"] .composer .openrouter-reasoning input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="aurora"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="aurora"] .reasoning-control input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="aurora"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="aurora"] .openrouter-reasoning input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme][data-effort-slider="ink"] .composer .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme][data-effort-slider="ink"] .composer .reasoning-control input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme][data-effort-slider="ink"] .composer .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme][data-effort-slider="ink"] .composer .openrouter-reasoning input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="ink"] .reasoning-control input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="ink"] .reasoning-control input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="ink"] .openrouter-reasoning input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="ink"] .openrouter-reasoning input[type="range"]:focus::-webkit-slider-thumb { box-shadow: var(--lm-thumb-shadow), 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
 .app-shell[data-theme][data-color-scheme] .reasoning-ticks i.reached,
 .app-shell[data-theme][data-color-scheme] .openrouter-reasoning-ticks i.reached { box-shadow: none; }
 /* Above the stacked layout, alternate-provider catalogs still open from the
@@ -395,7 +446,7 @@
 .app-shell[data-theme][data-color-scheme] .sa-tile { border-radius: var(--r-md); }
 .app-shell[data-theme][data-color-scheme] .sa-row.on { background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .sa-readout { border-radius: var(--r-chip); }
-.app-shell[data-theme][data-color-scheme] .sa-header-mark { border-radius: var(--r-md); color: var(--green); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .sa-header-mark { border-radius: var(--r-md); color: var(--accent); background: var(--accent-soft); }
 /* Sub-agent system picker (Mythra Code or the provider's native agents).
    Morgan (2026-11-01): it was hard to tell which system was selected, and
    accent colour is off the table (the app already leans on it too much).
@@ -417,13 +468,13 @@
   border-color: var(--text);
   background: radial-gradient(circle, var(--text) 0 3px, transparent 3.5px);
 }
-.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option.selected { color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .18), 0 0 0 1px var(--line-strong); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option.selected { color: var(--text); box-shadow: var(--lm-chip-shadow), 0 0 0 1px var(--line-strong); }
 .app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option:hover:not(.selected) { color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option:not(.selected) .sa-engine-mark { opacity: .5; }
 .app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option:not(.selected) .sa-engine-copy strong { font-weight: 500; }
 .app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option:hover:not(.selected)::after { border-color: var(--muted); }
 /* Claude's mark is a white glyph, so give it its orange tile here too. */
-.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-mark.claude { color: #fff; background: #d97757; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-mark.claude { color: var(--brand-on-claude); background: var(--brand-claude); }
 @container (max-width: 280px) {
   .app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option { grid-template-columns: minmax(0, 1fr) 14px; }
 }
@@ -442,3 +493,447 @@
   .app-shell[data-theme][data-color-scheme] .permission-menu button { transition: background-color var(--lm-d-1) ease, color var(--lm-d-1) ease; }
   .app-shell[data-theme][data-color-scheme] .toolbar-button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-1) ease; }
 }
+
+/* ============================================================================
+   Kept from the round 1–6 polish (2026-11-18 restore of the c875cdc composer
+   bar): popovers and menus that open from the bar, invisible fixes. The bar
+   itself (rows, chips, slider, actions, caption) is the original above.
+   ========================================================================== */
+.app-shell[data-theme][data-color-scheme] .sa-worker-badge { border-radius: var(--r-chip); font-size: 11px; }
+
+/* Sub-agents panel: a capped popover that scrolls inside, with its header
+   pinned, instead of a near-full-height sheet that clips its last section. */
+.app-shell[data-theme][data-color-scheme] .subagent-control > .subagent-panel {
+  max-height: min(var(--sa-panel-max-height, 480px), 480px);
+  padding-top: 0;
+  overscroll-behavior: contain;
+}
+.app-shell[data-theme][data-color-scheme] .subagent-panel > .sa-header {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  margin: 0 -8px 6px;
+  padding: 8px 8px 6px;
+  background: var(--menu-surface);
+  border-bottom: 1px solid var(--line-quiet);
+}
+.app-shell[data-theme][data-color-scheme] .subagent-panel > :last-child { margin-bottom: 2px; }
+
+/* Readable sizes inside the composer popovers (nothing under 11px) and
+   sentence-case field labels. */
+.app-shell[data-theme][data-color-scheme] .sa-header-copy small,
+.app-shell[data-theme][data-color-scheme] .sa-row-copy small,
+.app-shell[data-theme][data-color-scheme] .sa-preset-row > span small,
+.app-shell[data-theme][data-color-scheme] .sa-apply-preset,
+.app-shell[data-theme][data-color-scheme] .sa-manage-presets,
+.app-shell[data-theme][data-color-scheme] .sa-clear-all,
+.app-shell[data-theme][data-color-scheme] .sa-crew-toolbar > span,
+.app-shell[data-theme][data-color-scheme] .sa-tile-copy small,
+.app-shell[data-theme][data-color-scheme] .sa-tile-note,
+.app-shell[data-theme][data-color-scheme] .sa-tile-issue,
+.app-shell[data-theme][data-color-scheme] .sa-tile-reasoning,
+.app-shell[data-theme][data-color-scheme] .sa-config-field > span,
+.app-shell[data-theme][data-color-scheme] .sa-add > span,
+.app-shell[data-theme][data-color-scheme] .sa-empty,
+.app-shell[data-theme][data-color-scheme] .sa-counts,
+.app-shell[data-theme][data-color-scheme] .sa-worker-copy strong,
+.app-shell[data-theme][data-color-scheme] .sa-worker-copy small,
+.app-shell[data-theme][data-color-scheme] .sa-worker-action,
+.app-shell[data-theme][data-color-scheme] .sa-replace-picker > span strong,
+.app-shell[data-theme][data-color-scheme] .sa-replace-picker > span small,
+.app-shell[data-theme][data-color-scheme] .sa-replace-picker > div > button strong,
+.app-shell[data-theme][data-color-scheme] .sa-replace-picker > div > button small,
+.app-shell[data-theme][data-color-scheme] .sa-attention-note,
+.app-shell[data-theme][data-color-scheme] .sa-mail-entry > span,
+.app-shell[data-theme][data-color-scheme] .sa-mail-entry > span small,
+.app-shell[data-theme][data-color-scheme] .sa-mail-entry > p,
+.app-shell[data-theme][data-color-scheme] .sa-mail-more,
+.app-shell[data-theme][data-color-scheme] .sa-advanced,
+.app-shell[data-theme][data-color-scheme] .app-select-value small,
+.app-shell[data-theme][data-color-scheme] .app-select-option-copy small,
+.app-shell[data-theme][data-color-scheme] .cursor-model-results-meta,
+.app-shell[data-theme][data-color-scheme] .cursor-model-results-meta small,
+.app-shell[data-theme][data-color-scheme] .cursor-model-options small em,
+.app-shell[data-theme][data-color-scheme] .cursor-model-options small code,
+.app-shell[data-theme][data-color-scheme] .mention-menu button > em { font-size: 11px; letter-spacing: 0; text-transform: none; }
+.app-shell[data-theme][data-color-scheme] .sa-worker-action { height: 24px; border-radius: var(--r-control); }
+/* Surfaces drawn with white alpha vanish in light themes: use the theme's
+   own hover and press fills. */
+.app-shell[data-theme][data-color-scheme] .sa-row,
+.app-shell[data-theme][data-color-scheme] .sa-preset-row,
+.app-shell[data-theme][data-color-scheme] .sa-tile,
+.app-shell[data-theme][data-color-scheme] .sa-worker,
+.app-shell[data-theme][data-color-scheme] .cursor-model-options > button { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .sa-row.on { background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .sa-close:hover,
+.app-shell[data-theme][data-color-scheme] .sa-advanced:hover,
+.app-shell[data-theme][data-color-scheme] .cursor-model-options > button:hover,
+.app-shell[data-theme][data-color-scheme] .app-select-options > button:hover:not(:disabled),
+.app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star):hover:not(:disabled) { background: var(--lm-press); }
+/* Worker rows: the status orb stays; no glowing halo or sweeping light. */
+.app-shell[data-theme][data-color-scheme] .sa-worker .sa-worker-orb { box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .sa-worker.working::after { display: none; }
+
+/* Popovers that open from the row: one menu surface, compact rows. */
+.app-shell[data-theme][data-color-scheme] .composer-menu-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px 6px;
+  color: var(--muted-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .thread-provider-menu .composer-menu-heading strong { color: var(--muted); font-size: 11px; font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .thread-provider-menu .composer-menu-heading small { color: var(--muted-2); font-size: 11px; font-weight: 400; line-height: 1.35; }
+.app-shell[data-theme][data-color-scheme] .composer .permission-menu {
+  left: 0;
+  width: 280px;
+  padding: 4px;
+  border: 0;
+}
+.app-shell[data-theme][data-color-scheme] .composer .permission-menu button {
+  grid-template-columns: 16px minmax(0, 1fr) 14px;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 8px;
+  color: var(--ink-2);
+}
+.app-shell[data-theme][data-color-scheme] .composer .permission-menu button > svg:first-child { width: 15px; height: 15px; padding: 0; background: transparent; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .composer .permission-menu button.selected > svg:first-child { color: var(--accent); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .composer .permission-menu button > svg:last-child:not(:first-child) { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .composer .permission-menu strong { color: var(--text); font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .composer .permission-menu small { color: var(--muted); font-size: 11px; }
+.app-shell[data-theme][data-color-scheme] .composer .permission-menu button.unavailable { cursor: not-allowed; }
+.app-shell[data-theme][data-color-scheme] .composer .permission-menu button.unavailable strong { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .composer .permission-menu button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.app-shell[data-theme][data-color-scheme] .composer .thread-provider-menu > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.app-shell[data-theme][data-color-scheme] .composer .thread-provider-menu { width: 280px; padding: 4px; border: 0; }
+.app-shell[data-theme][data-color-scheme] .composer .thread-provider-menu > button { min-height: 40px; padding: 4px 8px; }
+.app-shell[data-theme][data-color-scheme] .composer .thread-provider-menu .thread-provider-default { min-height: 40px; margin-top: 4px; border-top: 1px solid var(--line-quiet); border-radius: 0 0 var(--r-sm) var(--r-sm); }
+
+
+/* The composer and everything that opens from it paint above the transcript:
+   code-block Copy buttons, tables and inline-path tooltips can never show
+   through a composer popover. Code blocks also isolate their own controls. */
+.app-shell[data-theme][data-color-scheme] .composer-zone { position: relative; z-index: var(--z-composer); }
+.app-shell[data-theme][data-color-scheme] .code-block { isolation: isolate; }
+
+/* Sub-agents popover, flattened (D14): rows divided by hairlines instead of
+   cards inside the card; the conversation's own compaction sits last, apart. */
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-policy { gap: 0; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine { margin-bottom: 6px; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-row,
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-row.on,
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-preset-row {
+  min-height: 48px;
+  padding: 8px 4px;
+  border: 0;
+  border-top: 1px solid var(--line-quiet);
+  border-radius: 0;
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine + .sa-row,
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-reason + .sa-row { border-top: 0; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-preset-row.sa-preset-save { min-height: 0; padding-top: 0; border-top: 0; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-row-copy strong,
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-preset-row > span strong { font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-row-copy small,
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-preset-row > span small { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-native { gap: 0; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-native-field { padding: 8px 4px; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-crew { margin-top: 0; padding: 8px 4px 2px; border-top: 1px solid var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-add { padding: 0; border: 0; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-add > span { color: var(--muted); font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-add-row button { border-color: var(--line); border-radius: var(--r-control); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-add-row button:hover { transform: none; background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-empty { margin: 6px 0 2px; color: var(--muted); font-size: 11px; }
+/* Locked/explainer notes: one quiet line, no tinted box. */
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-locked-note { margin: 0 0 6px; padding: 6px 4px; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 11px; }
+
+/* Editing a copy of an earlier message: one quiet line with Cancel. */
+.app-shell[data-theme][data-color-scheme] .composer-edit-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 6px 4px 14px;
+  border-bottom: 1px solid var(--line-quiet);
+  color: var(--muted);
+  font-size: 12px;
+}
+.app-shell[data-theme][data-color-scheme] .composer-edit-banner > svg { flex: none; color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .composer-edit-banner > span { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .composer-edit-banner > button {
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: transparent;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .composer-edit-banner > button:hover { color: var(--text); background: var(--lm-hover); }
+
+/* ---- Stacking ----
+   Every composer pop-up shares one layer of the token scale (tokens.css).
+   Only one is ever open (opening one closes the others), so they never need
+   to out-rank each other; the old 10/90/100/130 ladder let the Access menu
+   slide under a model menu. */
+.app-shell[data-theme][data-color-scheme] .permission-menu { z-index: var(--z-popover); }
+.app-shell[data-theme][data-color-scheme] .thread-provider-menu { z-index: var(--z-popover); }
+.app-shell[data-theme][data-color-scheme] .openrouter-menu { z-index: var(--z-popover); }
+.app-shell[data-theme][data-color-scheme] .model-menu { z-index: var(--z-popover); }
+.app-shell[data-theme][data-color-scheme] .row-menu-list { z-index: var(--z-popover); }
+
+/* The OpenAI and Claude marks are drawn white for dark chips. On light
+   themes the sub-agent "Add" chips are white too, so the marks take the ink
+   (OpenAI) and Claude's own brand orange instead of vanishing. */
+.app-shell[data-theme][data-color-scheme="light"] .sa-add-row .openai-logo-option { fill: currentColor; }
+.app-shell[data-theme][data-color-scheme="light"] .sa-add-row .claude-logo-option { fill: var(--brand-claude); }
+
+/* Live sub-agents shares the rows' 4px inset so every label lines up. */
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-activity { padding-inline: 4px; }
+
+/* Text scrolled under the composer fades out instead of being cut mid-line. */
+.app-shell[data-theme][data-color-scheme] .timeline-shell::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
+  height: 28px;
+  background: linear-gradient(to bottom, var(--lm-clear), var(--bg));
+  pointer-events: none;
+}
+
+/* ---- One catalog row in every composer model menu (G8 / M08) ----
+   OpenAI, Claude, Cursor, OpenRouter and LM Studio share ModelCatalogRow:
+   the provider's own art tile, the full display name, one muted detail line, optional meta,
+   the accent check, then the star. Menus are capped at 400px, one column,
+   anchored to their chip. */
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-menu,
+.app-shell[data-theme][data-color-scheme] .composer-zone .openrouter-menu { max-width: min(400px, calc(100vw - 32px)); }
+.app-shell[data-theme][data-color-scheme] .composer-zone .cursor-model-options { grid-template-columns: minmax(0, 1fr); gap: 1px; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-menu-list { display: grid; gap: 1px; min-height: 0; max-height: min(360px, calc(100vh - 260px)); overflow-y: auto; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row.model-row { grid-template-columns: minmax(0, 1fr) auto; gap: 2px; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row.model-row > button.catalog-row-option {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row.model-row > button.catalog-row-option:hover:not(:disabled),
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row.model-row > button.catalog-row-option:focus-visible { outline: none; background: var(--lm-menu-focus); box-shadow: inset 0 0 0 1px var(--lm-menu-focus-edge); }
+/* The art keeps each provider's original tile at full colour (owner request,
+   2026-11-18): Claude's white mark on its coral plate, Cursor's and LM Studio's
+   plates, OpenRouter's tinted initials, and OpenAI's named-model art. The
+   slot only centres it; the tile classes in styles.css own size and colour. */
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-art {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-copy { display: grid; gap: 1px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-copy > strong { overflow: hidden; color: var(--text); font-size: var(--fs-ui); font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-copy > small { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; color: var(--muted); font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-copy > small > em { flex: none; padding: 0 5px; border-radius: var(--r-chip); color: var(--ink-2); background: var(--lm-hover); font-size: 10.5px; font-style: normal; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-copy > small > code { min-width: 0; overflow: hidden; color: var(--muted); font-family: var(--font-mono); font-size: 10.5px; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-meta { color: var(--muted); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-check { color: var(--accent); }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-option.favorite-group-end { box-shadow: 0 1px 0 var(--line-quiet); }
+/* The menu header: "Name · source" on one line, refresh at the right. */
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-catalog-heading { display: flex; align-items: center; gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-catalog-heading > .model-catalog-title { display: flex; flex: 1 1 auto; align-items: baseline; min-width: 0; overflow: hidden; white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-catalog-title > .model-catalog-name { flex: none; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-catalog-title > .model-catalog-source { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--muted); font-size: 11.5px; font-weight: 400; text-align: left; text-overflow: ellipsis; white-space: pre; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-catalog-heading > .model-meta-refresh { margin-left: auto; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-menu-search { margin: 0 2px 4px; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-menu-search > button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: var(--r-control); color: var(--muted); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-menu-search > button:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .composer-zone .model-menu-no-match { margin: 6px 8px; color: var(--muted); font-size: 12px; }
+
+/* The sub-agents lock: the padlock icon, with its reason as a tooltip. */
+.app-shell[data-theme][data-color-scheme] .composer .sa-trigger-locked { display: inline-flex; align-items: center; cursor: help; }
+
+/* ---- Sub-agents popover (G5): on/off + limits, then the crew with named
+   Add buttons, then presets behind a disclosure. ---- */
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-add { grid-column: 1 / -1; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-add > span { margin-bottom: 2px; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-add-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-add-row button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 7px;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+}
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-add-row button > svg:last-child { width: 11px; height: 11px; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-add-row button:hover { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets { margin-top: 6px; border-top: 1px solid var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-toggle:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-toggle > svg { color: var(--muted); transition: transform var(--t-mid) var(--ease); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-toggle[aria-expanded="true"] > svg { transform: rotate(90deg); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-toggle > small { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 400; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-body { display: grid; gap: 4px; padding: 0 0 6px; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-body[hidden] { display: none; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-body .sa-preset-row { border-top: 0; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-manage {
+  justify-self: start;
+  height: 26px;
+  margin-left: 4px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-manage:hover { color: var(--text); background: var(--lm-hover); }
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets-toggle > svg { transition: none; }
+}
+
+/* Generic (unnamed) OpenAI models: the white mark in dark themes, as before, and dark ink in light ones. */
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-art .openai-logo-option { fill: var(--text); }
+
+/* ---- Sub-agents popover, round 4 (D7 / M07) ----
+   Mode, on/off, limit and preset lead; crew editing and live detail follow
+   under their own headings; adding is one "Add ▾" menu, not five chips. */
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-section-heading { margin: 0; color: var(--text); font-size: 12px; font-weight: 600; letter-spacing: 0; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-crew { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-crew-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; margin-bottom: 8px; padding: 0 4px; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-crew-toolbar > .sa-clear-all { margin-left: auto; }
+/* The menu's trigger sits in the heading row and its list opens in flow under
+   it (the popover scrolls, so a floating list would be clipped). */
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-crew-toolbar > .sa-add-menu { display: contents; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-crew-toolbar .sa-add-trigger { margin-left: auto; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-crew-toolbar > .sa-clear-all ~ .sa-add-menu .sa-add-trigger { margin-left: 0; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-presets { margin-top: 2px; }
+.app-shell[data-theme][data-color-scheme] .sa-add-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .sa-add-trigger:hover,
+.app-shell[data-theme][data-color-scheme] .sa-add-menu.open .sa-add-trigger { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .sa-add-trigger > svg { width: 12px; height: 12px; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .sa-add-popup {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  flex: 1 1 100%;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .sa-add-popup > button {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--r-md);
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .sa-add-popup > button > svg { flex: none; width: 14px; height: 14px; margin-top: 2px; }
+.app-shell[data-theme][data-color-scheme] .sa-add-popup > button > span { display: grid; gap: 1px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .sa-add-popup > button strong { font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .sa-add-popup > button small { color: var(--muted); font-size: 11.5px; line-height: 15px; }
+.app-shell[data-theme][data-color-scheme] .sa-add-popup > button:hover,
+.app-shell[data-theme][data-color-scheme] .sa-add-popup > button:focus-visible { outline: none; background: var(--lm-menu-focus); }
+.app-shell[data-theme][data-color-scheme] .sa-add-popup > button.unavailable strong { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme="light"] .sa-add-popup .openai-logo-option { fill: currentColor; }
+.app-shell[data-theme][data-color-scheme="light"] .sa-add-popup .claude-logo-option { fill: var(--brand-claude); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .number-stepper > [role="spinbutton"]:focus-visible { border-radius: var(--r-xs); outline: none; box-shadow: var(--ring); }
+
+/* ---- Model rows, round 4 (M09) ----
+   While a row has keyboard focus a small "→" appears beside its star: that
+   key reaches it. (The art is no longer muted or shrunk; see above.) */
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row.model-row { position: relative; }
+/* The trailing column (O1): meta and the check on top; the "→ Favorite"
+   hint stacks under them while the row has keyboard focus. It is laid out in
+   the row, never positioned over it, so it can't cover any text. */
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-trail { display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 1px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-trail-main { display: flex; align-items: center; gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-trail-main:empty { display: none; }
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-star-hint {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font: 500 10.5px/14px var(--font-sans);
+  white-space: nowrap;
+}
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-star-hint > kbd {
+  min-width: 16px;
+  padding: 0 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-chip);
+  color: var(--ink-2);
+  background: transparent;
+  font: inherit;
+  text-align: center;
+}
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-option:focus-visible .catalog-row-star-hint { display: inline-flex; }
+/* The star it points at is fully visible while its row is focused. */
+.app-shell[data-theme][data-color-scheme] .composer-zone .catalog-row-option:focus-visible ~ .model-star { opacity: 1; }

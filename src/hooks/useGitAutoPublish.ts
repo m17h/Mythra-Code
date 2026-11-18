@@ -186,9 +186,9 @@ export function useGitAutoPublish(options: GitAutoPublishOptions): GitAutoPublis
       const config = configsRef.current[id];
       if (!config?.enabled || config.status === "paused") return;
       if (optionsRef.current.blocked(path)) {
-        updateConfig(id, (current) => current.status === "waiting" && current.message === "Waiting for the current workspace operation to finish."
+        updateConfig(id, (current) => current.status === "waiting" && current.message === "Waiting for the current operation in this project to finish."
           ? current
-          : { ...current, status: "waiting", message: "Waiting for the current workspace operation to finish.", updatedAt: Date.now() }, expectedGeneration);
+          : { ...current, status: "waiting", message: "Waiting for the current operation in this project to finish.", updatedAt: Date.now() }, expectedGeneration);
         return;
       }
       const entry = Object.entries(config.branches).find(([, branch]) => branch.pendingOid);

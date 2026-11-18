@@ -1,6 +1,6 @@
 /**
  * Human-readable names for the raw enum strings the runtimes, Git worktrees,
- * and MCP hand back. The Workspace used to print those identifiers verbatim
+ * and MCP hand back. The Tools used to print those identifiers verbatim
  * ("inProgress", "oAuth", "removed"), which reads as a leaked internal value
  * rather than a status.
  */
@@ -37,7 +37,7 @@ const MCP_STATUS_LABELS: Record<string, string> = {
   ready: "Connected",
   oAuth: "Connected · OAuth",
   bearerToken: "Connected · token",
-  needsAuth: "Sign-in required",
+  needsAuth: "Needs sign-in",
   failed: "Failed to start",
   error: "Failed to start",
   disconnected: "Not connected",
@@ -69,4 +69,21 @@ export function mcpStatusLabel(status: string): string {
 /** MCP states that mean the server is usable without further user action. */
 export function mcpServerConnected(status: string): boolean {
   return status === "ready" || status === "oAuth" || status === "bearerToken";
+}
+
+type RuntimeAvailability = { available: boolean } | null | undefined;
+
+/**
+ * The runtime a provider needs when it is known to be missing, else null.
+ * Unknown (not yet checked) is not "missing": the top bar must never claim
+ * setup is needed before a check says so, nor "Ready" after one says it is.
+ */
+export function missingProviderRuntime(
+  provider: string,
+  status: { codex?: RuntimeAvailability; claude?: RuntimeAvailability; cursor?: RuntimeAvailability },
+): "Codex CLI" | "Claude Code" | "Cursor Agent" | null {
+  if (provider === "claude") return status.claude && !status.claude.available ? "Claude Code" : null;
+  if (provider === "cursor") return status.cursor && !status.cursor.available ? "Cursor Agent" : null;
+  // OpenAI, OpenRouter and LM Studio all run through the Codex CLI.
+  return status.codex && !status.codex.available ? "Codex CLI" : null;
 }

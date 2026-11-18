@@ -1,5 +1,5 @@
 import { AsyncAgentQuestions, LocalAsyncAgentQuestions } from "./AsyncAgentQuestions";
-import { Children, createContext, Fragment, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from "react";
+import { Children, createContext, Fragment, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, CircleDot, Clipboard, Clock, CornerUpRight, FileCode2, FoldVertical, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -13,6 +13,9 @@ import { splitMarkdownBlocks } from "../lib/markdownBlocks";
 import type { Activity, ChatMessage, PendingApproval, Provider, SkillReference } from "../types";
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
+import { TimelineProjectRoot, projectRelativePath } from "./TimelineProjectRoot";
+import { HighlightedCode } from "./SyntaxCode";
+import { splitChangePath } from "../lib/gitChanges";
 import { SubAgentClock, SubAgentControls } from "./SubAgentControls";
 import { CoordinationPresentation, CoordinationReceipt, CoordinationRoute, CoordinationState } from "./CoordinationRoute";
 import { activityTurnSegments, compactActivityPresentation, hasTerminalTurnEvidence, runtimeTurnOutcome, settledRunPresentationState, type CompactWorkState } from "../lib/compactActivity";
@@ -674,6 +677,10 @@ function MarkdownCode({ children, className }: { children?: ReactNode; className
   const linked = useContext(InsideMarkdownLink);
   const text = typeof children === "string" ? children : "";
   const parts = !block && !className ? inlinePathParts(text) : null;
+  // A fenced block with a language is coloured by the shared tokenizer (the
+  // diff viewer's); its text content, which Copy reads, stays exactly the code.
+  const fence = block && className ? /(?:^|\s)language-([^\s]+)/.exec(className)?.[1] : undefined;
+  if (fence && typeof children === "string") return <code className={className}><HighlightedCode code={children} language={fence} /></code>;
   if (parts === null) return <code className={className}>{children}</code>;
   return <InlinePath text={text} parts={parts} linked={linked} />;
 }
@@ -688,13 +695,37 @@ function InlinePath({ text, parts, linked }: { text: string; parts: InlinePathPa
   </span>;
 }
 
+const CODE_LANGUAGE_LABELS: Record<string, string> = {
+  bash: "Shell", sh: "Shell", shell: "Shell", zsh: "Shell", console: "Shell", ps1: "PowerShell", powershell: "PowerShell",
+  js: "JavaScript", javascript: "JavaScript", jsx: "JSX", mjs: "JavaScript", cjs: "JavaScript",
+  ts: "TypeScript", typescript: "TypeScript", tsx: "TSX",
+  py: "Python", python: "Python", rb: "Ruby", ruby: "Ruby", rs: "Rust", rust: "Rust", go: "Go",
+  json: "JSON", jsonc: "JSON", yaml: "YAML", yml: "YAML", toml: "TOML", md: "Markdown", markdown: "Markdown",
+  html: "HTML", css: "CSS", scss: "SCSS", sql: "SQL", swift: "Swift", kotlin: "Kotlin", kt: "Kotlin",
+  java: "Java", c: "C", cpp: "C++", "c++": "C++", cs: "C#", csharp: "C#", php: "PHP", diff: "Diff", patch: "Diff",
+  xml: "XML", dockerfile: "Dockerfile", docker: "Dockerfile", text: "", plaintext: "", txt: "",
+};
+
+/** The fenced block's language ("```ts"), as a short readable label, or null. */
+function codeLanguageLabel(children: ReactNode): string | null {
+  const child = Array.isArray(children) ? children.find(isValidElement) : children;
+  if (!isValidElement<{ className?: string }>(child)) return null;
+  const match = /(?:^|\s)language-([^\s]+)/.exec(child.props.className ?? "");
+  if (!match) return null;
+  const raw = match[1].toLowerCase();
+  if (raw in CODE_LANGUAGE_LABELS) return CODE_LANGUAGE_LABELS[raw] || null;
+  return raw.length <= 24 ? raw : null;
+}
+
 function CodePre({ children }: { children?: ReactNode }) {
   const [copied, copy] = useCopyFeedback();
   const text = textFromCodeNode(children);
   const preRef = useRef<HTMLPreElement>(null);
   const flushDisplay = useContext(FlushStreamingDisplay);
+  const language = codeLanguageLabel(children);
   return (
-    <div className="code-block">
+    <div className={`code-block${language ? " has-header" : ""}`}>
+      {language && <div className="code-block-header"><span className="code-block-language">{language}</span></div>}
       <button
         className="code-copy"
         onClick={() => {
@@ -959,6 +990,7 @@ const MessageRowContent = memo(function MessageRowContent({ message, provider, o
   const actions = !message.streaming && (
     <div className="message-actions">
       <button
+        type="button"
         onClick={() => {
           setCopiedOnce(true);
           copy(message.text);
@@ -969,7 +1001,7 @@ const MessageRowContent = memo(function MessageRowContent({ message, provider, o
         {copied ? "Copied" : "Copy"}
       </button>
       {message.role === "user" && environment.canEdit && onEdit && (
-        <button onClick={() => onEdit(message.text)} title="Put this message back in the composer to edit and resend">
+        <button type="button" onClick={() => onEdit(message.text)} title="Copy into the message box to edit and send again">
           <Pencil size={11} />
           Edit
         </button>
@@ -979,6 +1011,7 @@ const MessageRowContent = memo(function MessageRowContent({ message, provider, o
           // Keep a selection inside this reply so the note cites just that part.
           onMouseDown={(event) => event.preventDefault()}
           onClick={(event) => openFeedback(event.currentTarget)}
+          type="button"
           title="Add feedback on the selected text, or on this whole reply"
         >
           <MessageSquarePlus size={11} />
@@ -993,8 +1026,8 @@ const MessageRowContent = memo(function MessageRowContent({ message, provider, o
       ? <QueuedSteerStatus key={`${message.turnId}:${message.steerRuntimeId ?? message.id}`} message={message} />
       : <div className={`message-steer-status ${message.steerStatus}`} role="status" title={message.steerStatus === "unconfirmed"
         ? claudeReadUnconfirmed ? "Claude received this message but did not confirm reading it. Inspect the conversation before sending it again."
-          : "The runtime did not confirm delivery. This guidance may have reached the active turn."
-        : message.steerStatus === "accepted" ? "Runtime input delivery confirmed."
+          : "Delivery wasn’t confirmed. This guidance may still have reached the active turn."
+        : message.steerStatus === "accepted" ? "Message delivered to the running task."
           : message.steerStatus === "read" ? "Claude confirmed reading this message." : undefined}>
         {message.steerStatus === "unconfirmed" ? <AlertTriangle size={11} aria-hidden="true" />
           : message.steerStatus === "accepted" || message.steerStatus === "read" ? <Check size={11} aria-hidden="true" /> : <CornerUpRight size={11} aria-hidden="true" />}
@@ -1006,8 +1039,11 @@ const MessageRowContent = memo(function MessageRowContent({ message, provider, o
   if (isMythraNoticeMessage(message)) {
     return <div className="message-notice" role="note"><CornerUpRight size={11} aria-hidden="true" />Mythra Code continued the parent</div>;
   }
+  // Sol R6 B03: the author is part of the message for assistive tech too,
+  // not only the visual avatar ("You" / "OpenAI assistant").
+  const authorLabel = message.role === "assistant" ? `${providerDisplayName(provider)} assistant` : "You";
   const avatar = (
-    <div className={`message-avatar ${message.role === "assistant" ? `provider-${provider}` : ""}`}>
+    <div className={`message-avatar ${message.role === "assistant" ? `provider-${provider}` : ""}`} aria-hidden="true">
       {message.role === "assistant" ? <ProviderLogo provider={provider} size={14} /> : <span>You</span>}
     </div>
   );
@@ -1016,7 +1052,7 @@ const MessageRowContent = memo(function MessageRowContent({ message, provider, o
     // text follows in its own bubble underneath, so the images read as a
     // distinct item rather than a footnote to the prose.
     return (
-      <article className={`message ${message.role} with-attachments`}>
+      <article className={`message ${message.role} with-attachments`} aria-label={authorLabel}>
         {avatar}
         <div className="message-stack">
           {actions}
@@ -1039,10 +1075,10 @@ const MessageRowContent = memo(function MessageRowContent({ message, provider, o
     );
   }
   return (
-    <article className={`message ${message.role}`}>
+    <article className={`message ${message.role}`} aria-label={authorLabel}>
       {avatar}
       <div className="message-body">
-        {actions}
+        {message.role !== "assistant" && actions}
         {message.role === "assistant"
           // One stable wrapper keeps the Markdown DOM (and its completion tail)
           // intact when a finished reply becomes a feedback source.
@@ -1055,6 +1091,8 @@ const MessageRowContent = memo(function MessageRowContent({ message, provider, o
         {dependencies}
         {MessageExtras && <MessageExtras message={message} />}
         {message.streaming && <span className="stream-caret" />}
+        {/* A reply's actions follow its last line, where reading ends. */}
+        {message.role === "assistant" && actions}
       </div>
     </article>
   );
@@ -1440,6 +1478,78 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
   );
 }, (previous, next) => previous.skills === next.skills && previous.onOpenSkill === next.onOpenSkill && (previous.reveal ?? false) === (next.reveal ?? false) && sameWorkItems(previous.entries, next.entries));
 
+/** Changed paths named by a file step: Codex lists them as detail lines, other providers title the step with its path. */
+function fileStepPaths(activity: Activity): string[] {
+  if (activity.itemCount !== undefined || /^\d+ file changes?$/.test(activity.title.trim())) {
+    return (activity.detail ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
+  }
+  const title = activity.title.trim();
+  return title && !/\s/.test(title) ? [title] : [];
+}
+
+/** What a settled run's inline summary shows: its last command and the files it changed. */
+function workDigest(entries: WorkItemEntry[]): { latest?: Activity; files: string[] } {
+  const commands: Activity[] = [];
+  const files = new Set<string>();
+  for (const entry of entries) {
+    if (entry.kind === "commands") commands.push(...entry.value.filter((activity) => activity.workType !== "research"));
+    else if (entry.kind === "files") for (const activity of entry.value) for (const path of fileStepPaths(activity)) files.add(path);
+    else if (entry.kind === "activity" && entry.value.kind === "command" && entry.value.workType !== "research") commands.push(entry.value);
+    else if (entry.kind === "activity" && entry.value.kind === "file") for (const path of fileStepPaths(entry.value)) files.add(path);
+  }
+  return { latest: commands.at(-1), files: [...files] };
+}
+
+/** The last few lines of a command's output; a lone folder path is not output. */
+function outputTail(detail: string | undefined): string {
+  const lines = (detail ?? "").split("\n").map((line) => line.trimEnd()).filter((line) => line.trim());
+  if (lines.length === 1 && /^(\/|[A-Za-z]:\\)\S*$/.test(lines[0])) return "";
+  return lines.slice(-3).join("\n");
+}
+
+function openChangedFile(path: string) {
+  window.dispatchEvent(new CustomEvent("mythra:open-changes", { detail: { path } }));
+}
+
+/** A settled run's summary, opened in place from its status line. */
+function WorkDigest({ id, digest, onFullActivity }: { id: string; digest: { latest?: Activity; files: string[] }; onFullActivity: (opener: HTMLButtonElement) => void }) {
+  const latest = digest.latest;
+  const tail = outputTail(latest?.detail);
+  const failed = latest?.status === "failed" || latest?.status === "declined";
+  const root = useContext(TimelineProjectRoot);
+  return <div className="work-digest" id={id} role="region" aria-label="Run summary">
+    {latest && <section className="work-digest-section">
+      <h4>Latest result</h4>
+      <div className={`work-digest-command${failed ? " failed" : ""}`}>
+        <TerminalSquare size={12} aria-hidden="true" />
+        <code title={latest.title}>{latest.title.split("\n")[0]}</code>
+        {failed && <span className="work-digest-chip">Failed</span>}
+      </div>
+      {tail && <pre className="work-digest-output">{tail}</pre>}
+    </section>}
+    {digest.files.length > 0 && <section className="work-digest-section">
+      {/* The destination is said once, at rest (Sol M13): a file opens its
+          diff as it is now, which can include edits made after this run. */}
+      <h4>Changed files <span>{digest.files.length}</span><small className="work-digest-files-hint">Opens the current diff</small></h4>
+      <ul className="work-digest-files">
+        {digest.files.map((path) => {
+          // Project-relative, like the Tools panel dock; the absolute path stays in the tooltip.
+          const { name, directory } = splitChangePath(projectRelativePath(path, root));
+          return <li key={path}>
+            <button type="button" onClick={() => openChangedFile(path)} title={`View current diff of ${path}`} aria-label={`View current diff of ${path}`}>
+              <FileCode2 size={12} aria-hidden="true" />
+              <span className="work-digest-file-name">{name}</span>
+              {directory && <span className="work-digest-file-dir"><bdi dir="ltr">{directory}</bdi></span>}
+              <span className="work-digest-file-action" aria-hidden="true">View current diff</span>
+            </button>
+          </li>;
+        })}
+      </ul>
+    </section>}
+    <button type="button" className="work-digest-full" onClick={(event) => onFullActivity(event.currentTarget)}>Full activity<ChevronRight size={12} aria-hidden="true" /></button>
+  </div>;
+}
+
 const WorkStatusRow = memo(function WorkStatusRow({ entry, open, searchMatches, onOpenActivity }: {
   entry: WorkTimelineEntry;
   open: boolean;
@@ -1454,25 +1564,40 @@ const WorkStatusRow = memo(function WorkStatusRow({ entry, open, searchMatches, 
   const state = parentLabel?.state ?? recorded;
   const entryRef = useRef(entry);
   entryRef.current = entry;
-  const onOpen = useCallback((opener: HTMLButtonElement) => onOpenActivity(entryRef.current, opener), [onOpenActivity]);
+  const openFull = useCallback((opener: HTMLButtonElement) => onOpenActivity(entryRef.current, opener), [onOpenActivity]);
+  // A settled run with a command or a changed file opens a summary in place;
+  // "Full activity" still opens the searchable dialog. Live runs open it directly.
+  const digest = useMemo(() => live || entry.skillCount !== undefined ? null : workDigest(entry.value), [entry.skillCount, entry.value, live]);
+  const discloses = Boolean(digest && (digest.latest || digest.files.length));
+  const [expanded, setExpanded] = useState(false);
+  const digestId = useId();
+  const onOpen = useCallback((opener: HTMLButtonElement) => {
+    if (discloses) setExpanded((value) => !value);
+    else openFull(opener);
+  }, [discloses, openFull]);
   const summary = entry.skillCount !== undefined ? `${entry.skillCount} skill${entry.skillCount === 1 ? "" : "s"} used`
     : live ? stepCountLabel(countWorkItems(entry.value)) : workSummary(entry.value) || stepCountLabel(countWorkItems(entry.value));
-  return <ActivityStatus
-    state={state}
-    label={live ? entry.live?.label : parentLabel?.label}
-    category={entry.live?.category}
-    playful={entry.live?.playful}
-    unconfirmed={entry.unconfirmed}
-    seed={entry.runKey}
-    summary={live ? summary : withCompletionNote(summary, entry.completionUnconfirmed)}
-    searchMatches={searchMatches}
-    runKey={entry.runKey}
-    open={open}
-    onOpen={onOpen}
-  />;
+  return <>
+    <ActivityStatus
+      state={state}
+      label={live ? entry.live?.label : parentLabel?.label}
+      detail={live ? entry.live?.detail : undefined}
+      category={entry.live?.category}
+      playful={entry.live?.playful}
+      unconfirmed={entry.unconfirmed}
+      seed={entry.runKey}
+      summary={live ? summary : withCompletionNote(summary, entry.completionUnconfirmed)}
+      searchMatches={searchMatches}
+      runKey={entry.runKey}
+      open={discloses ? expanded : open}
+      controls={discloses ? digestId : undefined}
+      onOpen={onOpen}
+    />
+    {discloses && expanded && digest && <WorkDigest id={digestId} digest={digest} onFullActivity={openFull} />}
+  </>;
 }, (previous, next) => previous.open === next.open && previous.searchMatches === next.searchMatches
   && previous.onOpenActivity === next.onOpenActivity && previous.entry.state === next.entry.state
-  && previous.entry.unconfirmed === next.entry.unconfirmed && previous.entry.runKey === next.entry.runKey && previous.entry.live?.label === next.entry.live?.label
+  && previous.entry.unconfirmed === next.entry.unconfirmed && previous.entry.runKey === next.entry.runKey && previous.entry.live?.label === next.entry.live?.label && previous.entry.live?.detail === next.entry.live?.detail
   && previous.entry.skillCount === next.entry.skillCount && previous.entry.completionUnconfirmed === next.entry.completionUnconfirmed
   && previous.entry.live?.category === next.entry.live?.category && previous.entry.live?.playful === next.entry.live?.playful
   && sameWorkItems(previous.entry.value, next.entry.value));
@@ -2234,7 +2359,11 @@ const TimelineContent = memo(function TimelineContent({
   useLayoutEffect(() => {
     liveSnapshotRef.current = liveSnapshot(presented, messages, history, liveSnapshotRef.current);
   }, [history, messages, presented]);
-  const entries = useMemo<TimelineEntry[]>(() => approval ? [...presented, { kind: "approval", value: approval }] : presented, [approval, presented]);
+  // While the approval card is on screen it is the status: the live
+  // "Waiting for approval · N steps" line above it would only repeat it.
+  const entries = useMemo<TimelineEntry[]>(() => approval
+    ? [...presented.filter((entry) => !(entry.kind === "work" && entry.state === "running" && entry.live?.category === "approval")), { kind: "approval", value: approval }]
+    : presented, [approval, presented]);
 
   const matchIndices = useMemo(() => {
     const query = searchQuery?.trim().toLowerCase();

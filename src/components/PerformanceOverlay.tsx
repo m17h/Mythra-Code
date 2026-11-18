@@ -74,7 +74,7 @@ export default function PerformanceOverlay() {
   const tone = (value: number | null, warn: number, bad: number, higherIsWorse = true) => value === null ? ""
     : (higherIsWorse ? value >= bad : value <= bad) ? " bad" : (higherIsWorse ? value >= warn : value <= warn) ? " warn" : "";
   return <aside className="performance-overlay" aria-label="Performance overlay">
-    <button type="button" className="performance-overlay-close" aria-label="Hide performance overlay" title="Hide (Settings → Runtime)" onClick={() => setPerformanceOverlayEnabled(false)}><X size={11} /></button>
+    <button type="button" className="performance-overlay-close" aria-label="Hide performance overlay" title="Hide (Settings → Advanced)" onClick={() => setPerformanceOverlayEnabled(false)}><X size={11} /></button>
     <dl>
       <div className={tone(readout?.fps ?? null, 50, 30, false)}><dt>FPS</dt><dd>{readout?.fps ?? "—"}</dd></div>
       <div className={tone(readout?.worstFrameMs ?? null, 34, 100)}><dt>Worst frame</dt><dd>{readout?.worstFrameMs === null || !readout ? "—" : `${Math.round(readout.worstFrameMs)} ms`}</dd></div>

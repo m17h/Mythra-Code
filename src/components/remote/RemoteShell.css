@@ -22,7 +22,7 @@
 .message-inert-link { overflow-wrap: anywhere; user-select: text; }
 .remote-outbox-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; color: var(--muted); font-size: var(--fs-meta); }
 .remote-outbox-state button { padding: 0; border: 0; color: inherit; background: none; font: inherit; text-decoration: underline; cursor: pointer; }
-.remote-folder-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--backdrop, rgb(0 0 0 / .3)); }
+.remote-folder-backdrop { position: fixed; inset: 0; z-index: var(--z-modal); display: grid; place-items: center; background: var(--backdrop, rgb(0 0 0 / .3)); }
 .remote-folder-browser { width: min(460px, 90vw); max-height: 70vh; display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-3); border-radius: var(--r-xl); background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
 .remote-folder-browser header, .remote-folder-browser footer { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
 .remote-folder-browser footer { justify-content: flex-end; }

@@ -13,7 +13,7 @@
 .modal-backdrop.onboarding-backdrop.closed { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 300ms var(--ease), visibility 0s linear 330ms; }
 
 /* --ob-detail: supporting text sits a step above meta so it stays legible at 100% UI scale. */
-.onboarding-modal { --ob-detail: calc(var(--fs-meta) + 1px); container: ob / size; position: relative; width: min(880px, 100%); height: min(610px, 100%); display: grid; grid-template-rows: 48px minmax(0, 1fr) 52px; overflow: hidden; border: 0; border-radius: 14px; color: var(--text); background: var(--menu-surface, var(--panel)); box-shadow: var(--lm-pop-shadow, var(--shadow)); font-size: var(--fs-ui); letter-spacing: var(--track-tight); transform-origin: 50% 60%; transition: transform 300ms var(--ease), opacity 300ms var(--ease); }
+.onboarding-modal { --ob-detail: calc(var(--fs-meta) + 1px); container: ob / size; position: relative; width: min(880px, 100%); height: min(580px, 100%); display: grid; grid-template-rows: 48px minmax(0, 1fr) 52px; overflow: hidden; border: 0; border-radius: 14px; color: var(--text); background: var(--menu-surface, var(--panel)); box-shadow: var(--lm-pop-shadow, var(--shadow)); font-size: var(--fs-ui); letter-spacing: var(--track-tight); transform-origin: 50% 60%; transition: transform 300ms var(--ease), opacity 300ms var(--ease); }
 .onboarding-backdrop.closed .onboarding-modal { opacity: 0; transform: translateY(4px); }
 .onboarding-modal :where(h2, h3, p) { margin: 0; }
 .onboarding-modal .primary-button, .onboarding-modal .secondary-button { min-height: 30px; padding: 0 14px; white-space: nowrap; }
@@ -36,15 +36,19 @@
 .ob-step-num { flex: 0 0 auto; width: 18px; height: 18px; display: grid; place-items: center; border: 0; border-radius: var(--r-chip, 4px); color: var(--muted); background: var(--lm-press, color-mix(in srgb, var(--text) 8%, transparent)); font-size: var(--fs-meta); font-weight: 600; font-variant-numeric: tabular-nums; transition: color 160ms var(--ease), background 160ms var(--ease); }
 .ob-step-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ob-stepper li.current button { color: var(--text); background: var(--lm-press, color-mix(in srgb, var(--text) 8%, transparent)); }
-.ob-stepper li.current .ob-step-num { color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--green)); }
-.ob-stepper li.done .ob-step-num { color: var(--green); background: var(--green-soft); }
+.ob-stepper li.current .ob-step-num { color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--accent)); }
+.ob-stepper li.done .ob-step-num { color: var(--accent); background: var(--accent-soft); }
 .ob-close { flex: 0 0 auto; width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: var(--r-control, 6px); color: var(--muted); background: transparent; cursor: pointer; }
 .ob-close:hover { color: var(--text); background: var(--lm-press, var(--panel-3)); }
 .ob-progress { position: absolute; inset: auto 0 -1px; height: 2px; overflow: hidden; pointer-events: none; }
-.ob-progress i { display: block; height: 100%; background: var(--green); transform-origin: left center; transition: transform 240ms var(--ease); }
+.ob-progress i { display: block; height: 100%; background: var(--accent); transform-origin: left center; transition: transform 240ms var(--ease); }
 
 /* ---- Stage ---- */
-.ob-stage { min-height: 0; overflow: hidden auto; padding: clamp(14px, 4.2cqh, 26px) clamp(16px, 4.4cqi, 36px); overscroll-behavior: contain; }
+/* The stage is a column whose page takes auto block margins: short steps sit
+   in the optical centre instead of leaving a band of dead space under them,
+   and tall steps still start at the top and scroll (auto margins collapse). */
+.ob-stage { min-height: 0; display: flex; flex-direction: column; overflow: hidden auto; padding: clamp(14px, 4.2cqh, 26px) clamp(16px, 4.4cqi, 36px); overscroll-behavior: contain; }
+.ob-stage > .ob-page { margin-block: auto; }
 .ob-page { display: grid; gap: clamp(10px, 2.8cqh, 18px); align-content: start; min-width: 0; animation: ob-page-forward 180ms var(--ease) both; }
 .ob-stage.back .ob-page { animation-name: ob-page-back; }
 
@@ -65,15 +69,15 @@
 .ob-chip { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: var(--r-chip, 4px); color: var(--ink-2); background: var(--lm-press, color-mix(in srgb, var(--text) 7%, transparent)); font-size: var(--fs-meta); font-style: normal; font-weight: 500; letter-spacing: 0; vertical-align: 1px; }
 .ob-scope { justify-self: end; align-self: start; display: inline-flex; align-items: center; gap: 5px; padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--r-chip, 4px); color: var(--muted); font-size: var(--fs-meta); font-style: normal; font-weight: 500; white-space: nowrap; }
 .ob-scope.github { color: var(--ink-2); }
-.ob-scope.github::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--green); }
-.ob-link { display: inline-flex; align-items: center; gap: 4px; padding: 0 2px; border: 0; border-radius: var(--r-xs); color: var(--green); background: none; font-size: inherit; font-weight: 600; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; cursor: pointer; transition: text-decoration-color var(--t-fast) ease; }
+.ob-scope.github::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.ob-link { display: inline-flex; align-items: center; gap: 4px; padding: 0 2px; border: 0; border-radius: var(--r-xs); color: var(--accent); background: none; font-size: inherit; font-weight: 600; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; cursor: pointer; transition: text-decoration-color var(--t-fast) ease; }
 .ob-link:hover { text-decoration-color: currentColor; }
 .ob-dot { flex: 0 0 auto; display: inline-block; width: 6px; height: 6px; border: 1px solid var(--muted); border-radius: 50%; }
-.ob-dot.on { border-color: var(--green); background: var(--green); }
+.ob-dot.on { border-color: var(--success, var(--accent)); background: var(--success, var(--accent)); }
 .ob-perm-icon { flex: 0 0 auto; width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-md); color: var(--ink-2); background: var(--lm-press, var(--panel-3)); }
 .ob-icon-button { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: var(--r-control, 6px); color: var(--ink-2); background: transparent; cursor: pointer; }
 .ob-icon-button:hover { color: var(--text); background: var(--lm-press, var(--panel-3)); }
-.onboarding-modal [role="radio"]:focus-visible, .ob-icon-button:focus-visible, .ob-link:focus-visible, .ob-stepper button:focus-visible, .ob-destination:focus-visible, .ob-disclosure-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 70%, transparent); outline-offset: 2px; }
+.onboarding-modal [role="radio"]:focus-visible, .ob-icon-button:focus-visible, .ob-link:focus-visible, .ob-stepper button:focus-visible, .ob-destination:focus-visible, .ob-disclosure-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 2px; }
 
 /* ---- Disclosure ---- */
 .ob-disclosure { padding-top: 8px; border-top: 1px solid var(--line-quiet, var(--line)); }
@@ -94,14 +98,13 @@
 .ob-tile { position: relative; min-width: 0; display: grid; justify-items: center; align-content: center; gap: 6px; min-height: clamp(62px, 17cqh, 80px); padding: 8px 6px; border: 1px solid var(--line); border-radius: var(--r-lg); color: var(--ink-2); background: transparent; text-align: center; cursor: pointer; transition: border-color var(--t-mid) var(--ease), background var(--t-mid) var(--ease), color var(--t-mid) var(--ease), box-shadow var(--t-mid) var(--ease); }
 .ob-tile:hover { border-color: var(--line-strong); color: var(--text); background: var(--lm-hover, transparent); }
 /* Selected choice card: a 1px accent edge plus a matching 1px ring. */
-.ob-tile.checked { border-color: var(--green); color: var(--text); background: transparent; box-shadow: 0 0 0 1px var(--green); }
+.ob-tile.checked { border-color: var(--accent); color: var(--text); background: transparent; box-shadow: 0 0 0 1px var(--accent); }
 .ob-tile-logo { width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--r-md); background: var(--lm-press, var(--panel-3)); }
 .ob-tile-name { max-width: 100%; overflow: hidden; font-size: var(--fs-ui); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-/* Readiness: a small corner dot (hollow until the provider is ready). The
-   provider's kind and status are in the tile's accessible description and in
-   the selected provider's panel, so the tile shows only logo and name. */
-.ob-tile-status { position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-sizing: border-box; border: 1.5px solid var(--muted); border-radius: 50%; pointer-events: none; transition: border-color var(--t-mid) var(--ease), background var(--t-mid) var(--ease), box-shadow var(--t-mid) var(--ease); }
-.ob-tile-status.on { border-color: var(--green); background: var(--green); }
+.ob-tile-state { max-width: 100%; overflow: hidden; color: var(--muted); font-size: var(--fs-meta); line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+/* M08: "Connected" is a good outcome, so it uses the status green that
+   Settings uses, not the interaction accent. */
+.ob-tile-state.on { color: var(--success, var(--accent)); }
 /* The selection pulse is retired; the checked edge alone marks the choice. */
 .ob-tile-ring { display: none; }
 .ob-provider-panel { min-height: 96px; display: grid; align-content: center; padding: 12px 16px; }
@@ -115,7 +118,7 @@
 .ob-status { display: inline-flex; align-items: center; gap: 6px; padding: 1px 7px; border-radius: var(--r-chip, 4px); color: var(--muted); background: var(--lm-press, color-mix(in srgb, var(--text) 6%, transparent)); font-size: var(--fs-meta); font-weight: 500; }
 .ob-status i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .ob-status.ready, .ob-status.install, .ob-status.update, .ob-status.connect { color: var(--ink-2); }
-.ob-status.ready i { background: var(--green); }
+.ob-status.ready i { background: var(--success, var(--accent)); }
 .ob-status.install i, .ob-status.update i { background: var(--orange); }
 
 /* ---- Shared segmented radiogroup (projects, chat font) ---- */
@@ -175,7 +178,7 @@
 .ob-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
 .ob-swatch-option { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 2px solid transparent; border-radius: var(--r-control, 6px); background: none; box-shadow: 0 0 0 1px var(--line); cursor: pointer; transition: border-color var(--t-mid) var(--ease), box-shadow var(--t-mid) var(--ease); }
 .ob-swatch-option:hover { box-shadow: 0 0 0 1px var(--line-strong); }
-.ob-swatch-option.checked { border-color: var(--green); box-shadow: 0 0 0 1px transparent; }
+.ob-swatch-option.checked { border-color: var(--accent); box-shadow: 0 0 0 1px transparent; }
 .ob-swatch { width: 22px; height: 22px; border-radius: 50%; background: conic-gradient(from 210deg, var(--sw-a) 0 33%, var(--sw-b) 0 66%, var(--sw-c) 0); }
 .ob-segmented.ob-fonts { justify-self: stretch; display: flex; flex-wrap: wrap; }
 .ob-fonts [role="radio"] { flex: 1 0 auto; min-width: 0; max-width: 100%; padding: 4px 9px; white-space: normal; overflow-wrap: anywhere; }
@@ -196,9 +199,9 @@
   --ink-2: color-mix(in srgb, var(--ob-pv-text) 84%, var(--ob-pv-bg));
   --muted: var(--ob-pv-muted);
   --muted-2: var(--ob-pv-muted);
-  --green: var(--ob-pv-accent);
-  --green-soft: color-mix(in srgb, var(--ob-pv-accent) 13%, transparent);
-  --green-line: color-mix(in srgb, var(--ob-pv-accent) 30%, transparent);
+  --accent: var(--ob-pv-accent);
+  --accent-soft: color-mix(in srgb, var(--ob-pv-accent) 13%, transparent);
+  --accent-line: color-mix(in srgb, var(--ob-pv-accent) 30%, transparent);
   min-width: 0; display: grid; gap: 11px; padding: 10px 14px 14px; border: 1px solid var(--ob-pv-line); border-radius: var(--r-lg); color: var(--ob-pv-text); background: var(--ob-pv-bg);
   box-shadow: var(--elev-1);
   transition: background 180ms var(--ease), color 180ms var(--ease), border-color 180ms var(--ease), box-shadow 180ms var(--ease);
@@ -211,14 +214,14 @@
 .ob-preview-user { justify-self: end; max-width: 88%; padding: 6px 10px; border-radius: 10px 10px 3px 10px; background: var(--ob-pv-panel); }
 .ob-preview-reply { color: var(--ink-2); }
 /* The nested shell only scopes the slider-style attribute; neutralise its app layout. */
-.onboarding-modal .ob-effort-shell.app-shell { --bg: var(--ob-pv-bg); --panel: inherit; --panel-2: inherit; --panel-3: inherit; --field: inherit; --line: inherit; --line-strong: inherit; --text: inherit; --ink-2: inherit; --muted: inherit; --muted-2: inherit; --green: inherit; --green-soft: inherit; --green-line: inherit; display: block; height: auto; overflow: visible; color: inherit; background: transparent; font-size: var(--fs-ui); transition: none; }
+.onboarding-modal .ob-effort-shell.app-shell { --bg: var(--ob-pv-bg); --panel: inherit; --panel-2: inherit; --panel-3: inherit; --field: inherit; --line: inherit; --line-strong: inherit; --text: inherit; --ink-2: inherit; --muted: inherit; --muted-2: inherit; --accent: inherit; --accent-soft: inherit; --accent-line: inherit; display: block; height: auto; overflow: visible; color: inherit; background: transparent; font-size: var(--fs-ui); transition: none; }
 .onboarding-modal .ob-effort-wrap.model-power-control { position: relative; z-index: auto; display: block; margin: 0; padding: 9px 10px 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--ob-pv-panel); box-shadow: none; }
 .ob-foot-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding-top: 12px; border-top: 1px solid var(--line-quiet, var(--line)); }
 .ob-inline-note { flex: 1 1 260px; min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 10px; }
 
 /* ---- 5 · Ready ---- */
 .ob-ready { justify-items: stretch; }
-.ob-ready-mark { justify-self: center; width: 44px; height: 44px; display: grid; place-items: center; border: 0; border-radius: var(--r-lg); color: var(--green); background: var(--green-soft); animation: ob-fade-in 200ms var(--ease) both; }
+.ob-ready-mark { justify-self: center; width: 44px; height: 44px; display: grid; place-items: center; border: 0; border-radius: var(--r-lg); color: var(--accent); background: var(--accent-soft); animation: ob-fade-in 200ms var(--ease) both; }
 .ob-ready-mark.pending { color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, transparent); }
 .ob-status-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 12px; color: var(--muted); font-size: var(--fs-ui); text-align: center; }
 .ob-status-line > span { display: inline-flex; align-items: center; gap: 7px; }
@@ -230,7 +233,7 @@
 .ob-destination strong { display: block; overflow: hidden; font-size: var(--fs-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .ob-destination small { display: block; color: var(--muted); font-size: var(--ob-detail); }
 .ob-dest-arrow { color: var(--muted); transition: transform var(--t-mid) var(--ease), color var(--t-mid) var(--ease); }
-.ob-destination:hover:not(:disabled) .ob-dest-arrow { color: var(--green); }
+.ob-destination:hover:not(:disabled) .ob-dest-arrow { color: var(--accent); }
 .ob-error { width: 100%; max-width: 580px; margin-inline: auto; padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--red) 28%, transparent); border-radius: var(--r-md); color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); font-size: var(--fs-ui); overflow-wrap: anywhere; }
 .ob-tools-disclosure { width: 100%; max-width: 620px; margin-inline: auto; }
 .ob-tools { display: grid; margin: 0; padding: 0; list-style: none; }
