@@ -14,6 +14,9 @@ export const THEME_DESIGN_GUIDE = {
     "Pass expectedRevision from your last read; if the user edited the theme in Settings meanwhile, re-read it and apply your change again instead of overwriting theirs.",
     "You cannot delete themes. If asked, tell the user to delete it in Settings > Appearance > Custom themes.",
     "Every change saves automatically and the user sees an Undo. After each change, read `adjustments` and `warnings` in the result and tell the user in plain words what Mythra Code changed for readability.",
+    "Before styling a part of the app, look it up in the kit's regions map: it names the real selector, the tokens that paint it and where effects show. Never guess class names such as .chat-stage or .main; they don't exist and the rule silently does nothing.",
+    "After every change, read `layout` in the result: `regions` are the app's real areas with on-screen boxes (CSS px); `selectors` lists each customCss selector with how many elements it matched and where; a selector with matched 0 hits nothing — use its `didYouMean`. `decorations` and `effects` say whether each ::before/::after and effect is actually visible (yes / partly / sometimes / no), with `why` and `fix`.",
+    "Call capture_app_screenshot when you need to see the window (after a big visual change, or when layout says something is partly hidden). It returns a picture plus the same layout report. The picture goes to your provider and may show the user's chats, so use it only to check the theme and never repeat what it shows. If the user turned it off, rely on layout.",
   ],
   palette: [
     "Start from a mood (calm night, warm paper, neon arcade) and pick three anchors: bg, text and one accent. Let Mythra Code derive the rest, then refine only what looks off.",
@@ -32,9 +35,12 @@ export const THEME_DESIGN_GUIDE = {
   ],
   motion: [
     "Animation is welcome in custom themes, but calm wins: slow speeds, low intensity, one backdrop effect and at most one or two accent effects. The user is coding, not watching a screensaver.",
-    "Backdrop effects (aurora, mesh, starfield, particles, grid) show only where surfaces.translucency is above 0 (bg, sidebar and canvas). Panels, menus and code stay solid so text never sits on moving colour. 0.06–0.12 translucency is usually enough.",
-    "Good pairings: aurora or starfield on dark themes; grain or a faint vignette on paper-like light themes; grid plus scanlines for retro; glow on focus and send for a little life.",
+    "Backdrop effects (aurora, mesh, starfield, particles, grid) show only where surfaces.translucency is above 0 (the chat side's background, the top bar and the left navigator). Panels, menus, the composer card, code and the Tools panel stay solid so text never sits on moving colour. 0.06–0.12 translucency is usually enough.",
+    "Pick where each backdrop or texture effect shows with area: \"window\" (default, everywhere), \"chat\" (the chat side only: never the left navigator or the Tools panel) or \"sidebar\" (the left navigator only). For example rain over the chat but a calm sidebar: particles { shape: \"streak\", area: \"chat\" }.",
+    "Weather uses the particles effect, not customCss: rain = shape \"streak\" (fast, thin, slanted with angle, up to 160 of them), snow = \"flake\", blossoms or leaves = \"petal\". angle (−30…30) tilts them for wind; keep rain colours pale and low-chroma so text stays calm on top.",
+    "Good pairings: aurora or starfield on dark themes; a storm = particles streak (area chat) + a dark mesh + vignette; grain or a faint vignette on paper-like light themes; grid plus scanlines for retro; glow on focus and send for a little life.",
     "Prefer speed \"slow\" and intensity around 0.25–0.4. Use \"lively\" only when the user asks for energy.",
+    "Lightning and other flashes are allowed but follow WCAG 2.3.1: never more than 3 flashes in any one second per animated element. A quick double flash, then a pause of a second or more, reads as lightning. Moving-only decorations (rain drawn in customCss) may loop as fast as 0.35s; anything that changes brightness, colour, size or glow needs at least 1.2s (2s when infinite).",
     "Users with reduced-motion settings, the app's pause switch or a hidden window see no motion; describe the theme so it still sounds good when still. Set motion.enabled: false for a theme that should never animate.",
   ],
   typography: [
@@ -43,6 +49,7 @@ export const THEME_DESIGN_GUIDE = {
   ],
   customCss: [
     "Reach for customCss last: tokens and curated effects cover most looks, are contrast-checked, and survive app updates.",
+    "Use the kit's regions map for selectors and its recipes for decorations: .conversation::before (z-index 0) decorates only the message list, on the glass and under the text; .sidebar::before (z-index -1) only the left navigator; .main-panel::before (z-index -1) the whole chat side behind the glass (needs translucency). Don't offset decorations outside their host with masks or pixel tricks; pick the right host instead.",
     "customCss is cosmetic only and sanitized: colours via var(--token) or --ct-* variables, no layout, sizes, positioning of real elements, url(), fonts or !important. Dropped rules come back as warnings; fix or remove them rather than resending.",
     "If a customCss rule makes text unreadable on screen, Mythra Code turns that stylesheet off and tells you which landmark failed.",
   ],

@@ -4,7 +4,7 @@
 // deterministic starfield generator. Pure; no DOM.
 
 import { composite, formatColor, mixColors, parseColor, rgbToOklch, oklchToRgb, seededRandom, withAlpha, type Rgba } from "./color";
-import { EFFECT_TYPES, didYouMean, type ColorString, type EffectType, type Speed, type ThemeEffects, type ValidationIssue } from "./spec";
+import { EFFECT_AREAS, EFFECT_TYPES, PARTICLE_SHAPES, didYouMean, type ColorString, type EffectArea, type EffectType, type ParticleShape, type Speed, type ThemeEffects, type ValidationIssue } from "./spec";
 
 export type EffectGroup = "backdrop" | "texture" | "accent";
 export type ParamDesc =
@@ -28,6 +28,23 @@ export interface EffectDef {
 
 const SPEEDS: readonly Speed[] = ["still", "slow", "medium", "lively"];
 const speed = (doc = "still | slow | medium | lively"): ParamDesc => ({ kind: "enum", values: SPEEDS, default: "slow", doc });
+const area = (): ParamDesc => ({
+  kind: "enum", values: EFFECT_AREAS, default: "window",
+  doc: "Where it shows: window (everywhere, default), chat (only the chat side: top bar, messages and composer; never the left navigator or the Tools panel) or sidebar (only the left navigator).",
+});
+
+/** Particle counts: the canvas stays light at these sizes (measured at 30fps, see docs/design/pro-ui.md). */
+export const PARTICLE_LIMITS = { min: 8, max: 60, maxWithLinks: 40, maxStreaks: 160 } as const;
+/** Default count per shape when count is not given (rain needs many thin streaks to read as rain). */
+export const PARTICLE_DEFAULT_COUNT: Readonly<Record<ParticleShape, number>> = { dot: 24, streak: 90, flake: 40, petal: 22 };
+/** Pixels per second per shape and speed. Streaks fall at rain speed; flakes and petals drift down slowly. */
+export const PARTICLE_SPEED_PX: Readonly<Record<ParticleShape, Record<Speed, number>>> = {
+  dot: { still: 0, slow: 6, medium: 12, lively: 22 },
+  streak: { still: 0, slow: 300, medium: 520, lively: 820 },
+  flake: { still: 0, slow: 18, medium: 32, lively: 52 },
+  petal: { still: 0, slow: 22, medium: 38, lively: 60 },
+};
+export const PARTICLE_ANGLE = { min: -30, max: 30 } as const;
 
 export const EFFECTS: Readonly<Record<EffectType, EffectDef>> = {
   aurora: {
@@ -38,6 +55,7 @@ export const EFFECTS: Readonly<Record<EffectType, EffectDef>> = {
       intensity: { kind: "number", min: 0, max: 1, default: 0.35, doc: "0–1 (0.35)." },
       speed: speed(),
       position: { kind: "enum", values: ["top", "bottom", "full"], default: "top", doc: "Where the light gathers." },
+      area: area(),
     },
   },
   mesh: {
@@ -47,6 +65,7 @@ export const EFFECTS: Readonly<Record<EffectType, EffectDef>> = {
       colors: { kind: "colors", min: 3, max: 5, doc: "3–5 colours." },
       intensity: { kind: "number", min: 0, max: 1, default: 0.3, doc: "0–1 (0.3)." },
       speed: speed(),
+      area: area(),
     },
   },
   starfield: {
@@ -59,19 +78,23 @@ export const EFFECTS: Readonly<Record<EffectType, EffectDef>> = {
       twinkle: { kind: "bool", default: true, doc: "Slow twinkle." },
       drift: { kind: "enum", values: ["none", "slow"], default: "slow", doc: "Parallax drift." },
       shootingStars: { kind: "bool", default: false, doc: "A rare shooting star (one every 12–20s)." },
+      area: area(),
     },
   },
   particles: {
     type: "particles", group: "backdrop", impl: "canvas",
-    doc: "Floating motes drawn on a small canvas (30fps cap), optionally joined by faint lines.",
+    doc: "Particles drawn on a small canvas (30fps cap): floating dots (optionally joined by faint lines), rain streaks, soft snowflakes or tumbling petals. For weather: rain = shape streak, snow = flake, blossoms or autumn leaves = petal; tilt them with angle for wind.",
     params: {
-      colors: { kind: "colors", min: 1, max: 3, doc: "1–3 colours." },
-      count: { kind: "int", min: 8, max: 60, default: 24, doc: "8–60 (24); 40 max with links." },
-      size: { kind: "range", min: 1, max: 4, default: [1, 2.5], doc: "[min, max] px, 1–4." },
-      speed: speed(),
-      direction: { kind: "enum", values: ["rise", "fall", "drift"], default: "rise", doc: "Movement direction." },
-      links: { kind: "bool", default: false, doc: "Faint lines between near particles." },
-      glow: { kind: "bool", default: false, doc: "Soft halo on each particle." },
+      colors: { kind: "colors", min: 1, max: 3, doc: "1–3 colours. Rain reads best in a pale, low-chroma tint of text (e.g. a blue-grey); petals in 2–3 close pinks." },
+      shape: { kind: "enum", values: PARTICLE_SHAPES, default: "dot", doc: "dot (round motes, default), streak (thin slanted rain lines that fall fast), flake (soft snow that sways as it falls), petal (small petals that tumble and spin)." },
+      count: { kind: "int", min: PARTICLE_LIMITS.min, max: PARTICLE_LIMITS.maxStreaks, default: PARTICLE_DEFAULT_COUNT.dot, doc: `${PARTICLE_LIMITS.min}–${PARTICLE_LIMITS.max} for dots, flakes and petals (${PARTICLE_LIMITS.maxWithLinks} with links); streaks up to ${PARTICLE_LIMITS.maxStreaks}. Default per shape: dot ${PARTICLE_DEFAULT_COUNT.dot}, streak ${PARTICLE_DEFAULT_COUNT.streak}, flake ${PARTICLE_DEFAULT_COUNT.flake}, petal ${PARTICLE_DEFAULT_COUNT.petal}.` },
+      size: { kind: "range", min: 1, max: 4, default: [1, 2.5], doc: "[min, max], 1–4. Dot and flake radius in px; streak thickness (1 = hairline drizzle, 2–3 = heavy rain); petal size (about 3× in px)." },
+      speed: speed("still | slow | medium | lively. Streaks fall at rain speed (slow drizzle about 300 px/s, lively downpour about 820 px/s); flakes and petals drift down gently."),
+      direction: { kind: "enum", values: ["rise", "fall", "drift"], default: "rise", doc: "Movement direction. Defaults to fall for streak, flake and petal, rise for dot." },
+      angle: { kind: "number", min: PARTICLE_ANGLE.min, max: PARTICLE_ANGLE.max, default: 0, step: 1, doc: "Wind slant in degrees for rise and fall, −30…30 (0 = straight; positive leans to the right). Ignored for drift." },
+      links: { kind: "bool", default: false, doc: "Faint lines between near particles (dots only)." },
+      glow: { kind: "bool", default: false, doc: "Soft halo on each particle (dots; flakes are always soft)." },
+      area: area(),
     },
   },
   grid: {
@@ -82,6 +105,7 @@ export const EFFECTS: Readonly<Record<EffectType, EffectDef>> = {
       speed: { kind: "enum", values: SPEEDS, default: "medium", doc: "still | slow | medium | lively" },
       horizon: { kind: "number", min: 0.55, max: 0.8, default: 0.66, doc: "Horizon height as a fraction from the top (0.55–0.8)." },
       glow: { kind: "bool", default: true, doc: "A soft glow along the horizon." },
+      area: area(),
     },
   },
   grain: {
@@ -90,6 +114,7 @@ export const EFFECTS: Readonly<Record<EffectType, EffectDef>> = {
     params: {
       amount: { kind: "number", min: 0, max: 1, default: 0.4, doc: "0–1 (0.4)." },
       animated: { kind: "bool", default: false, doc: "A gentle 8fps grain jitter." },
+      area: area(),
     },
   },
   scanlines: {
@@ -99,6 +124,7 @@ export const EFFECTS: Readonly<Record<EffectType, EffectDef>> = {
       opacity: { kind: "number", min: 0, max: 1, default: 0.3, doc: "0–1 (0.3)." },
       spacing: { kind: "enum", values: [2, 3, 4], default: 3, doc: "Line spacing in px." },
       roll: { kind: "bool", default: false, doc: "A very slow downward roll." },
+      area: area(),
     },
   },
   vignette: {
@@ -107,6 +133,7 @@ export const EFFECTS: Readonly<Record<EffectType, EffectDef>> = {
     params: {
       strength: { kind: "number", min: 0, max: 1, default: 0.3, doc: "0–1 (0.3)." },
       color: { kind: "color", doc: "Edge colour (defaults to black or a deep tint of bg)." },
+      area: area(),
     },
   },
   glow: {
@@ -267,9 +294,14 @@ export function clampEffectParams(type: EffectType, raw: unknown, path = `effect
       }
     }
   }
-  if (type === "particles" && params.links === true && typeof params.count === "number" && params.count > 40) {
-    warnings.push(`${path}.count: ${params.count} particles with links is too heavy; used 40.`);
-    params.count = 40;
+  if (type === "particles" && typeof params.count === "number") {
+    const shape = (params.shape as ParticleShape | undefined) ?? "dot";
+    const cap = shape === "streak" ? PARTICLE_LIMITS.maxStreaks : params.links === true && shape === "dot" ? PARTICLE_LIMITS.maxWithLinks : PARTICLE_LIMITS.max;
+    if (params.count > cap) {
+      const why = shape === "streak" ? "streaks" : params.links === true && shape === "dot" ? "particles with links" : `${shape}s (only streaks go above ${PARTICLE_LIMITS.max})`;
+      warnings.push(`${path}.count: ${params.count} ${why} is too heavy; used ${cap}.`);
+      params.count = cap;
+    }
   }
   return { params, issues, warnings };
 }
@@ -324,6 +356,11 @@ export function resolveEffectParams(type: EffectType, params: Params | undefined
     else if (desc.kind === "color") out[key] = undefined;
     else out[key] = desc.default;
   }
+  if (type === "particles") {
+    const shape = (out.shape as ParticleShape) ?? "dot";
+    if (given.count === undefined || given.count === null) out.count = PARTICLE_DEFAULT_COUNT[shape] ?? PARTICLE_DEFAULT_COUNT.dot;
+    if ((given.direction === undefined || given.direction === null) && shape !== "dot") out.direction = "fall";
+  }
   if (type === "starfield") {
     out.color = out.color ?? formatColor(palette.scheme === "dark" ? mixColors(palette.text, palette.bg, 0.12) : mixColors(palette.text, palette.bg, 0.35));
   }
@@ -342,8 +379,19 @@ export function effectSeconds(type: EffectType, value: unknown): number | null {
 
 // ---- Contrast palette ---------------------------------------------------------
 
-/** A colour an effect may paint behind or over text, at its strongest opacity. */
-export interface EffectPaint { color: Rgba; opacity: number; layer: "back" | "front"; effect: EffectType }
+/** A colour an effect may paint behind or over text, at its strongest opacity, and where it shows. */
+export interface EffectPaint { color: Rgba; opacity: number; layer: "back" | "front"; effect: EffectType; area: EffectArea }
+
+/** The area a (resolved or raw) effect shows in; "window" when unset. */
+export function effectArea(params: Record<string, unknown> | undefined): EffectArea {
+  const value = params?.area;
+  return value === "chat" || value === "sidebar" ? value : "window";
+}
+
+/** Whether paint in `area` sits behind the given region ("chat" = the main panel incl. top bar; "sidebar" = the left navigator). */
+export function areaCovers(area: EffectArea, region: "chat" | "sidebar"): boolean {
+  return area === "window" || area === region;
+}
 
 /** Peak opacity an aurora/mesh blob reaches for a given intensity. */
 export function blobOpacity(intensity: number, scheme: "light" | "dark", kind: "aurora" | "mesh"): number {
@@ -364,33 +412,35 @@ export function effectPaints(effects: ThemeEffects, palette: EffectPalette): Eff
     const p = resolveEffectParams(type, raw, palette);
     const colors = (key: string) => ((p[key] as ColorString[] | undefined) ?? []).map((c) => parseColor(c)).filter((c): c is Rgba => Boolean(c));
     const color = (key: string) => (typeof p[key] === "string" ? parseColor(p[key]) : null);
+    const where = effectArea(p);
+    const push = (paint: Omit<EffectPaint, "area">) => out.push({ ...paint, area: where });
     switch (type) {
       case "aurora":
       case "mesh":
-        for (const c of colors("colors")) out.push({ color: c, opacity: blobOpacity(p.intensity as number, palette.scheme, type), layer: "back", effect: type });
+        for (const c of colors("colors")) push({ color: c, opacity: blobOpacity(p.intensity as number, palette.scheme, type), layer: "back", effect: type });
         break;
       case "starfield": {
         // Stars are 1–2px points; a half-strength wash bounds what a star does to a glyph next to it.
-        const star = color("color"); if (star) out.push({ color: star, opacity: 0.5, layer: "back", effect: type });
-        const accent = color("accentColor"); if (accent) out.push({ color: accent, opacity: 0.5, layer: "back", effect: type });
+        const star = color("color"); if (star) push({ color: star, opacity: 0.5, layer: "back", effect: type });
+        const accent = color("accentColor"); if (accent) push({ color: accent, opacity: 0.5, layer: "back", effect: type });
         break;
       }
       case "particles":
-        for (const c of colors("colors")) out.push({ color: c, opacity: 0.5, layer: "back", effect: type });
+        for (const c of colors("colors")) push({ color: c, opacity: 0.5, layer: "back", effect: type });
         break;
       case "grid": {
-        const c = color("color"); if (c) out.push({ color: c, opacity: p.glow ? 0.55 : 0.4, layer: "back", effect: type });
+        const c = color("color"); if (c) push({ color: c, opacity: p.glow ? 0.55 : 0.4, layer: "back", effect: type });
         break;
       }
       case "vignette": {
-        const c = color("color"); if (c) out.push({ color: c, opacity: vignetteAlpha(p.strength as number), layer: "back", effect: type });
+        const c = color("color"); if (c) push({ color: c, opacity: vignetteAlpha(p.strength as number), layer: "back", effect: type });
         break;
       }
       case "grain":
-        out.push({ color: palette.scheme === "dark" ? { r: 1, g: 1, b: 1, a: 1 } : { r: 0, g: 0, b: 0, a: 1 }, opacity: grainOpacity(p.amount as number), layer: "front", effect: type });
+        push({ color: palette.scheme === "dark" ? { r: 1, g: 1, b: 1, a: 1 } : { r: 0, g: 0, b: 0, a: 1 }, opacity: grainOpacity(p.amount as number), layer: "front", effect: type });
         break;
       case "scanlines":
-        out.push({ color: palette.scheme === "dark" ? { r: 0, g: 0, b: 0, a: 1 } : { r: 0.1, g: 0.08, b: 0.06, a: 1 }, opacity: scanlineOpacity(p.opacity as number), layer: "front", effect: type });
+        push({ color: palette.scheme === "dark" ? { r: 0, g: 0, b: 0, a: 1 } : { r: 0.1, g: 0.08, b: 0.06, a: 1 }, opacity: scanlineOpacity(p.opacity as number), layer: "front", effect: type });
         break;
       default:
         break;

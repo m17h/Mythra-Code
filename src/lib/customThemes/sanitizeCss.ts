@@ -9,7 +9,7 @@
 //   sanitizeCustomCss(css, { id }) scoped to the theme, keyframes renamed,
 //                                  animations split behind the motion gates
 
-import { parseColor, oklchLightness } from "./color";
+import { parseColor, relativeLuminance } from "./color";
 import { knownTokenVars } from "./spec";
 
 // ---- Tokenizer ---------------------------------------------------------------------
@@ -393,7 +393,11 @@ const COSMETIC = new Set([
 const DECORATIVE = new Set([
   "content", "position", "inset", "top", "right", "bottom", "left", "width", "height", "transform", "transform-origin", "opacity", "mix-blend-mode",
   "pointer-events", "z-index", "filter", "mask-image", "-webkit-mask-image", "mask-size", "-webkit-mask-size", "mask-position", "-webkit-mask-position", "mask-repeat", "-webkit-mask-repeat",
+  "mask-composite", "-webkit-mask-composite",
 ]);
+/** Mask compositing only changes how a decoration's own gradient masks combine. */
+const MASK_COMPOSITE = new Set(["add", "subtract", "intersect", "exclude"]);
+const WEBKIT_MASK_COMPOSITE = new Set(["clear", "copy", "source-over", "source-in", "source-out", "source-atop", "destination-over", "destination-in", "destination-out", "destination-atop", "xor"]);
 const ANIMATION = new Set(["animation", "animation-name", "animation-duration", "animation-timing-function", "animation-iteration-count", "animation-direction", "animation-delay", "animation-fill-mode"]);
 const KEYFRAME_PROPS = new Set(["transform", "opacity", "background-position", "background-color", "color", "border-color", "box-shadow"]);
 const KEYFRAME_PSEUDO_ONLY = new Set(["background-color", "color", "border-color", "box-shadow"]);
@@ -737,13 +741,22 @@ function checkShadow(prop: "box-shadow" | "text-shadow", tokens: Tok[]): string 
 
 // ---- Animations --------------------------------------------------------------------------------
 
-interface AnimationUse { name: string; duration: number | null; iterations: number | "infinite"; steps: number | null }
-
 const TIMING_IDENTS = new Set(["ease", "linear", "ease-in", "ease-out", "ease-in-out", "step-start", "step-end"]);
 const DIRECTION_IDENTS = new Set(["normal", "reverse", "alternate", "alternate-reverse"]);
 const FILL_IDENTS = new Set(["none", "forwards", "backwards", "both"]);
 
 interface AnimationLonghands { name: Tok[]; duration: Tok[]; timing: Tok[]; iterations: Tok[]; direction: Tok[]; delay: Tok[]; fill: Tok[] }
+
+/** Longhands in the order the sanitizer writes them. */
+const LONGHAND_ORDER = ["animation-name", "animation-duration", "animation-timing-function", "animation-iteration-count", "animation-direction", "animation-delay", "animation-fill-mode"] as const;
+const LONGHAND_KEY: Record<string, keyof AnimationLonghands> = {
+  "animation-name": "name", "animation-duration": "duration", "animation-timing-function": "timing", "animation-iteration-count": "iterations",
+  "animation-direction": "direction", "animation-delay": "delay", "animation-fill-mode": "fill",
+};
+/** Initial values written out when a rule names an animation but leaves these unset. */
+const LONGHAND_DEFAULT: Record<string, Tok> = {
+  "animation-timing-function": { t: "ident", v: "ease" }, "animation-iteration-count": { t: "number", v: 1, repr: "1" }, "animation-direction": { t: "ident", v: "normal" },
+};
 
 /** Expand an `animation` shorthand into longhand token lists (one entry per comma layer). */
 function expandAnimation(tokens: Tok[]): AnimationLonghands | { error: string } {
@@ -790,49 +803,317 @@ function expandAnimation(tokens: Tok[]): AnimationLonghands | { error: string } 
 
 interface Keyframes { name: string; stops: Array<{ at: number[]; decls: Array<{ name: string; value: Tok[] }> }> }
 
-function stepsCount(timing: Tok[]): number | null {
-  const first = timing.find((tok) => tok.t !== "ws");
-  if (!first) return null;
-  if (first.t === "ident" && (first.v.toLowerCase() === "step-start" || first.v.toLowerCase() === "step-end")) return 1;
-  if (first.t === "function" && first.v.toLowerCase() === "steps") {
-    const n = timing.find((tok) => tok.t === "number");
-    return n && n.t === "number" ? Math.max(1, Math.round(n.v)) : 1;
+/** Motion floors and the flash rule (seconds / counts). Exported so the design kit can quote them. */
+export const MOTION_LIMITS = {
+  /** Animations that change opacity, colour, size (scale) or glow. */
+  minDuration: 1.2,
+  minInfiniteDuration: 2,
+  /**
+   * ::before/::after decorations whose keyframes only move them (translate, rotate,
+   * background-position, with no large opacity/colour/size swing). The layer never changes
+   * its own brightness, so the only possible hard change is the jump back at each loop
+   * restart; at ≥ 0.35s that is fewer than 3 restarts a second, inside the flash rule even
+   * when the seam shows, and still fast enough for rain or streaks.
+   */
+  minMovementDuration: 0.35,
+  /** WCAG 2.3.1 general flash: at most this many flashes in any one-second window. */
+  flashesPerSecond: 3,
+} as const;
+
+/** Bounds for ::before/::after decorations (real elements can't be positioned or sized at all). */
+export const DECORATION_LIMITS = { offsetPercent: 300, offsetPx: 1600, sizePercent: 300, sizePx: 40 } as const;
+
+/**
+ * A "large change" (one transition; two opposing ones are a flash). This is WCAG 2.3.1's
+ * general-flash threshold: a change of at least 10% of the maximum relative luminance where
+ * the darker side is below 0.80. The engine can't see what a layer is drawn over, so every
+ * animated value is mapped to a worst-case 0..1 brightness proxy: opacity as if the layer were
+ * white on black, a colour's relative luminance composited over black and over white, and a
+ * scale() as the share of the layer's area that is showing.
+ */
+const FLASH_DELTA = 0.1;
+const FLASH_DARK_MAX = 0.8;
+const EPS = 1e-9;
+
+type ChannelValue = { v: number } | { key: string };
+interface Point { t: number; v: number }
+
+const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
+
+/** Share of the layer's area left showing by the scale functions in a transform, or null when it has none. */
+function transformArea(value: Tok[]): { area: number } | { key: string } | null {
+  let sx = 1, sy = 1, used = false;
+  for (let i = 0; i < value.length; i++) {
+    const tok = value[i];
+    if (tok.t !== "function") continue;
+    const fn = tok.v.toLowerCase();
+    if (!["scale", "scalex", "scaley", "scale3d"].includes(fn)) continue;
+    used = true;
+    const args: number[] = [];
+    let depth = 1, j = i + 1, opaque = false;
+    for (; j < value.length && depth > 0; j++) {
+      const cur = value[j];
+      if (cur.t === "function" || cur.t === "(") { depth++; opaque = true; }
+      else if (cur.t === ")") depth--;
+      else if (depth === 1 && cur.t === "number") args.push(cur.v);
+      else if (depth === 1 && cur.t === "percentage") args.push(cur.v / 100);
+      else if (cur.t !== "ws" && cur.t !== ",") opaque = true;
+    }
+    i = j - 1;
+    if (opaque || !args.length) return { key: serializeTokens(value) };
+    if (fn === "scale") { sx *= args[0]; sy *= args[1] ?? args[0]; }
+    else if (fn === "scalex") sx *= args[0];
+    else if (fn === "scaley") sy *= args[0];
+    else { sx *= args[0]; sy *= args[1] ?? 1; }
   }
-  return null;
+  return used ? { area: clamp01(Math.abs(sx * sy)) } : null;
 }
 
-/** Flash check: a large opacity or lightness change faster than 333ms (more than 3 flashes a second). */
-function flashError(frames: Keyframes, use: AnimationUse): string | null {
-  if (use.duration === null || use.duration <= 0) return null;
-  const points: Array<{ at: number; opacity?: number; lightness?: number }> = [];
+/** The brightness channels one keyframe declaration drives (see FLASH_DELTA). Unknown values are keyed by their text. */
+function channelValues(name: string, value: Tok[]): Array<[string, ChannelValue]> {
+  const flat = nonWs(value);
+  const text = serializeTokens(value);
+  if (name === "opacity") {
+    const tok = flat[0];
+    if (flat.length === 1 && tok.t === "number") return [["opacity", { v: clamp01(tok.v) }]];
+    if (flat.length === 1 && tok.t === "percentage") return [["opacity", { v: clamp01(tok.v / 100) }]];
+    return [["opacity", { key: text }]];
+  }
+  if (name === "color" || name === "background-color" || name === "border-color") {
+    const color = parseColor(text);
+    if (!color) return [[`${name}/dark`, { key: text }], [`${name}/light`, { key: text }]];
+    const y = relativeLuminance(color);
+    return [[`${name}/dark`, { v: color.a * y }], [`${name}/light`, { v: color.a * y + 1 - color.a }]];
+  }
+  if (name === "box-shadow") return [["box-shadow", { key: text }]];
+  return [];
+}
+
+/**
+ * Per-channel series (offset 0..1 → brightness proxy) for one @keyframes as used by one rule.
+ * Missing 0%/100% values come from the rule's own static value or, when it has none, an
+ * unknown base. Unknown values are resolved adversarially: each new one is taken as far as
+ * possible from the value before it, so a var() or a missing base can only make the check stricter.
+ */
+function keyframeSeries(frames: Keyframes, base: Map<string, Tok[]>): { series: Map<string, Point[]>; bases: Map<string, number | null> } {
+  const raw = new Map<string, Array<{ o: number; val: ChannelValue; seq: number }>>();
+  let seq = 0;
+  const transformStops: Array<{ o: number; value: Tok[]; seq: number }> = [];
   for (const stop of frames.stops) {
     for (const at of stop.at) {
-      const point: { at: number; opacity?: number; lightness?: number } = { at };
       for (const decl of stop.decls) {
-        const value = nonWs(decl.value);
-        if (decl.name === "opacity" && value.length === 1 && (value[0].t === "number" || value[0].t === "percentage")) point.opacity = value[0].t === "percentage" ? value[0].v / 100 : value[0].v;
-        if (decl.name === "color" || decl.name === "background-color" || decl.name === "border-color") {
-          const literal = literalColours(decl.value)[0];
-          const color = literal ? parseColor(literal) : null;
-          if (color) point.lightness = oklchLightness(color);
+        const order = seq++;
+        if (decl.name === "transform") { transformStops.push({ o: at / 100, value: decl.value, seq: order }); continue; }
+        for (const [channel, val] of channelValues(decl.name, decl.value)) {
+          if (!raw.has(channel)) raw.set(channel, []);
+          raw.get(channel)!.push({ o: at / 100, val, seq: order });
         }
       }
-      points.push(point);
     }
   }
-  points.sort((a, b) => a.at - b.at);
-  const stepTime = use.steps ? use.duration / use.steps : Infinity;
-  for (const key of ["opacity", "lightness"] as const) {
-    const series = points.filter((point) => point[key] !== undefined);
-    for (let k = 1; k < series.length; k++) {
-      const delta = Math.abs((series[k][key] as number) - (series[k - 1][key] as number));
-      const time = Math.min(((series[k].at - series[k - 1].at) / 100) * use.duration, stepTime);
-      const limit = key === "opacity" ? 0.4 : 0.25;
-      if (delta > limit && time < 0.333) return `@keyframes ${frames.name} changes ${key} by ${delta.toFixed(2)} in ${Math.round(time * 1000)}ms; flashing faster than 3 times a second is not allowed`;
-    }
+  // scale() is the only transform that changes how much of the layer shows; plain moves are ignored.
+  if (transformStops.some((stop) => transformArea(stop.value) !== null)) {
+    raw.set("scale", transformStops.map((stop) => {
+      const area = transformArea(stop.value);
+      return { o: stop.o, seq: stop.seq, val: area === null ? { v: 1 } : "area" in area ? { v: area.area } : area };
+    }));
   }
-  return null;
+  const baseValue = (channel: string): ChannelValue => {
+    const prop = channel.split("/")[0];
+    if (prop === "scale") {
+      const decl = base.get("transform");
+      if (!decl) return { key: "\u0000base" };
+      const area = transformArea(decl);
+      return area === null ? { v: 1 } : "area" in area ? { v: area.area } : area;
+    }
+    const decl = base.get(prop);
+    if (!decl) return { key: "\u0000base" };
+    return channelValues(prop, decl).find(([name]) => name === channel)?.[1] ?? { key: "\u0000base" };
+  };
+  const series = new Map<string, Point[]>();
+  const bases = new Map<string, number | null>();
+  for (const [channel, entries] of raw) {
+    entries.sort((a, b) => a.o - b.o || a.seq - b.seq);
+    // Several stops at one offset: the last declaration wins, as in CSS.
+    const byOffset: Array<{ o: number; val: ChannelValue }> = [];
+    for (const entry of entries) {
+      const last = byOffset[byOffset.length - 1];
+      if (last && Math.abs(last.o - entry.o) < EPS) last.val = entry.val;
+      else byOffset.push({ o: entry.o, val: entry.val });
+    }
+    const baseVal = baseValue(channel);
+    if (byOffset[0].o > EPS) byOffset.unshift({ o: 0, val: baseVal });
+    if (byOffset[byOffset.length - 1].o < 1 - EPS) byOffset.push({ o: 1, val: baseVal });
+    const resolved = new Map<string, number>();
+    const firstKnown = byOffset.find((entry) => "v" in entry.val);
+    let prev: number | null = null;
+    const points: Point[] = byOffset.map((entry) => {
+      let v: number;
+      if ("v" in entry.val) v = entry.val.v;
+      else if (resolved.has(entry.val.key)) v = resolved.get(entry.val.key)!;
+      else {
+        const ref = prev ?? (firstKnown && "v" in firstKnown.val ? firstKnown.val.v : 0);
+        v = ref >= 0.5 ? 0 : 1;
+        resolved.set(entry.val.key, v);
+      }
+      prev = v;
+      return { t: entry.o, v };
+    });
+    series.set(channel, points);
+    // The element's own value before the animation starts and after it ends.
+    bases.set(channel, "v" in baseVal ? baseVal.v : resolved.has(baseVal.key) ? resolved.get(baseVal.key)! : null);
+  }
+  return { series, bases };
 }
+
+/** True when no channel swings by a large change: the animation only moves the layer. */
+function onlyMoves(series: Map<string, Point[]>): boolean {
+  for (const points of series.values()) {
+    const values = points.map((point) => point.v);
+    if (Math.max(...values) - Math.min(...values) >= FLASH_DELTA - EPS) return false;
+  }
+  return true;
+}
+
+/** End times of the large transitions in a sequence (zigzag with the FLASH_DELTA threshold). */
+function transitionTimes(seq: Point[]): number[] {
+  if (seq.length < 2) return [];
+  const pivots: Point[] = [];
+  let trend = 0;
+  let hi = 0, lo = 0, ext = 0;
+  for (let i = 0; i < seq.length; i++) {
+    const v = seq[i].v;
+    if (trend === 0) {
+      if (v > seq[hi].v) hi = i;
+      if (v < seq[lo].v) lo = i;
+      if (seq[hi].v - seq[lo].v >= FLASH_DELTA - EPS) {
+        trend = hi > lo ? 1 : -1;
+        pivots.push(seq[trend > 0 ? lo : hi]);
+        ext = trend > 0 ? hi : lo;
+      }
+    } else if (trend > 0) {
+      if (v > seq[ext].v) ext = i;
+      else if (seq[ext].v - v >= FLASH_DELTA - EPS) { pivots.push(seq[ext]); trend = -1; ext = i; }
+    } else {
+      if (v < seq[ext].v) ext = i;
+      else if (v - seq[ext].v >= FLASH_DELTA - EPS) { pivots.push(seq[ext]); trend = 1; ext = i; }
+    }
+  }
+  if (trend !== 0) pivots.push(seq[ext]);
+  const out: number[] = [];
+  for (let k = 1; k < pivots.length; k++) {
+    // WCAG: only changes whose darker side is below 0.80 count.
+    if (Math.min(pivots[k - 1].v, pivots[k].v) < FLASH_DARK_MAX) out.push(pivots[k].t);
+  }
+  return out;
+}
+
+/**
+ * Most transitions that fit in any one-second window [w, w + 1). Each list is one channel of one
+ * layer: channels share a clock, so changes at the same instant on different channels are one
+ * change, while two changes at one instant on the same channel (a peak that snaps back) are two.
+ */
+function maxPerSecond(channels: number[][]): number {
+  const atInstant = new Map<number, number>();
+  for (const times of channels) {
+    const here = new Map<number, number>();
+    for (const t of times) { const key = Math.round(t * 1e6); here.set(key, (here.get(key) ?? 0) + 1); }
+    for (const [key, n] of here) atInstant.set(key, Math.max(atInstant.get(key) ?? 0, n));
+  }
+  const keys = [...atInstant.keys()].sort((a, b) => a - b);
+  let best = 0, inWindow = 0;
+  for (let i = 0, j = 0; j < keys.length; j++) {
+    inWindow += atInstant.get(keys[j])!;
+    while ((keys[j] - keys[i]) / 1e6 >= 1 - EPS) inWindow -= atInstant.get(keys[i++])!;
+    best = Math.max(best, inWindow);
+  }
+  return best;
+}
+
+interface LayerTiming { duration: number; iterations: number; direction: string; earlyJump: boolean }
+
+/**
+ * Worst number of large transitions in any one second for one animation layer, over its whole
+ * timeline: every iteration (finite counts, fractional counts, infinite repeats), the jump at
+ * each loop restart, alternate directions, the jump from the element's own value when the
+ * animation starts at any point of its cycle (delays can be set anywhere) and back when it ends.
+ * Channels of one layer share its clock, so a change of opacity and colour at the same moment counts once.
+ */
+function layerTransitions(series: Map<string, Point[]>, bases: Map<string, number | null>, timing: LayerTiming): number {
+  const { duration: D, iterations: N, direction } = timing;
+  if (!(D > 0) || !(N > 0) || !series.size) return 0;
+  const alternate = direction === "alternate" || direction === "alternate-reverse";
+  const period = alternate ? 2 * D : D;
+  const finite = Number.isFinite(N);
+  const steady = Math.ceil((period + 1) / D) + 2;
+  const whole = finite && Math.ceil(N) <= 2 * steady;
+  const forwardAt = (k: number) => direction === "normal" || (direction === "alternate" && k % 2 === 0) || (direction === "alternate-reverse" && k % 2 === 1);
+  const playback = (points: Point[], kFrom: number, kTo: number, early: boolean): Point[] => {
+    const out: Point[] = [];
+    for (let k = kFrom; k < kTo; k++) {
+      const ordered = forwardAt(k) ? points.map((p) => ({ t: p.t, v: p.v })) : points.map((p) => ({ t: 1 - p.t, v: p.v })).reverse();
+      // steps(start) and friends reach each value at the start of the segment leading to it.
+      let local = early ? ordered.map((p, i) => ({ t: i === 0 ? p.t : ordered[i - 1].t, v: p.v })) : ordered;
+      const frac = finite && k === Math.floor(N) ? N - k : 1;
+      if (frac < 1) {
+        const cut = local.filter((p) => p.t <= frac + EPS);
+        const after = local.find((p) => p.t > frac + EPS);
+        const before = cut[cut.length - 1];
+        if (after && before) cut.push({ t: frac, v: before.v + ((after.v - before.v) * (frac - before.t)) / Math.max(EPS, after.t - before.t) });
+        local = cut;
+      }
+      for (const p of local) out.push({ t: (k + p.t) * D, v: p.v });
+    }
+    return out;
+  };
+  const opposite = (v: number) => (v >= 0.5 ? 0 : 1);
+  let worst = 0;
+  for (const early of timing.earlyJump ? [false, true] : [false]) {
+    const kTo = whole ? Math.ceil(N) : steady;
+    const timelines = new Map<string, Point[]>();
+    for (const [channel, points] of series) timelines.set(channel, playback(points, 0, kTo, early));
+    const end = finite ? N * D : Infinity;
+    const starts = new Set<number>([0]);
+    for (const line of timelines.values()) for (const p of line) if (p.t < Math.min(period, end) - EPS) starts.add(p.t);
+    for (const s of starts) {
+      const events: number[][] = [];
+      for (const [channel, line] of timelines) {
+        const after = line.filter((p) => p.t >= s - EPS && (whole || p.t <= s + period + 1 + EPS));
+        if (!after.length) continue;
+        const base = bases.get(channel) ?? null;
+        const seq: Point[] = [{ t: s, v: base ?? opposite(after[0].v) }, ...after];
+        if (whole) seq.push({ t: end, v: base ?? opposite(after[after.length - 1].v) });
+        events.push(transitionTimes(seq));
+      }
+      worst = Math.max(worst, maxPerSecond(events));
+    }
+    if (finite && !whole) {
+      // A long finite run: also check its last cycles and the jump back when it ends.
+      const kFrom = Math.max(0, Math.ceil(N) - steady);
+      const events: number[][] = [];
+      for (const [channel, points] of series) {
+        const line = playback(points, kFrom, Math.ceil(N), early);
+        if (!line.length) continue;
+        const base = bases.get(channel) ?? null;
+        events.push(transitionTimes([...line, { t: end, v: base ?? opposite(line[line.length - 1].v) }]));
+      }
+      worst = Math.max(worst, maxPerSecond(events));
+    }
+  }
+  return worst;
+}
+
+function jumpsEarly(timing: Tok[]): boolean {
+  const words = nonWs(timing);
+  const first = words[0];
+  if (first?.t === "ident") return first.v.toLowerCase() === "step-start";
+  if (first?.t === "function" && first.v.toLowerCase() === "steps") {
+    return words.some((tok) => tok.t === "ident" && ["start", "jump-start", "jump-both", "jump-none"].includes(tok.v.toLowerCase()));
+  }
+  return false;
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 // ---- Sanitized model ------------------------------------------------------------------------
 
@@ -1011,17 +1292,20 @@ class Sanitizer {
       return null;
     }
     const isProtected = selectors.some((sel) => sel.protectedTarget);
-    const decls: CleanDecl[] = [];
+    let decls: CleanDecl[] = [];
     let hasContent = false;
+    let brokenAnimation = false;
     const ctx: ValueContext = { declaredVars: this.declaredVars, known: this.known };
     for (const decl of parsed.decls.slice(0, CSS_LIMITS.declsPerRule)) {
       const where = `\`${decl.name}\` in \`${selectorText}\``;
       if (decl.important) this.drop(where, "!important was removed");
       const result = this.declaration(decl, { pseudo, isProtected, where, ctx });
-      if (result === null) continue;
+      if (result === null) { if (ANIMATION.has(decl.name)) brokenAnimation = true; continue; }
       if (decl.name === "content") hasContent = true;
       decls.push(...result);
     }
+    // Animations are checked as a whole rule (shorthand and longhands together), so no longhand skips the flash check.
+    decls = this.resolveAnimations(decls, { pseudo, selector: selectorText, broken: brokenAnimation });
     if (parsed.decls.length > CSS_LIMITS.declsPerRule) this.drop(`\`${selectorText}\``, `more than ${CSS_LIMITS.declsPerRule} declarations`);
     if (pseudo && hasContent && !decls.some((d) => d.name === "pointer-events")) {
       // Decorations never take pointer events.
@@ -1075,13 +1359,14 @@ class Sanitizer {
         break;
       case "inset": case "top": case "right": case "bottom": case "left":
         for (const tok of flat) {
-          if (tok.t === "percentage" || (tok.t === "ident" && tok.v === "auto")) continue;
-          const v = px(tok);
-          if (v === null || Math.abs(v) > 40) { this.drop(where, "offsets must be % or at most 40px"); return null; }
+          if (tok.t === "ident" && tok.v === "auto") continue;
+          const v = tok.t === "percentage" ? tok.v : px(tok);
+          const max = tok.t === "percentage" ? DECORATION_LIMITS.offsetPercent : DECORATION_LIMITS.offsetPx;
+          if (v === null || Math.abs(v) > max) { this.drop(where, `offsets must be between -${DECORATION_LIMITS.offsetPercent}% and ${DECORATION_LIMITS.offsetPercent}% (or at most ${DECORATION_LIMITS.offsetPx}px either way)`); return null; }
         }
         break;
       case "width": case "height":
-        if (!(flat.length === 1 && ((first.t === "percentage" && first.v <= 300 && first.v >= 0) || (px(first) !== null && (px(first) as number) <= 40 && (px(first) as number) >= 0)))) { this.drop(where, "decoration size must be a % up to 300% (or up to 40px)"); return null; }
+        if (!(flat.length === 1 && ((first.t === "percentage" && first.v <= DECORATION_LIMITS.sizePercent && first.v >= 0) || (px(first) !== null && (px(first) as number) <= DECORATION_LIMITS.sizePx && (px(first) as number) >= 0)))) { this.drop(where, `decoration size must be a % up to ${DECORATION_LIMITS.sizePercent}% (or up to ${DECORATION_LIMITS.sizePx}px)`); return null; }
         break;
       case "filter":
         for (let k = 0; k < flat.length; k++) {
@@ -1093,6 +1378,12 @@ class Sanitizer {
           } else if (tok.t === "ident" && tok.v.toLowerCase() === "none") continue;
         }
         break;
+      case "mask-composite": case "-webkit-mask-composite": {
+        const keywords = name === "mask-composite" ? MASK_COMPOSITE : WEBKIT_MASK_COMPOSITE;
+        const okLayers = splitTopLevel(value).map(nonWs).every((layer) => layer.length === 1 && layer[0].t === "ident" && keywords.has(layer[0].v.toLowerCase()));
+        if (!okLayers) { this.drop(where, name === "mask-composite" ? "mask-composite takes add, subtract, intersect or exclude" : "-webkit-mask-composite takes source-over, source-in, source-out, source-atop, destination-over, destination-in, destination-out, destination-atop, xor, copy or clear"); return null; }
+        break;
+      }
       case "mask-image": case "-webkit-mask-image": case "background-image":
         for (const tok of flat) if (tok.t === "function" && !/gradient$/.test(tok.v.toLowerCase()) && !["var", "rgb", "rgba", "hsl", "hsla", "oklch", "color-mix", "calc"].includes(tok.v.toLowerCase())) { this.drop(where, "only gradients are allowed"); return null; }
         break;
@@ -1164,70 +1455,132 @@ class Sanitizer {
       if (problem) { this.error(`${where}: ${problem}.`); return null; }
     }
 
-    if (ANIMATION.has(name)) return this.animation(decl, { pseudo, where });
+    if (ANIMATION.has(name)) return this.animationDecl(decl, where);
     return [{ name, value, animation: false }];
   }
 
-  animation(decl: RawDecl, opts: { pseudo: boolean; where: string }): CleanDecl[] | null {
-    const { where, pseudo } = opts;
-    let longhands: AnimationLonghands;
+  /** Value checks for one animation declaration; the rule-level timing, floor and flash checks run in resolveAnimations. */
+  animationDecl(decl: RawDecl, where: string): CleanDecl[] | null {
+    const layers = (tokens: Tok[]) => splitTopLevel(tokens).map(nonWs);
+    const unknownName = (tok: Tok | undefined) => tok?.t === "ident" && tok.v.toLowerCase() !== "none" && !this.keyframes.has(tok.v);
     if (decl.name === "animation") {
       const expanded = expandAnimation(decl.value);
       if ("error" in expanded) { this.drop(where, expanded.error); return null; }
-      longhands = expanded;
-    } else {
-      const map: Record<string, keyof AnimationLonghands> = {
-        "animation-name": "name", "animation-duration": "duration", "animation-timing-function": "timing", "animation-iteration-count": "iterations",
-        "animation-direction": "direction", "animation-delay": "delay", "animation-fill-mode": "fill",
-      };
-      const key = map[decl.name];
-      // Longhands are checked together when the rule has a name and duration; single longhands are kept as-is after value checks.
-      if (key === "name") {
-        for (const tok of nonWs(decl.value)) {
-          if (tok.t === ",") continue;
-          if (tok.t !== "ident" || (tok.v.toLowerCase() !== "none" && !this.keyframes.has(tok.v))) { this.error(`${where}: animation-name must name a @keyframes rule in this stylesheet.`); return null; }
-        }
-      }
-      if (key === "duration") {
-        for (const tok of nonWs(decl.value)) {
-          if (tok.t === ",") continue;
-          const s = seconds(tok);
-          if (s === null || s < 1.2) { this.error(`${where}: animations must last at least 1.2s (2s when infinite); calm motion reads better.`); return null; }
-        }
-      }
-      return [{ name: decl.name, value: decl.value, animation: true }];
+      const bad = layers(expanded.name).map((layer) => layer[0]).find(unknownName);
+      if (bad && bad.t === "ident") { this.error(`${where}: \`${bad.v}\` is not a @keyframes rule in this stylesheet.`); return null; }
+      return LONGHAND_ORDER.map((name) => ({ name, value: expanded[LONGHAND_KEY[name]], animation: true }));
     }
-    // Check each layer of the shorthand.
-    const names = splitTopLevel(longhands.name).map((l) => nonWs(l)[0]);
-    const durations = splitTopLevel(longhands.duration).map((l) => seconds(nonWs(l)[0]));
-    const iterations = splitTopLevel(longhands.iterations).map((l) => nonWs(l)[0]);
-    const timings = splitTopLevel(longhands.timing);
+    const ok = (check: (layer: Tok[]) => boolean) => layers(decl.value).every((layer) => layer.length > 0 && check(layer));
+    const single = (layer: Tok[]) => layer.length === 1;
+    const valid: Record<string, () => boolean> = {
+      "animation-name": () => ok((l) => single(l) && l[0].t === "ident" && !unknownName(l[0])),
+      "animation-duration": () => ok((l) => single(l) && (seconds(l[0]) ?? -1) >= 0),
+      "animation-delay": () => ok((l) => single(l) && seconds(l[0]) !== null),
+      "animation-iteration-count": () => ok((l) => single(l) && ((l[0].t === "number" && l[0].v >= 0) || (l[0].t === "ident" && l[0].v.toLowerCase() === "infinite"))),
+      "animation-direction": () => ok((l) => single(l) && l[0].t === "ident" && DIRECTION_IDENTS.has(l[0].v.toLowerCase())),
+      "animation-fill-mode": () => ok((l) => single(l) && l[0].t === "ident" && FILL_IDENTS.has(l[0].v.toLowerCase())),
+      "animation-timing-function": () => ok((l) => (l[0].t === "ident" && single(l) && TIMING_IDENTS.has(l[0].v.toLowerCase())) || (l[0].t === "function" && ["cubic-bezier", "steps"].includes(l[0].v.toLowerCase()))),
+    };
+    if (!valid[decl.name]()) {
+      const advice: Record<string, string> = {
+        "animation-name": "animation-name must name a @keyframes rule in this stylesheet",
+        "animation-duration": "animation-duration takes times like 1.5s or 400ms",
+        "animation-delay": "animation-delay takes times like 1.5s or -2s",
+        "animation-iteration-count": "animation-iteration-count takes a number or infinite",
+        "animation-direction": "animation-direction takes normal, reverse, alternate or alternate-reverse",
+        "animation-fill-mode": "animation-fill-mode takes none, forwards, backwards or both",
+        "animation-timing-function": "animation-timing-function takes ease, linear, ease-in, ease-out, ease-in-out, step-start, step-end, cubic-bezier() or steps()",
+      };
+      this.error(`${where}: ${advice[decl.name]}.`);
+      return null;
+    }
+    return [{ name: decl.name, value: decl.value, animation: true }];
+  }
+
+  /**
+   * Check a rule's animations as one: the cascade inside the rule decides each list, then every
+   * layer gets its duration floor and the flash rule (layers on one element can run together,
+   * so their flashes are added up). Returns the rule's declarations with the animation ones in
+   * canonical order, or without them when something failed (the error names it).
+   */
+  resolveAnimations(decls: CleanDecl[], opts: { pseudo: boolean; selector: string; broken: boolean }): CleanDecl[] {
+    const first = decls.findIndex((d) => d.animation);
+    if (first < 0) return decls;
+    const rest = decls.filter((d) => !d.animation);
+    if (opts.broken) return rest;
+    const where = `\`${opts.selector}\``;
+    const lists = new Map<string, Tok[]>();
+    for (const decl of decls) if (decl.animation) lists.set(decl.name, decl.value);
+    const timeline = ["animation-duration", "animation-timing-function", "animation-iteration-count", "animation-direction"];
+    if (!lists.has("animation-name")) {
+      const stray = timeline.filter((name) => lists.has(name));
+      if (stray.length) {
+        this.error(`${where}: set ${stray.join(", ")} in the same rule as animation-name (or use the animation shorthand), so the whole animation can be checked for flashing.`);
+        return rest;
+      }
+      // Only delays or fill modes (e.g. staggering): they shift an animation in time but can't make it faster.
+      return [...rest.slice(0, first), ...LONGHAND_ORDER.filter((name) => lists.has(name)).map((name) => ({ name, value: lists.get(name)!, animation: true })), ...rest.slice(first)];
+    }
+    const layers = (name: string) => (lists.has(name) ? splitTopLevel(lists.get(name)!).map(nonWs) : null);
+    const names = layers("animation-name")!.map((layer) => layer[0]);
+    const durations = layers("animation-duration");
+    const counts = layers("animation-iteration-count");
+    const directions = layers("animation-direction");
+    const timings = lists.has("animation-timing-function") ? splitTopLevel(lists.get("animation-timing-function")!) : null;
+    const pick = <T,>(list: T[] | null, k: number): T | undefined => (list && list.length ? list[k % list.length] : undefined);
+    if (!durations && names.some((tok) => tok?.t === "ident" && tok.v.toLowerCase() !== "none")) {
+      this.error(`${where}: add animation-duration to the same rule as animation-name (or use the animation shorthand).`);
+      return rest;
+    }
+    const statics = new Map<string, Tok[]>();
+    for (const decl of rest) statics.set(decl.name, decl.value);
+    let total = 0;
+    const flashing: string[] = [];
     for (let k = 0; k < names.length; k++) {
       const nameTok = names[k];
       if (!nameTok || nameTok.t !== "ident" || nameTok.v.toLowerCase() === "none") continue;
       const frames = this.keyframes.get(nameTok.v);
-      if (!frames) { this.error(`${where}: \`${nameTok.v}\` is not a @keyframes rule in this stylesheet.`); return null; }
-      const infinite = iterations[k]?.t === "ident" && (iterations[k] as { v: string }).v.toLowerCase() === "infinite";
-      const duration = durations[k] ?? 0;
-      if (duration < (infinite ? 2 : 1.2)) { this.error(`${where}: \`${nameTok.v}\` lasts ${duration}s; animations must last at least 1.2s (2s when infinite).`); return null; }
-      if (infinite && ++this.infinite > CSS_LIMITS.infiniteAnimations) { this.error(`${where}: at most ${CSS_LIMITS.infiniteAnimations} infinite animations.`); return null; }
-      const use: AnimationUse = { name: nameTok.v, duration, iterations: infinite ? "infinite" : 1, steps: stepsCount(timings[k] ?? []) };
-      const flash = flashError(frames, use);
-      if (flash) { this.error(flash + "."); return null; }
-      if (!pseudo && frames.stops.some((stop) => stop.decls.some((d) => KEYFRAME_PSEUDO_ONLY.has(d.name)))) {
+      if (!frames) { this.error(`${where}: \`${nameTok.v}\` is not a @keyframes rule in this stylesheet.`); return rest; }
+      const duration = seconds(pick(durations, k)?.[0]) ?? 0;
+      const countTok = pick(counts, k)?.[0];
+      const infinite = countTok?.t === "ident" && countTok.v.toLowerCase() === "infinite";
+      const iterations = infinite ? Infinity : countTok?.t === "number" ? countTok.v : 1;
+      const directionTok = pick(directions, k)?.[0];
+      const direction = directionTok?.t === "ident" ? directionTok.v.toLowerCase() : "normal";
+      if (!opts.pseudo && frames.stops.some((stop) => stop.decls.some((d) => KEYFRAME_PSEUDO_ONLY.has(d.name)))) {
         this.error(`${where}: \`${nameTok.v}\` animates colours or shadows, which is only allowed on ::before/::after.`);
-        return null;
+        return rest;
       }
+      const { series, bases } = keyframeSeries(frames, statics);
+      const moves = opts.pseudo && onlyMoves(series);
+      const floor = moves ? MOTION_LIMITS.minMovementDuration : infinite ? MOTION_LIMITS.minInfiniteDuration : MOTION_LIMITS.minDuration;
+      if (iterations > 0 && duration < floor - EPS) {
+        const lasts = `\`${nameTok.v}\` lasts ${Number(duration.toFixed(3))}s`;
+        if (moves) this.error(`${where}: ${lasts}; a decoration that only moves may loop as fast as ${MOTION_LIMITS.minMovementDuration}s.`);
+        else if (opts.pseudo) this.error(`${where}: ${lasts}; animations that change opacity, colour, size or glow must last at least ${MOTION_LIMITS.minDuration}s (${MOTION_LIMITS.minInfiniteDuration}s when infinite). Decorations that only move (translate, rotate, background-position) may loop as fast as ${MOTION_LIMITS.minMovementDuration}s.`);
+        else this.error(`${where}: ${lasts}; animations must last at least ${MOTION_LIMITS.minDuration}s (${MOTION_LIMITS.minInfiniteDuration}s when infinite).`);
+        return rest;
+      }
+      if (infinite && ++this.infinite > CSS_LIMITS.infiniteAnimations) { this.error(`${where}: at most ${CSS_LIMITS.infiniteAnimations} infinite animations.`); return rest; }
+      const transitions = layerTransitions(series, bases, { duration, iterations, direction, earlyJump: jumpsEarly(pick(timings, k) ?? []) });
+      if (transitions) flashing.push(nameTok.v);
+      total += transitions;
     }
-    return [
-      { name: "animation-name", value: longhands.name, animation: true },
-      { name: "animation-duration", value: longhands.duration, animation: true },
-      { name: "animation-timing-function", value: longhands.timing, animation: true },
-      { name: "animation-iteration-count", value: longhands.iterations, animation: true },
-      { name: "animation-direction", value: longhands.direction, animation: true },
-      { name: "animation-delay", value: longhands.delay, animation: true },
-      { name: "animation-fill-mode", value: longhands.fill, animation: true },
-    ];
+    const limit = MOTION_LIMITS.flashesPerSecond;
+    if (total > 2 * limit) {
+      const flashes = Math.ceil(total / 2);
+      const who = flashing.length === 1 ? `\`${flashing[0]}\` flashes` : `the animations ${flashing.map((n) => `\`${n}\``).join(" and ")} on it can line up and flash`;
+      this.error(`${where}: ${who} ${plural(flashes, "time")} in one second; at most ${limit} are allowed (a flash is a rise and fall in brightness). Space the flashes out (a quick double flash, then a pause of a second or more, is fine) or make the brightness changes smaller.`);
+      return rest;
+    }
+    // A rule that runs an animation states its whole timing, so no other rule can change how fast it flashes.
+    const runs = names.some((tok) => tok?.t === "ident" && tok.v.toLowerCase() !== "none");
+    const out: CleanDecl[] = [];
+    for (const name of LONGHAND_ORDER) {
+      if (lists.has(name)) out.push({ name, value: lists.get(name)!, animation: true });
+      else if (runs && LONGHAND_DEFAULT[name]) out.push({ name, value: [LONGHAND_DEFAULT[name]], animation: true });
+    }
+    return [...rest.slice(0, first), ...out, ...rest.slice(first)];
   }
 }
 

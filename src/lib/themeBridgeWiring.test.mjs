@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 // The bridge talks to Rust through Tauri's invoke; record what it is asked.
 const calls = [];
-const THEME_TOOL_NAMES = ["get_theme_design_kit", "list_custom_themes", "get_custom_theme", "create_custom_theme", "update_custom_theme", "undo_custom_theme", "apply_custom_theme"];
+const THEME_TOOL_NAMES = ["get_theme_design_kit", "list_custom_themes", "get_custom_theme", "create_custom_theme", "update_custom_theme", "undo_custom_theme", "apply_custom_theme", "capture_app_screenshot"];
 let registration = 0;
 // Just enough of a browser window for modules that subscribe at import time.
 globalThis.window = globalThis.window ?? { addEventListener() {}, removeEventListener() {} };

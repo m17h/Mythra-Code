@@ -84,11 +84,24 @@ test("Windows dark themes ease their inks when contrast allows", () => {
   assert.ok(!compile(example("paper"), { platform: "windows" }).tokenCss.match(text)?.[1], "light themes are not eased");
 });
 
-test("preview scope writes only to the tile", () => {
-  const out = compileThemeCss(example("neon-drive"), { id: ID, scope: "preview", platform: "other" });
-  assert.ok(out.css.startsWith(`[data-ct-preview="${ID}"] {`));
-  assert.ok(!out.css.includes(".app-shell"));
-  assert.equal(out.customCss, "");
+test("preview scope is the app stylesheet, rescoped to the replica's shell only", () => {
+  const spec = { ...example("neon-drive"), customCss: ".sidebar { border-right: 1px solid var(--accent); }\n@keyframes pulse { from { opacity: .6; } to { opacity: 1; } }\n.conversation::before { content: \"\"; position: absolute; inset: 0; z-index: 0; animation: pulse 4s ease-in-out infinite alternate; }" };
+  const app = compileThemeCss(spec, { id: ID, scope: "app", platform: "other" });
+  const out = compileThemeCss(spec, { id: ID, scope: "preview", platform: "other" });
+  const replica = `.app-shell[data-theme][data-color-scheme][data-custom-theme="${ID}"][data-ct-replica]`;
+  // Nothing the real app's shell can match: every rule needs [data-ct-replica].
+  assert.ok(!out.css.includes(":root"), "no rule is left on the real shell's scope");
+  assert.ok(out.tokenCss.startsWith(`${replica} {`));
+  for (const line of out.css.split("\n")) {
+    if (/^\s*(@|\}|$|--|\/\*)/.test(line) || !line.includes("{") || line.trim().startsWith("from") || line.trim().startsWith("to")) continue;
+    assert.ok(line.includes("[data-ct-replica]"), `unscoped rule: ${line.slice(0, 120)}`);
+  }
+  // Same rules otherwise: tokens, effects and customCss with its motion gate.
+  assert.equal(out.tokenCss, app.tokenCss.split(`:root .app-shell[data-theme][data-color-scheme][data-custom-theme="${ID}"]`).join(replica));
+  assert.ok(out.customCss.includes(`${replica} .sidebar`));
+  assert.ok(out.customCss.includes(`${replica}[data-theme-motion="on"] .conversation::before`));
+  assert.equal(out.hasMotion, app.hasMotion);
+  assert.equal(compileThemeCss(spec, { id: ID, scope: "preview", platform: "other", customCssEnabled: false }).customCss, "", "customCss can be left out, as in the app");
 });
 
 test("shape and elevation map to radii and shadows", () => {

@@ -55,7 +55,7 @@ use tokio::{
 #[path = "agent_theme_tools.rs"]
 mod theme_tools;
 use theme_tools::{
-    claude_theme_tool, is_theme_tool, theme_tool_catalog, titled_theme_tool,
+    claude_theme_tool, is_theme_tool, theme_tool_catalog, theme_tool_mcp_result, titled_theme_tool,
     validate_theme_tool_call, THEME_BRIDGE_INSTRUCTIONS, TOOL_THEME_CREATE,
 };
 
@@ -1042,7 +1042,7 @@ pub(super) async fn child_agent_bridge_mailbox_control_response(
 /// Theme tools change only app appearance and every change is undoable, so
 /// they never prompt, in any permission mode (Read-only protects the project,
 /// not how the app looks). Same exact-live-bridge binding as the mailbox: only
-/// a root registration that was granted theme tools, only the seven theme
+/// a root registration that was granted theme tools, only the eight theme
 /// tool names, and only well-formed arguments. Sub-agent tool requests
 /// (`parent_tool_use_id`) and everything else fall through unchanged.
 pub(super) async fn child_agent_bridge_theme_control_response(
@@ -1065,7 +1065,7 @@ pub(super) async fn child_agent_bridge_theme_control_response(
 /// Cursor ACP: is this `session/request_permission` exactly a theme tool call
 /// on the turn's own registered bridge (identified by its launch arguments)?
 /// The tool identity comes from the ACP tool-call title, which must match one
-/// of the seven names exactly; `rawInput` must be present and pass the theme
+/// of the eight names exactly; `rawInput` must be present and pass the theme
 /// shape check, so a shell or edit request can never qualify. Without a
 /// recognisable identity the normal permission path (a prompt) applies.
 pub(super) async fn child_agent_bridge_theme_permission_allowed(
@@ -3975,6 +3975,10 @@ fn language_tool(tool: &str) -> bool {
 /// Measure the actual escaped MCP envelope, including the line delimiter,
 /// rather than budgeting the inner JSON then expanding it for the model.
 fn mcp_call_response(id: Value, tool: &str, payload: &Value, is_error: bool) -> Value {
+    // The screenshot tool's picture travels as an MCP image block, not text.
+    if let Some(result) = theme_tool_mcp_result(tool, payload, is_error) {
+        return json!({"jsonrpc": "2.0", "id": id, "result": result});
+    }
     if !language_tool(tool) && !matches!(tool, TOOL_READ_TERMINAL | TOOL_COMMIT_CONTEXT | TOOL_COMMIT_MESSAGE) {
         return json!({"jsonrpc": "2.0", "id": id, "result": mcp_tool_result(payload, is_error)});
     }
@@ -4358,7 +4362,7 @@ mod theme_scope_tests {
         assert!(has_all_theme_tools(&project));
         let without = catalog(&[], true, false, "ask", false, false);
         assert!(!has_any_theme_tool(&without));
-        assert_eq!(project.len(), without.len() + 7);
+        assert_eq!(project.len(), without.len() + theme_tools::THEME_TOOLS.len());
 
         let crew = catalog(&[target()], false, false, "ask", false, true);
         assert!(crew.iter().any(|name| name == TOOL_SPAWN));

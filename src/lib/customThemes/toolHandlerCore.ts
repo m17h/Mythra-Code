@@ -1,11 +1,14 @@
-// The seven custom-theme bridge tools, as pure logic over injected engine,
+// The eight custom-theme bridge tools, as pure logic over injected engine,
 // store and app-host functions (see toolHandlers.ts for the real binding).
 // Kept dependency-free so it is unit-testable without a DOM or Tauri.
 //
 // Flow per mutating call: resolve the conversation and target theme →
 // validate with the engine (P1) → save a revision in the store (P2) → record
 // the conversation's focus → apply through the app host (P2) → probe the
-// real screen for readability → answer the model with what changed.
+// real screen for readability → measure the layout (which selectors matched
+// which regions, whether decorations and effects can be seen) → answer the
+// model with what changed. capture_app_screenshot adds a picture of the
+// window when the user allows it.
 
 import type { Provider, ThemeName } from "../../types";
 import type { ContrastAdjustment, CustomThemeId, NormalizeResult, ThemeAuthor, ThemeId, ThemeSpec, ValidationIssue } from "./spec";
@@ -20,6 +23,7 @@ export const THEME_TOOLS = [
   "update_custom_theme",
   "undo_custom_theme",
   "apply_custom_theme",
+  "capture_app_screenshot",
 ] as const;
 export type ThemeTool = (typeof THEME_TOOLS)[number];
 
@@ -49,6 +53,21 @@ export interface ProbeOutcome {
   customCssCulprit?: boolean;
 }
 
+/** A picture of the app window from the native webview (PNG, already downscaled). */
+export type CaptureOutcome =
+  | { ok: true; data: string; mimeType: "image/png"; width: number; height: number }
+  | { ok: false; error: string; unavailable?: boolean };
+
+/**
+ * Runtimes that hand an MCP image result to the model: Claude Code, and Codex
+ * (ChatGPT, OpenRouter and LM Studio chats run on it; it strips images itself
+ * for text-only models). Cursor's agent does not reliably pass tool images on,
+ * so it gets the text report instead of a picture.
+ */
+export function providerTakesImages(provider: Provider | undefined): boolean {
+  return provider !== "cursor";
+}
+
 export interface ThemeToolDeps {
   normalize(input: unknown): NormalizeResult;
   applyPatch(current: ThemeSpec, patch: unknown): NormalizeResult;
@@ -66,6 +85,12 @@ export interface ThemeToolDeps {
   builtInThemes: ReadonlyArray<{ id: ThemeName; name: string; description?: string }>;
   /** How long to wait for the applied theme to paint before probing (ms). */
   applyWaitMs?: number;
+  /** The `layout` report for the window as drawn now (null: could not measure). */
+  inspect?(shell: HTMLElement, theme: { id: CustomThemeId; spec: ThemeSpec } | null, motion: { paused: boolean; reducedMotion: boolean }): Record<string, unknown> | null;
+  /** A PNG of the app window, natively from the webview (no screen-recording permission). */
+  capture?(): Promise<CaptureOutcome>;
+  /** How long a capture may take (ms). */
+  captureWaitMs?: number;
 }
 
 const LIGHT_BUILT_INS: readonly string[] = ["light-mythra", "daylight", "atari"];
@@ -193,12 +218,13 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
     let finalRevision = revision;
     const shell = await withTimeout(host.waitForApplied(theme, revision), applyWaitMs);
     if (!shell) {
-      warnings.push("The theme was saved and selected, but it isn't on screen right now (for example another project is open), so on-screen readability was not checked.");
+      warnings.push("The theme was saved and selected, but it isn't on screen right now (for example another project is open), so on-screen readability and layout were not checked.");
       return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false };
     }
-    const probe = await deps.probe(shell).catch(() => null);
-    if (!probe || probe.ok) return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false };
     const spec = headRevision(record).spec;
+    const measure = (target: HTMLElement, measured: ThemeSpec) => measureLayout(target, { id: record.id, spec: measured }, host);
+    const probe = await deps.probe(shell).catch(() => null);
+    if (!probe || probe.ok) return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false, layout: measure(shell, spec) };
     const describe = (list: ProbeOutcome["failures"]) => list.slice(0, 6).map((failure) =>
       `${failure.selectorHint ?? failure.landmark} color resolves to ${failure.fg} on ${failure.bg} (${failure.ratio.toFixed(1)}:1)`);
     const cssFailures = probe.failures.filter((failure) => failure.causedByCustomCss !== false);
@@ -214,11 +240,17 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         finalRevision = stripped.revision.n;
         host.applyTheme(theme, { threadId: conversationInfo.threadId, by: conversationInfo.by, previous: { theme, revision: { id: record.id, n: revision } } });
         warnings.push(`customCss disabled: ${failures.join("; ")}. Saved as revision ${finalRevision} without customCss; tokens and effects were kept. Fix the rule (use var(--text)/var(--muted) colours) and send customCss again if the user wants it.`);
-        return { appliedTo, warnings, revision: finalRevision, customCssDisabled: true };
+        const redrawn = await withTimeout(host.waitForApplied(theme, finalRevision), applyWaitMs);
+        return { appliedTo, warnings, revision: finalRevision, customCssDisabled: true, layout: redrawn ? measure(redrawn, { ...spec, customCss: "" }) : null };
       }
     }
     warnings.push(`Some text may be hard to read on screen: ${describe(probe.failures).join("; ")}. Adjust the related tokens (text, muted and their surfaces).`);
-    return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false };
+    return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false, layout: measure(shell, spec) };
+  }
+
+  function measureLayout(shell: HTMLElement, theme: { id: CustomThemeId; spec: ThemeSpec } | null, host: ThemeHost): Record<string, unknown> | null {
+    if (!deps.inspect) return null;
+    try { return deps.inspect(shell, theme, host.motionState()); } catch { return null; }
   }
 
   function motionNotes(spec: ThemeSpec, host: ThemeHost): string[] {
@@ -230,9 +262,9 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
   }
 
   function mutationResult(record: CustomThemeRecord, revision: number, extra: {
-    applied: boolean; appliedTo?: "app" | "project"; changed: string[]; adjustments?: ContrastAdjustment[]; warnings: string[]; note: string; [key: string]: unknown;
+    applied: boolean; appliedTo?: "app" | "project"; changed: string[]; adjustments?: ContrastAdjustment[]; warnings: string[]; note: string; layout?: Record<string, unknown> | null; [key: string]: unknown;
   }): Record<string, unknown> {
-    const { applied, appliedTo, changed, adjustments, warnings, note, ...rest } = extra;
+    const { applied, appliedTo, changed, adjustments, warnings, note, layout, ...rest } = extra;
     return {
       themeId: record.id,
       name: headRevision(record).spec.name,
@@ -243,6 +275,7 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
       adjustments: adjustments ?? [],
       warnings,
       ...rest,
+      ...(layout ? { layout } : {}),
       note,
     };
   }
@@ -344,11 +377,13 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
       const warnings = [...ok.warnings];
       let revision = saved.revision.n;
       let appliedTo: "app" | "project" | undefined;
+      let layout: Record<string, unknown> | null | undefined;
       const shouldApply = bool(apply, true);
       if (shouldApply) {
         const outcome = await applyAndProbe(saved.record, revision, info, host, { theme: previous });
         appliedTo = outcome.appliedTo;
         revision = outcome.revision;
+        layout = outcome.layout;
         warnings.push(...outcome.warnings);
       }
       warnings.push(...motionNotes(ok.spec, host));
@@ -359,6 +394,7 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         changed: ["created"],
         adjustments: ok.adjustments,
         warnings,
+        layout,
         note: `Saved ${quoted(name)} as revision ${revision}${shouldApply ? " and applied it" : ""}. The user can undo from the toast or in Settings. Adjust it later with update_custom_theme.`,
       });
     },
@@ -402,6 +438,7 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
       const warnings = [...ok.warnings];
       let revision = saved.revision.n;
       let appliedTo: "app" | "project" | undefined;
+      let layout: Record<string, unknown> | null | undefined;
       if (shouldApply) {
         const previous = previousTheme === `custom:${record.id}`
           ? { theme: previousTheme, revision: { id: record.id, n: record.head } }
@@ -409,6 +446,7 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         const outcome = await applyAndProbe(saved.record, revision, info, host, previous);
         appliedTo = outcome.appliedTo;
         revision = outcome.revision;
+        layout = outcome.layout;
         warnings.push(...outcome.warnings);
       }
       warnings.push(...motionNotes(ok.spec, host));
@@ -418,6 +456,7 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         changed,
         adjustments: ok.adjustments,
         warnings,
+        layout,
         note: `Saved as revision ${revision} of ${quoted(ok.spec.name)}. The user can undo it from the toast or in Settings; you can with undo_custom_theme.`,
       });
     },
@@ -443,6 +482,7 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
       const warnings: string[] = [];
       let revision = saved.revision.n;
       let appliedTo: "app" | "project" | undefined;
+      let layout: Record<string, unknown> | null | undefined;
       const shouldApply = bool(request.arguments.apply, true);
       if (shouldApply) {
         const previous = previousTheme === `custom:${record.id}`
@@ -451,6 +491,7 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         const outcome = await applyAndProbe(saved.record, revision, info, host, previous);
         appliedTo = outcome.appliedTo;
         revision = outcome.revision;
+        layout = outcome.layout;
         warnings.push(...outcome.warnings);
       }
       warnings.push(...motionNotes(spec, host));
@@ -460,6 +501,7 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         appliedTo,
         changed,
         warnings,
+        layout,
         ...(restoredFrom ? { restoredFrom } : {}),
         ...(saved.undone?.length ? { undone: saved.undone } : {}),
         note: `${quoted(spec.name)} ${restoredFrom ? `now looks like r${restoredFrom} again` : "was reverted"}, saved as revision ${revision}. Nothing was deleted: undo_custom_theme with toRevision ${before} brings the previous look back.`,
@@ -496,8 +538,44 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         appliedTo: outcome.appliedTo,
         changed: [],
         warnings,
+        layout: outcome.layout,
         note: `${quoted(headRevision(latest).spec.name)} is now the active theme. The user can undo from the toast.`,
       });
+    },
+
+    async capture_app_screenshot(request, context, host) {
+      if (host.screenshotsEnabled && !host.screenshotsEnabled()) {
+        refuse("The user turned off “Let models see the app” in Settings > Appearance > Custom themes, so no picture was taken. Use the `layout` report from your last theme change instead.");
+      }
+      const info = conversation(request, context, host);
+      const active = activeTheme(host, info.threadId);
+      const activeId = customId(active);
+      const record = activeId ? findRecord(deps.library(), activeId) : undefined;
+      const shell = await withTimeout(host.waitForApplied(active), Math.min(applyWaitMs, 1_500));
+      const layout = shell ? measureLayout(shell, record ? { id: record.id, spec: headRevision(record).spec } : null, host) : null;
+      const base = {
+        theme: active,
+        ...(record ? { themeId: record.id, name: headRevision(record).spec.name, revision: record.head } : {}),
+        ...(layout ? { layout } : {}),
+      };
+      const provider = request.provider ?? host.threadForSession(request.sessionId).provider;
+      if (!providerTakesImages(provider)) {
+        return { ...base, captured: false, note: "This runtime does not pass pictures from tools to the model, so no picture was taken. Use the layout report above." };
+      }
+      if (!deps.capture) return { ...base, captured: false, note: "Screenshots are not available here. Use the layout report above." };
+      const shot = await withTimeout(deps.capture(), deps.captureWaitMs ?? 10_000);
+      if (!shot || !shot.ok) {
+        const why = !shot ? "The window did not answer in time." : shot.unavailable ? "Screenshots are not available on this system." : `The picture could not be taken (${shot.error}).`;
+        return { ...base, captured: false, note: `${why} Use the layout report above.` };
+      }
+      return {
+        ...base,
+        captured: true,
+        width: shot.width,
+        height: shot.height,
+        image: { data: shot.data, mimeType: shot.mimeType },
+        note: "The attached picture is this Mythra Code window as the user sees it now, downscaled; the layout report uses window CSS pixels. Use it only to check the theme: don't repeat what it shows of the user's conversations or files. If no picture is attached, your runtime dropped it; rely on the layout report.",
+      };
     },
   };
 

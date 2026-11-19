@@ -270,7 +270,7 @@ What stays the same:
 
 - The six built-in themes and all app chrome follow the rules above. The
   Custom themes section in Settings is itself Pro UI: neutral selection,
-  hairline rows, tokens only. Only the mini previews show a theme's own look.
+  hairline rows, tokens only. Only the previews show a theme's own look.
 - Readability is enforced, not suggested: every ink is checked against every
   surface it sits on (4.5:1 for text), and inks are nudged or the theme is
   refused. Effects never sit behind panels, menus, fields or code.
@@ -286,3 +286,52 @@ What stays the same:
   user is told why).
 - Models can create, adjust, undo and apply themes. Only the user can delete
   one, in Settings, with a confirmation and a short Undo.
+
+Where effects show (2026-11-18):
+
+- Backdrop and texture effects take `area`: `window` (default, the original
+  behaviour), `chat` (the main panel: top bar, messages, composer; never the
+  left navigator or the Tools panel) or `sidebar` (the left navigator only).
+  ThemeEffectsLayer puts an area's effects in a box that follows that pane;
+  the contrast check composites an effect only behind the surfaces it covers.
+- Particles have a `shape`: dot (default), streak (rain), flake (snow), petal
+  (blossoms), plus `angle` (−30…30°) for wind. Streaks fall at rain speed and
+  may number up to 160; every other shape keeps the 60 cap (40 with links).
+  Still a 30fps canvas. Measured in headless Chromium at 1440×900, main-thread
+  task time per second: 24 dots 12 ms, 110 streaks 23 ms, 160 lively streaks
+  34 ms, 60 petals 28 ms, 60 flakes 20 ms (streaks are one stroke per colour and
+  depth, at most 9 draw calls).
+- On a see-through theme, or one with customCss, the composer zone is clear
+  and the message list fades its own text out with a 28px mask, so no
+  opaque band hides the backdrop above the composer. The landing screens
+  are positioned so a `.conversation::before` decoration stays under them.
+- get_theme_design_kit carries `regions`, a checked map of the app's real
+  selectors, the tokens that paint each region and how to decorate it
+  (`src/lib/customThemes/designKit.ts`, tested against the markup).
+
+Settings and previews (2026-11-18):
+
+- Settings → Appearance → Custom themes shows no tiles: one row-style button,
+  "Custom themes · N" (with the theme in use, if any), opens the Theme
+  library. With no themes the empty state ("Design a theme with AI") stands
+  alone and the button is hidden.
+- Library previews are a real, miniature copy of the window (sidebar, top
+  bar, a short conversation, the composer) with the theme, its effects and
+  its customCss applied (`CustomThemePreview.tsx`). It is drawn at 1200×750 in
+  a closed shadow root that shares the app's stylesheets
+  (`replicaSheets.ts`, `replicaCss.ts`); the theme is compiled with scope
+  "preview" (`[data-ct-replica]` only), so the live theme never reaches a
+  preview and a preview never restyles the app. Width/height media queries
+  are decided for the replica's size, not the window's.
+- Previews are built only near the screen, two per frame. Only the hovered or
+  focused card and the details preview move, and only while motion is
+  allowed; every other preview has all animation and transition switched
+  off, and its particle canvas draws one frame at card resolution. A theme
+  turned off by safe mode previews without customCss and stays still.
+- While the library is open, the covered app and Settings pause their own
+  animations, so its blurred backdrop isn't redrawn every frame. Measured in
+  headless Chromium at 1440×900 (2x), main-thread task time per second with
+  24 themes: idle 0.1 ms; one animated card 10–30 ms (petals 10–16, rain 17–19,
+  aurora + stars + animated composer border 29–30); details plus one hovered
+  card 36 ms. Before this, an idle library over Settings cost about 130 ms/s.
+

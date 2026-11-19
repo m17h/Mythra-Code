@@ -94,15 +94,24 @@ export const FONT_STACKS = {
 
 // ---- Effects (§5) ---------------------------------------------------------
 
+/**
+ * Where a backdrop or texture effect shows: the whole window (default, the
+ * original behaviour), only the chat side (everything right of the left
+ * navigator except the Tools panel) or only the left navigator.
+ */
+export type EffectArea = "window" | "chat" | "sidebar";
+export const EFFECT_AREAS: readonly EffectArea[] = ["window", "chat", "sidebar"];
+export type ParticleShape = "dot" | "streak" | "flake" | "petal";
+export const PARTICLE_SHAPES: readonly ParticleShape[] = ["dot", "streak", "flake", "petal"];
 export type AuroraPosition = "top" | "bottom" | "full";
-export interface AuroraParams { colors?: ColorString[]; intensity?: number; speed?: Speed; position?: AuroraPosition }
-export interface MeshParams { colors?: ColorString[]; intensity?: number; speed?: Speed }
-export interface StarfieldParams { color?: ColorString; accentColor?: ColorString; density?: "sparse" | "normal" | "dense"; twinkle?: boolean; drift?: "none" | "slow"; shootingStars?: boolean }
-export interface ParticlesParams { colors?: ColorString[]; count?: number; size?: [number, number]; speed?: Speed; direction?: "rise" | "fall" | "drift"; links?: boolean; glow?: boolean }
-export interface GridParams { color?: ColorString; speed?: Speed; horizon?: number; glow?: boolean }
-export interface GrainParams { amount?: number; animated?: boolean }
-export interface ScanlinesParams { opacity?: number; spacing?: 2 | 3 | 4; roll?: boolean }
-export interface VignetteParams { strength?: number; color?: ColorString }
+export interface AuroraParams { colors?: ColorString[]; intensity?: number; speed?: Speed; position?: AuroraPosition; area?: EffectArea }
+export interface MeshParams { colors?: ColorString[]; intensity?: number; speed?: Speed; area?: EffectArea }
+export interface StarfieldParams { color?: ColorString; accentColor?: ColorString; density?: "sparse" | "normal" | "dense"; twinkle?: boolean; drift?: "none" | "slow"; shootingStars?: boolean; area?: EffectArea }
+export interface ParticlesParams { colors?: ColorString[]; count?: number; size?: [number, number]; speed?: Speed; direction?: "rise" | "fall" | "drift"; links?: boolean; glow?: boolean; shape?: ParticleShape; angle?: number; area?: EffectArea }
+export interface GridParams { color?: ColorString; speed?: Speed; horizon?: number; glow?: boolean; area?: EffectArea }
+export interface GrainParams { amount?: number; animated?: boolean; area?: EffectArea }
+export interface ScanlinesParams { opacity?: number; spacing?: 2 | 3 | 4; roll?: boolean; area?: EffectArea }
+export interface VignetteParams { strength?: number; color?: ColorString; area?: EffectArea }
 export type GlowTarget = "focus" | "primary" | "send" | "selectionBar";
 export interface GlowParams { targets?: GlowTarget[]; strength?: number; pulse?: boolean; color?: ColorString }
 export type ShimmerTarget = "activeTab" | "selectionBar" | "primary" | "landingTitle";

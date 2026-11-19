@@ -28,6 +28,7 @@ strip = "symbols"
 [dependencies]
 axum = "0.8"
 base64 = "0.22"
+png = "0.17"
 cookie = "=0.18.1"
 getrandom = "0.3"
 futures-util = "0.3"
@@ -58,7 +59,7 @@ unicode-segmentation = "1.13.3"
 tauri-plugin-updater = "2.10.1"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Globalization", "Win32_NetworkManagement_Dns", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_NetworkListManager", "Win32_Networking_WinSock", "Win32_System_Com", "Win32_System_SystemInformation"] }
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Globalization", "Win32_NetworkManagement_Dns", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_NetworkListManager", "Win32_Networking_WinSock", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_SystemInformation"] }
 webview2-com = "=0.38.2"
 windows-core = "=0.61.2"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
@@ -68,6 +69,7 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSSpellChecker", "NSTextCheckingClient"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSDictionary", "NSObject", "NSProcessInfo", "NSRange", "NSString", "NSUserDefaults", "NSUUID", "NSValue"] }
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKPreferences", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
+block2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSBitmapImageRep", "NSImage", "NSImageRep", "NSSpellChecker", "NSTextCheckingClient"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSObject", "NSProcessInfo", "NSRange", "NSString", "NSUserDefaults", "NSUUID", "NSValue"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["block2", "objc2-app-kit", "WKPreferences", "WKSnapshotConfiguration", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }

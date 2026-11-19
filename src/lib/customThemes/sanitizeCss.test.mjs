@@ -234,7 +234,8 @@ test("value limits: borders, radii, shadows, letter-spacing, weights, transition
   assert.equal(slow.css, ".a { transition: border-color 400ms ease; }");
   assert.match(droppedOf(".a { transition: all 200ms; }"), /cosmetic/);
   assert.match(droppedOf(".a::after { content: \"\"; position: absolute; width: 5000%; }"), /300%/);
-  assert.match(droppedOf(".a::after { content: \"\"; position: absolute; top: -500px; }"), /40px/);
+  assert.match(droppedOf(".a::after { content: \"\"; position: absolute; top: -2000px; }"), /1600px/);
+  assert.match(droppedOf(".a::after { content: \"\"; position: absolute; top: -500%; }"), /-300% and 300%/);
   assert.match(droppedOf(".a::after { content: \"\"; filter: blur(80px); }"), /24px/);
   assert.match(droppedOf(".a::after { content: \"\"; filter: drop-shadow(0 0 4px red); }"), /drop-shadow\(\) is not supported/);
   assert.match(droppedOf(".a::after { content: \"\"; filter: brightness(3); }"), /brightness\(\) is not supported/);
@@ -242,15 +243,23 @@ test("value limits: borders, radii, shadows, letter-spacing, weights, transition
 });
 
 test("animations: durations, known keyframes, flashing and the motion split", () => {
-  assert.match(errorsOf(".a::after { content: \"\"; animation: spin 0.3s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }"), /at least 1\.2s/);
-  assert.match(errorsOf(".a::after { content: \"\"; animation: spin 1.5s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }"), /2s when infinite/);
+  // Decorations that only move may loop fast (rain); anything that changes brightness keeps the calm floor.
+  assert.match(errorsOf(".a::after { content: \"\"; animation: spin 0.2s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }"), /only moves may loop as fast as 0\.35s/);
+  assert.deepEqual(errorsOf(".a::after { content: \"\"; animation: spin 0.4s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }"), "");
+  assert.match(errorsOf(".a::after { content: \"\"; animation: pulse 1.5s linear infinite; } @keyframes pulse { from { opacity: 0; } to { opacity: 1; } }"), /2s when infinite/);
   assert.match(errorsOf(".a::after { content: \"\"; animation: nope 3s infinite; }"), /not a @keyframes rule/);
   assert.match(errorsOf(".a::after { content: \"\"; animation-name: nope; }"), /must name a @keyframes rule/);
-  // A strobe: opacity 0 -> 1 in 10% of 2s = 200ms.
-  assert.match(errorsOf(".a::after { content: \"\"; animation: strobe 2s linear infinite; } @keyframes strobe { 0% { opacity: 0; } 10% { opacity: 1; } 100% { opacity: 1; } }"), /flashing faster than 3 times a second/);
-  // steps() turn a slow ramp into instant jumps.
-  assert.match(errorsOf(".a::after { content: \"\"; animation: blink 2s steps(10) infinite; } @keyframes blink { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }"), /flashing/);
-  assert.match(errorsOf(".a::after { content: \"\"; animation: flash 2s infinite; } @keyframes flash { 0% { background-color: #000; } 5% { background-color: #fff; } 100% { background-color: #000; } }"), /lightness/);
+  // Strobes: opacity flipping every 125ms (4 flashes a second, forever) and every 63ms (8 a second, once).
+  const strobeStops = Array.from({ length: 17 }, (_, i) => `${(i * 6.25).toFixed(2)}% { opacity: ${i % 2}; }`).join(" ");
+  assert.match(errorsOf(`.a::after { content: ""; animation: strobe 2s linear infinite; } @keyframes strobe { ${strobeStops} }`), /flashes 4 times in one second; at most 3 are allowed/);
+  const fastStops = Array.from({ length: 20 }, (_, i) => `${((i * 100) / 19).toFixed(3)}% { opacity: ${i % 2}; }`).join(" ");
+  assert.match(errorsOf(`.a::after { content: ""; animation: strobe 1.2s linear; } @keyframes strobe { ${fastStops} }`), /flashes (8|9) times in one second/, "8 flips a second, plus the jump back to the element's own opacity when it ends");
+  // One sharp rise per 2s cycle is a single flash, which is fine now; steps() don't add flashes.
+  assert.deepEqual(errorsOf(".a::after { content: \"\"; opacity: 0; animation: once 2s linear infinite; } @keyframes once { 0% { opacity: 0; } 10% { opacity: 1; } 100% { opacity: 1; } }"), "");
+  assert.deepEqual(errorsOf(".a::after { content: \"\"; animation: blink 2s steps(10) infinite; } @keyframes blink { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }"), "");
+  // Colour strobes are caught through luminance.
+  const colourStops = Array.from({ length: 17 }, (_, i) => `${(i * 6.25).toFixed(2)}% { background-color: ${i % 2 ? "#fff" : "#000"}; }`).join(" ");
+  assert.match(errorsOf(`.a::after { content: ""; animation: flash 2s infinite; } @keyframes flash { ${colourStops} }`), /flashes 4 times/);
   // Colour animation on a real element.
   assert.match(errorsOf(".a { animation: tint 4s infinite; } @keyframes tint { from { color: var(--text); } to { color: var(--muted); } }"), /only allowed on ::before\/::after/);
   const many = Array.from({ length: 7 }, (_, i) => `.a${i}::after { content: ""; animation: drift 4s linear infinite; }`).join("\n") + "\n@keyframes drift { from { transform: translateX(0); } to { transform: translateX(4px); } }";

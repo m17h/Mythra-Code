@@ -122,10 +122,10 @@ function checkButtonContext(options: Pick<ThreadStartOptions, "childAgentBridge"
   };
 }
 
-/** The seven app-appearance tools the bridge exposes when theme tools are on. */
+/** The eight app-appearance tools the bridge exposes when theme tools are on. */
 export const THEME_BRIDGE_TOOL_NAMES = [
   "get_theme_design_kit", "list_custom_themes", "get_custom_theme", "create_custom_theme",
-  "update_custom_theme", "undo_custom_theme", "apply_custom_theme",
+  "update_custom_theme", "undo_custom_theme", "apply_custom_theme", "capture_app_screenshot",
 ] as const;
 
 /**

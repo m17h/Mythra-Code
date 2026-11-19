@@ -12,7 +12,7 @@ import {
   composite, contrastRatio, formatColor, mixColors, oklchLightness, parseColor, pickOnColor,
   ratioLabel, rgbToOklch, shiftLightness, withAlpha, withLightness, type Rgba,
 } from "./color";
-import { backdropExtremes, effectPaints, normalizeEffects, resolveEffectParams, type EffectPaint, type EffectPalette } from "./effects";
+import { areaCovers, backdropExtremes, effectPaints, normalizeEffects, resolveEffectParams, type EffectPaint, type EffectPalette } from "./effects";
 import { cleanCustomCss } from "./sanitizeCss";
 import {
   BUILT_IN_THEMES, CHAT_FONTS, DESCRIPTION_MAX, DIFF_KEYS, DISPLAY_FONTS, ELEVATIONS, FLAT_TOKEN_KEYS, KIT_TOKENS, KIT_TOKEN_BY_KEY, MARK_KEYS, MONO_FONTS,
@@ -240,17 +240,19 @@ export function resolveTheme(spec: ThemeSpec, baseTokens?: ResolvedTokens): Reso
   const paints = effectPaints(spec.effects, palette);
   const fronts = paints.filter((paint) => paint.layer === "front");
   const t = seeThroughAlpha(Math.min(TRANSLUCENCY_MAX, Math.max(0, spec.surfaces.translucency || 0)));
-  const extremes = backdropExtremes(bg, paints);
-  const backPaints = paints.filter((paint) => paint.layer === "back");
   const named = (color: Rgba, name: string): Rgba => { const copy = { ...color, a: 1 }; surfaceNames.set(copy, name); return copy; };
-  const seeThrough = (surface: Rgba, name: string) => (t > 0
-    ? extremes.map((backdrop, index) => named(composite(withAlpha(surface, 1 - t), backdrop), index === 0 ? name : `${name} seen over the ${backPaints[index - 1].effect} (${formatColor(backPaints[index - 1].color)})`))
-    : [named(surface, name)]);
+  // Each see-through surface is checked over the plain window and over every back-layer effect that
+  // actually shows behind it: bg and the top bar sit in the chat side, the sidebar in the left navigator.
+  const seeThrough = (surface: Rgba, name: string, region: "chat" | "sidebar") => {
+    if (t <= 0) return [named(surface, name)];
+    const behind = paints.filter((paint) => paint.layer === "back" && areaCovers(paint.area, region));
+    return backdropExtremes(bg, behind).map((backdrop, index) => named(composite(withAlpha(surface, 1 - t), backdrop), index === 0 ? name : `${name} seen over the ${behind[index - 1].effect} (${formatColor(behind[index - 1].color)})`));
+  };
   const surfaces: Record<string, Rgba[]> = {
-    bg: seeThrough(bg, "bg"),
-    sidebar: seeThrough(p.sidebar, "sidebar"),
+    bg: seeThrough(bg, "bg", "chat"),
+    sidebar: seeThrough(p.sidebar, "sidebar", "sidebar"),
     panel: [named(p.panel, "panel")], panel2: [named(p.panel2, "panel2")], panel3: [named(p.panel3, "panel3")], menu: [named(p.menu, "menu")], field: [named(p.field, "field")], bubble: [named(p.bubble, "bubble")],
-    topbar: t > 0 ? seeThrough(bg, "topbar") : [named(composite(p.topbar, bg), "topbar")],
+    topbar: t > 0 ? seeThrough(bg, "topbar", "chat") : [named(composite(p.topbar, bg), "topbar")],
     codeBg: [named(p.codeBg, "codeBg")],
   };
   const pressOnSidebar = surfaces.sidebar.map((surface) => named(composite(p.press, surface), `a selected row on ${surfaceNames.get(surface)}`));

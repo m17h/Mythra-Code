@@ -1,12 +1,7 @@
-// Pure helpers behind the Custom themes row in Settings and the Theme library
-// window: which tiles Settings shows, the library's search filter and its sort
-// orders. No React, no storage; the components pass the store's records in.
+// Pure helpers behind the Theme library window: its search filter and its
+// sort orders. No React, no storage; the components pass the store's records in.
 
 import { headSpec, type CustomThemeRecord } from "./store";
-import type { CustomThemeId } from "./spec";
-
-/** Settings shows at most this many tiles (one row of its 3-column grid); the rest live in the library. */
-export const SETTINGS_TILE_LIMIT = 3;
 
 export type ThemeLibrarySort = "recent" | "name" | "newest";
 
@@ -17,22 +12,6 @@ export const THEME_LIBRARY_SORTS: ReadonlyArray<{ value: ThemeLibrarySort; label
 ];
 
 const byRecentEdit = (a: CustomThemeRecord, b: CustomThemeRecord) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt || a.id.localeCompare(b.id);
-
-/**
- * The tiles Settings shows: the chosen custom theme first (when there is one),
- * then the most recently edited others, up to `limit`.
- */
-export function settingsTiles(
-  themes: readonly CustomThemeRecord[],
-  selectedId: CustomThemeId | null | undefined,
-  limit = SETTINGS_TILE_LIMIT,
-): CustomThemeRecord[] {
-  const max = Math.max(0, Math.floor(limit));
-  if (!max) return [];
-  const selected = selectedId ? themes.find((record) => record.id === selectedId) ?? null : null;
-  const others = themes.filter((record) => record !== selected).sort(byRecentEdit);
-  return (selected ? [selected, ...others] : others).slice(0, max);
-}
 
 /** Case-insensitive match on name and description; blank queries match everything. */
 export function filterThemes(themes: readonly CustomThemeRecord[], query: string): CustomThemeRecord[] {

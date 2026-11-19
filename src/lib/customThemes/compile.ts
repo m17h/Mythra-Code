@@ -18,6 +18,7 @@
 import type { ResolvedTokens } from "./baseTokens";
 import { contrastRatio, formatColor, mixColors, parseColor, shiftLightness, withAlpha, type Rgba } from "./color";
 import { EFFECTS, effectSeconds, resolveEffectParams, type EffectPalette } from "./effects";
+import { replicaScope } from "./replicaCss";
 import { customCssScope, sanitizeCustomCss } from "./sanitizeCss";
 import { EFFECT_TYPES, FONT_STACKS, KIT_TOKENS, seeThroughAlpha, type CustomThemeId, type EffectType, type ThemeSpec } from "./spec";
 import { resolveTheme, type ResolvedTheme } from "./validate";
@@ -59,7 +60,16 @@ export const EFFECT_HOOKS = {
   codeBlock: ".rich-markdown pre",
   seeThrough: [".main-panel", ".sidebar"],
   seeThroughClear: [".topbar"],
+  /** Opaque --bg fades that would hide the backdrop on a see-through theme (composer.css). */
+  composerZone: ".composer-zone",
+  timelineFade: ".timeline-shell::after",
+  timelineScroller: ".timeline-shell > .timeline",
+  /** Static landing screens; positioned (no offsets) so a chat-side decoration at z-index 0 stays under them. */
+  landings: [".welcome-screen", ".thread-empty-state"],
 } as const;
+
+/** Height of the fade at the foot of the message list (matches .timeline-shell::after in composer.css). */
+export const TIMELINE_FADE_PX = 28;
 
 const RADII: Record<ThemeSpec["shape"], Record<string, string>> = {
   crisp: { "--r-xs": "2px", "--r-sm": "3px", "--r-md": "5px", "--r-lg": "6px", "--r-xl": "8px", "--r-control": "3px", "--r-chip": "2px" },
@@ -308,26 +318,65 @@ function seeThroughCss(spec: ThemeSpec, resolved: ResolvedTheme, scope: string):
   return rules.join("\n");
 }
 
-/** Compile a normalized spec into CSS for the app shell (or a preview tile). */
+/**
+ * The composer zone and the foot of the message list fade to an opaque --bg on
+ * built-in themes. Over a see-through window, or over a customCss decoration
+ * on the chat side, that paints a solid band above the composer. Here the zone
+ * is clear and the list fades its own content out with a mask instead, so text
+ * still fades under the composer and whatever is behind the list shows through.
+ */
+function composerBandCss(scope: string): string {
+  const fade = `linear-gradient(to bottom, #000 calc(100% - ${TIMELINE_FADE_PX}px), transparent)`;
+  return [
+    `${scope} ${EFFECT_HOOKS.composerZone} { background: none; }`,
+    `${scope} ${EFFECT_HOOKS.timelineFade} { content: none; }`,
+    `${scope} ${EFFECT_HOOKS.timelineScroller} { -webkit-mask-image: ${fade}; mask-image: ${fade}; }`,
+  ].join("\n");
+}
+
+/**
+ * customCss decorations on .conversation (z-index 0) sit on the glass under the
+ * messages because the message list is positioned. The two landing screens are
+ * not, so a decoration would paint over their heading and buttons; making them
+ * positioned (no offsets, no stacking context) puts them back on top.
+ */
+function decorationHostCss(scope: string): string {
+  return `${EFFECT_HOOKS.landings.map((hook) => `${scope} ${hook}`).join(", ")} { position: relative; }`;
+}
+
+/** Compile a normalized spec into CSS for the app shell (or a preview's replica of it). */
 export function compileThemeCss(spec: ThemeSpec, opts: CompileOptions): CompiledTheme {
+  if (opts.scope === "preview") {
+    // The same stylesheet as the app, rescoped to a replica of the window (CustomThemePreview):
+    // every rule needs [data-ct-replica], which only the replica's shell carries, so a preview
+    // never restyles the real app, even for the theme on screen.
+    const app = compileThemeCss(spec, { ...opts, scope: "app" });
+    const from = customCssScope(opts.id);
+    const to = replicaScope(opts.id);
+    const rescope = (css: string) => css.split(from).join(to);
+    const tokenCss = rescope(app.tokenCss);
+    const customCss = rescope(app.customCss);
+    return { ...app, tokenCss, customCss, css: customCss ? `${tokenCss}\n/* customCss */\n${customCss}` : tokenCss };
+  }
+
   const resolved = resolveTheme(spec, opts.baseTokens);
   const vars = themeVariables(spec, resolved);
   const effectTypes = EFFECT_TYPES.filter((type) => spec.effects[type]);
   const palette = effectPalette(resolved);
   const effectsMove = spec.motion.enabled && effectTypes.some((type) => effectMoves(type, resolveEffectParams(type, spec.effects[type] as Record<string, unknown>, palette)));
 
-  if (opts.scope === "preview") {
-    const selector = `[data-ct-preview="${opts.id}"]`;
-    const tokenCss = block(selector, { ...vars, "--ct-fx-scale": ".12" });
-    return { css: tokenCss, tokenCss, customCss: "", effectTypes, hasMotion: effectsMove, scheme: resolved.scheme };
-  }
-
   const scope = customCssScope(opts.id);
   const accent = accentEffectCss(spec, resolved, opts.id);
   const tokenVars = { ...vars, ...accent.vars, ...(opts.platform === "windows" ? windowsEasing(resolved) : {}) };
   // The shell becomes a stacking context so the effects layer (z-index -1) paints above its background and below every pane.
   const shell = `${scope} { position: relative; isolation: isolate; }`;
-  const tokenCss = [block(scope, tokenVars), shell, seeThroughCss(spec, resolved, scope), accent.css, typographyCss(spec, scope)].filter(Boolean).join("\n");
+  const hasCustomCss = Boolean(spec.customCss && spec.customCss.trim());
+  const showsBehindList = seeThroughAlpha(spec.surfaces.translucency) > 0 || hasCustomCss;
+  const tokenCss = [
+    block(scope, tokenVars), shell, seeThroughCss(spec, resolved, scope),
+    showsBehindList ? composerBandCss(scope) : "", hasCustomCss ? decorationHostCss(scope) : "",
+    accent.css, typographyCss(spec, scope),
+  ].filter(Boolean).join("\n");
 
   let customCss = "";
   let customMoves = false;

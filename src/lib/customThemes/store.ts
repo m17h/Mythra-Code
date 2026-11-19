@@ -800,6 +800,8 @@ export function resolveThemeSetting(theme: ThemeId, current: CustomThemeLibrary 
 export interface ThemeHost {
   /** settings.customThemeTools !== false */
   toolsEnabled(): boolean;
+  /** settings.customThemeScreenshots !== false ("Let models see the app"). Absent: allowed. */
+  screenshotsEnabled?(): boolean;
   /** The theme in effect for that thread's project. */
   activeThemeId(threadId?: string): ThemeId;
   applyTheme(theme: ThemeId, ctx: { threadId?: string; by: ThemeAuthor; previous?: { theme: ThemeId; revision?: { id: CustomThemeId; n: number } } }): { appliedTo: "app" | "project" };

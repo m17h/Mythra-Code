@@ -1,7 +1,8 @@
 // The Theme library: every custom theme in one window over Settings, with
-// search, sort, a grid of live previews and a details pane (rename,
-// animations, use, adjust with AI, undo, history and delete). Settings itself
-// only shows a short row of tiles and opens this window for the rest.
+// search, sort, a grid of live previews (each a small copy of the real window
+// with the theme applied, CustomThemePreview) and a details pane (rename,
+// animations, use, adjust with AI, undo, history and delete). Settings opens
+// it from one "Custom themes" button.
 
 import "./ThemeLibraryDialog.css";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
@@ -32,7 +33,7 @@ const NARROW_WIDTH = 760;
 
 export interface ThemeLibraryFocus {
   id: CustomThemeId;
-  /** Land on the name field (the tile menu's Rename). */
+  /** Land on the name field (a Rename action). */
   field?: "name";
 }
 
@@ -87,6 +88,14 @@ export function ThemeLibraryDialog({
     initialFocus: () => (initialFocus?.field === "name" ? nameInputRef.current : searchRef.current),
     returnFocus,
   });
+  // Everything behind the window is covered (and inert): its animations pause while it is open,
+  // so the backdrop's blur isn't redrawn every frame (ThemeLibraryDialog.css).
+  useEffect(() => {
+    const shell = dialogRef.current?.closest<HTMLElement>(".app-shell");
+    if (!shell) return;
+    shell.setAttribute("data-ct-library-open", "");
+    return () => shell.removeAttribute("data-ct-library-open");
+  }, []);
   useEffect(() => {
     if (initialFocus?.field === "name") nameInputRef.current?.select();
     // Start with the theme in view, wherever it sits in a long grid.
@@ -258,7 +267,7 @@ export function ThemeLibraryDialog({
                       onPointerLeave={() => setHovered((id) => (id === record.id ? null : id))}
                     >
                       <span className="ct-lib-card-preview" aria-hidden="true">
-                        <CustomThemePreview id={record.id} spec={spec} animate={animate} />
+                        <CustomThemePreview id={record.id} spec={spec} revision={record.head} animate={animate} customCssEnabled={!record.disabledReason} />
                       </span>
                       <span className="ct-lib-card-copy">
                         <strong>{spec.name}</strong>
@@ -373,7 +382,7 @@ function ThemeDetails({ record, nameInputRef, inUse, animate, onBack, onUse, onA
     <section className="ct-lib-details" aria-label={`${spec.name} details`}>
       {onBack && <button type="button" className="ct-lib-back" onClick={onBack}><ChevronLeft size={14} aria-hidden="true" /> All themes</button>}
       <span className="ct-lib-hero" aria-hidden="true">
-        <CustomThemePreview id={record.id} spec={spec} animate={previewMoves} />
+        <CustomThemePreview id={record.id} spec={spec} revision={record.head} animate={previewMoves} customCssEnabled={!record.disabledReason} eager />
       </span>
 
       <div className="ct-lib-identity">
