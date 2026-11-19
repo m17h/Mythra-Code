@@ -16,3 +16,14 @@ export function primaryModifierLabel(platform?: string): "⌘" | "Ctrl" {
 export function isWindowsPlatform(platform = typeof navigator === "undefined" ? "" : navigator.platform): boolean {
   return /^Win/i.test(platform);
 }
+
+/**
+ * Platform-specific tuning in CSS (for example Windows' heavier text
+ * rendering on dark themes, see lumen/tokens.css) keys off this marker. The
+ * app and the hidden theme preview both set it the same way.
+ */
+export function markDocumentPlatform(): "windows" | "mac" | "other" {
+  const platform = isWindowsPlatform() ? "windows" : isMacPlatform() ? "mac" : "other";
+  document.documentElement.setAttribute("data-platform", platform);
+  return platform;
+}

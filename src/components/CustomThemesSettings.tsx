@@ -264,8 +264,8 @@ export function CustomThemesSettings({
         </div>
         <div className={`set-row${settings.customThemeTools === false ? " ct-row-off" : ""}`} data-settings-row="appearance-theme-screenshots">
           <div className="set-copy">
-            <strong id="ct-see-label">Let models see the app</strong>
-            <small>A model can take a picture to check its work while its conversation is visible. The picture is sent to that model's provider and can include content shown in the app.</small>
+            <strong id="ct-see-label">Let models see theme previews</strong>
+            <small>Models can check a hidden theme preview that uses sample chats and files. A picture goes to the requesting model's provider when it supports images.</small>
           </div>
           <div className="set-control">
             <Switch

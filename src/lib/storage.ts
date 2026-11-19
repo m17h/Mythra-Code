@@ -96,6 +96,7 @@ export function subscribeRemoteStateAdoption(key: string, listener: (value: unkn
 }
 /** Remote-only exclusive lane in the SAME queue as ordinary local persistence. */
 export function withRemoteStateCommit<T>(keys: readonly string[], work: (adopt: (key: string, value: unknown) => void) => Promise<T>): Promise<T> {
+  if (fixtureValues) return Promise.reject(new Error("Remote state is unavailable in the theme preview."));
   const operation = remoteStateTail.catch(() => undefined).then(async () => {
     if (keys.some((key) => uncertainRemoteStateKeys.has(key))) throw new Error("A remote state commit needs recovery before this value can be changed.");
     await flushPendingStateWrites();
@@ -186,6 +187,19 @@ function bumpRevisionEpoch(): void {
   revisionEpoch = ++revisionSequence;
 }
 if (typeof window !== "undefined") window.addEventListener("storage", bumpRevisionEpoch);
+
+/**
+ * The hidden theme preview (src/themePreview) draws bundled sample content
+ * only. Once it calls `enterFixtureStorage` (before any view module loads),
+ * every read here answers from an empty in-memory map and every write stays
+ * there: nothing reads the webview cache or the app's saved state, and
+ * nothing reaches native storage. There is no way back for that page.
+ */
+let fixtureValues: Map<string, string> | null = null;
+
+export function enterFixtureStorage(): void {
+  fixtureValues ??= new Map();
+}
 
 /** Changes whenever `readStoredRaw(key)` may have changed. Equal revisions
  * mean the stored value is unchanged, so callers can reuse what they parsed. */
@@ -477,6 +491,7 @@ function applyStorageMigrations(readRaw: (key: string) => string | null): void {
 /** The current serialized value, including a write that could not fit in the
  * webview cache. Callers that cache parsed values must key on this value too. */
 export function readStoredRaw(key: string): string | null {
+  if (fixtureValues) return fixtureValues.get(key) ?? null;
   if (unreadableCacheKeys.has(key)) return uncachedValues.get(key)?.value ?? null;
   const cached = readCache(key);
   const uncached = uncachedValues.get(key);
@@ -499,6 +514,11 @@ export function storeValue<T>(key: string, value: T, options?: { requireCache?: 
   // Capture the exact revision now: callers such as drafts mutate their maps
   // while earlier writes are still queued.
   const serialized = JSON.stringify(value);
+  if (fixtureValues) {
+    fixtureValues.set(key, serialized);
+    bumpRevision(key);
+    return serialized;
+  }
   const cached = cacheValue(key, serialized);
   const token = cached ? markNativeOperationPending(key) : null;
   if (!cached) invalidatePendingMarker(key);
@@ -514,6 +534,11 @@ export function storeValue<T>(key: string, value: T, options?: { requireCache?: 
 }
 
 export function removeStoredValue(key: string): void {
+  if (fixtureValues) {
+    fixtureValues.delete(key);
+    bumpRevision(key);
+    return;
+  }
   const cached = cacheValue(key, null);
   const token = cached ? markNativeOperationPending(key) : null;
   if (!cached) invalidatePendingMarker(key);
@@ -572,6 +597,7 @@ function createNativeStateReader(native: boolean) {
 export async function hydrateNativeStorage(
   keys: readonly string[] = DURABLE_STORAGE_KEYS,
 ): Promise<void> {
+  if (fixtureValues) return;
   const hydrationWrites: Array<{ key: string; write: () => Promise<unknown> }> = [];
   const initialRevisions = new Map([...new Set([...keys, ...STARTUP_DATA_KEYS])].map((key) => [key, latestNativeState.get(key)]));
   const startupSnapshot = new Map<string, string | null>();

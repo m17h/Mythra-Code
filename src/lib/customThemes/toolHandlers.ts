@@ -2,8 +2,11 @@
 // each call here (useChildAgents.handleRequest); this binds the pure handler
 // logic to the real engine (P1), library store and app host (P2).
 
-import type { ChildAgentRequest } from "../agentBridge";
+import { invoke } from "@tauri-apps/api/core";
+import { isChildAgentRequestActive, type ChildAgentRequest } from "../agentBridge";
 import { THEMES } from "../appConfig";
+import { hasProviderStopIntent } from "../providerStopIntent";
+import { parentRunStopEpoch, useTaskStore } from "../taskStore";
 import { buildDesignKit } from "./designKit";
 import { inspectLayout } from "./inspect";
 import { probeReadability } from "./probe";
@@ -20,18 +23,32 @@ import {
   undoCustomTheme,
 } from "./store";
 import { applyThemePatch, diffThemeSpecs, normalizeThemeInput } from "./validate";
-import { createThemeToolHandler, ThemeToolRefusal, type CaptureOutcome, type ThemeToolContext } from "./toolHandlerCore";
+import { parsePreviewResult, type PreviewJob, type PreviewOutcome } from "./previewJob";
+import { createThemeToolHandler, ThemeToolRefusal, type ThemeToolContext } from "./toolHandlerCore";
 
-/** Native picture of this window (WKWebView / WebView2 snapshot, no screen-recording permission). */
-async function captureAppWindow(): Promise<CaptureOutcome> {
+/**
+ * Draw a job in the hidden preview window (src-tauri/src/theme_preview.rs).
+ * Its picture is a native snapshot of that window only (WKWebView / WebView2,
+ * no screen-recording permission); the app window is never captured.
+ */
+async function renderHiddenPreview(job: PreviewJob, signal: AbortSignal): Promise<PreviewOutcome> {
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
-    return { ok: false, unavailable: true, error: "screenshots need the Mythra Code desktop app" };
+    return { ok: false, unavailable: true, error: "previews need the Mythra Code desktop app" };
   }
+  const cancelled: PreviewOutcome = { ok: false, error: "the preview was canceled" };
+  if (signal.aborted) return cancelled;
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const shot = await invoke<{ data: string; mimeType: string; width: number; height: number }>("capture_app_window");
-    if (!shot || typeof shot.data !== "string" || shot.mimeType !== "image/png") return { ok: false, error: "the window returned no picture" };
-    return { ok: true, data: shot.data, mimeType: "image/png", width: shot.width, height: shot.height };
+    const requestId = crypto.randomUUID();
+    const cancel = () => { void invoke("theme_preview_cancel", { requestId }).catch(() => undefined); };
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      const answer = await invoke<unknown>("theme_preview_capture", { requestId, request: job });
+      if (signal.aborted) return cancelled;
+      const result = parsePreviewResult(answer);
+      return result ? { ok: true, result } : { ok: false, error: "the preview returned nothing usable" };
+    } finally {
+      signal.removeEventListener("abort", cancel);
+    }
   } catch (reason) {
     const message = String(reason instanceof Error ? reason.message : reason).slice(0, 200);
     return { ok: false, error: message, ...(/not available/i.test(message) ? { unavailable: true } : {}) };
@@ -60,7 +77,7 @@ const handleThemeTool = createThemeToolHandler({
     ...(theme ? { scopes: [customCssScope(theme.id, true), customCssScope(theme.id)], queryScope: customCssScope(theme.id) } : {}),
     motion,
   }) as Record<string, unknown> | null,
-  capture: captureAppWindow,
+  preview: renderHiddenPreview,
 });
 
 /**
@@ -69,14 +86,45 @@ const handleThemeTool = createThemeToolHandler({
  */
 export async function handleThemeToolRequest(request: ChildAgentRequest, context: ThemeToolContext = {}): Promise<Record<string, unknown>> {
   const identity = themeSessionIdentity(request.sessionId);
-  const stillAuthorized = () => Boolean(identity) && themeSessionIdentity(request.sessionId) === identity;
-  if (!stillAuthorized()) throw new ThemeToolRefusal("Theme tools are available only during a turn started on this device.");
+  if (!identity) throw new ThemeToolRefusal("Theme tools are available only during a turn started on this device.");
+  const stillAuthorized = () => themeSessionIdentity(request.sessionId) === identity && context.stillAuthorized?.() !== false;
+  let authority: ThemeToolContext = { ...context, stillAuthorized };
+  const previewHost = request.tool === "capture_app_screenshot" ? themeHost() : null;
+  if (request.tool === "capture_app_screenshot") {
+    const { threadId } = identity;
+    const task = useTaskStore.getState().tasks[threadId];
+    const stopEpoch = parentRunStopEpoch(threadId);
+    let turnId = task?.activeTurnId;
+    authority = {
+      ...authority,
+      stillAuthorized: () => {
+        if (!stillAuthorized() || parentRunStopEpoch(threadId) !== stopEpoch) return false;
+        const current = useTaskStore.getState().tasks[threadId];
+        if (!current || current.agentRunId !== task?.agentRunId
+          || (current.status !== "running" && current.status !== "starting")) return false;
+        turnId ??= current.activeTurnId;
+        return !turnId || (current.activeTurnId === turnId && !hasProviderStopIntent(threadId, turnId));
+      },
+      watchAuthorization: (check) => {
+        identity.signal.addEventListener("abort", check, { once: true });
+        const unsubscribe = useTaskStore.subscribe(check);
+        return () => {
+          identity.signal.removeEventListener("abort", check);
+          unsubscribe();
+        };
+      },
+      checkAuthorization: () => isChildAgentRequestActive(request).catch(() => false),
+    };
+  }
   const result = await handleThemeTool({
     sessionId: request.sessionId,
     tool: request.tool,
     arguments: request.arguments,
     ...(request.provider ? { provider: request.provider } : {}),
-  }, { ...context, stillAuthorized });
-  if (!stillAuthorized()) throw new ThemeToolRefusal("The conversation changed while using theme tools. Send a new message from this device to use them again.");
+  }, authority);
+  if (authority.stillAuthorized?.() === false) throw new ThemeToolRefusal("The conversation changed while using theme tools. Send a new message from this device to use them again.");
+  if (previewHost && (themeHost() !== previewHost || !previewHost.toolsEnabled() || !previewHost.screenshotsEnabled())) {
+    throw new ThemeToolRefusal("The user turned off theme tools or app previews.");
+  }
   return result;
 }

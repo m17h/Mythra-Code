@@ -13,6 +13,7 @@
 
 import { useSyncExternalStore } from "react";
 import { loadStored, storeValue } from "../storage";
+import type { PreviewEnvironment } from "./previewJob";
 import type { Provider, ThemeId, ThemeName } from "../../types";
 import {
   THEME_LIMITS,
@@ -589,13 +590,17 @@ export function pruneLibrary(library: CustomThemeLibrary, maxBytes: number = STO
 
 let library: CustomThemeLibrary | undefined;
 const listeners = new Set<() => void>();
-/** The conversation and model bound to a dispatched turn's theme bridge. */
-interface ThemeSessionIdentity {
-  threadId: string;
+interface ThemeSessionRuntime {
   model?: string;
   supportsImageInput?: boolean;
 }
-const sessionThreads = new Map<string, ThemeSessionIdentity>();
+
+/** The conversation and model bound to a dispatched turn's theme bridge. */
+interface ThemeSessionIdentity extends ThemeSessionRuntime {
+  threadId: string;
+  signal: AbortSignal;
+}
+const sessionThreads = new Map<string, ThemeSessionIdentity & { revoke: () => void }>();
 let clock: () => number = () => Date.now();
 
 function read(): CustomThemeLibrary {
@@ -697,11 +702,18 @@ export function threadThemeFocus(threadId: string): CustomThemeId | undefined {
   return id && findRecord(current, id) ? id : undefined;
 }
 
-export function bindSessionToThread(sessionId: string, threadId: string, runtime: Omit<ThemeSessionIdentity, "threadId">): void {
-  if (!sessionId || !threadId) return;
+function dropThemeSession(sessionId: string): void {
+  const previous = sessionThreads.get(sessionId);
   sessionThreads.delete(sessionId);
-  sessionThreads.set(sessionId, { threadId, ...runtime });
-  while (sessionThreads.size > 200) sessionThreads.delete(sessionThreads.keys().next().value!);
+  previous?.revoke();
+}
+
+export function bindSessionToThread(sessionId: string, threadId: string, runtime: ThemeSessionRuntime): void {
+  if (!sessionId || !threadId) return;
+  dropThemeSession(sessionId);
+  const controller = new AbortController();
+  sessionThreads.set(sessionId, { threadId, ...runtime, signal: controller.signal, revoke: () => controller.abort() });
+  while (sessionThreads.size > 200) dropThemeSession(sessionThreads.keys().next().value!);
 }
 
 export function sessionThread(sessionId: string): string | undefined {
@@ -714,7 +726,7 @@ export function themeSessionIdentity(sessionId: string): ThemeSessionIdentity | 
 
 export function revokeThemeToolsForThread(threadId: string): void {
   for (const [sessionId, session] of sessionThreads) {
-    if (session.threadId === threadId) sessionThreads.delete(sessionId);
+    if (session.threadId === threadId) dropThemeSession(sessionId);
   }
 }
 
@@ -834,10 +846,12 @@ export function resolveThemeSetting(theme: ThemeId, current: CustomThemeLibrary 
 export interface ThemeHost {
   /** settings.customThemeTools !== false */
   toolsEnabled(): boolean;
-  /** The live "Let models see the app" preference. */
+  /** The live "Let models see theme previews" preference. */
   screenshotsEnabled(): boolean;
-  /** Starts a capture for the visible conversation and returns a liveness check. */
-  beginScreenshot(threadId?: string): (() => boolean) | null;
+  /** Notifies pending previews when their settings or host change. */
+  watchPreviewAccess?(check: () => void): () => void;
+  /** The window's sizes and look for a hidden theme preview (no content). */
+  previewEnvironment(): PreviewEnvironment;
   /** The theme in effect for that thread's project. */
   activeThemeId(threadId?: string): ThemeId;
   applyTheme(theme: ThemeId, ctx: { threadId?: string; by: ThemeAuthor; previous?: { theme: ThemeId; revision?: { id: CustomThemeId; n: number } } }): { appliedTo: "app" | "project" };
@@ -863,7 +877,7 @@ export function themeHost(): ThemeHost | null {
 
 export function resetCustomThemeStoreForTests(options: { library?: CustomThemeLibrary; now?: () => number } = {}): void {
   library = options.library ? sanitizeLibrary(options.library) : { version: 1, themes: [], threadFocus: {} };
-  sessionThreads.clear();
+  for (const sessionId of sessionThreads.keys()) dropThemeSession(sessionId);
   host = null;
   clock = options.now ?? (() => Date.now());
   listeners.clear();

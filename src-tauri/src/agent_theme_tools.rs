@@ -15,8 +15,10 @@
 //! CSS sanitizer run in the webview, which owns the browser CSS parser.
 //!
 //! `capture_app_screenshot` is the one tool whose result can carry a picture:
-//! the webview takes it natively (window_capture.rs) only while the user
-//! allows it, and the bridge turns it into an MCP image content block.
+//! a hidden preview window draws the app's real views with bundled sample
+//! content and one exact theme revision (theme_preview.rs), never the window
+//! the user works in. It runs only while the user allows it, and the bridge
+//! turns the picture into an MCP image content block.
 
 use base64::Engine;
 use serde_json::{json, Map, Value};
@@ -67,6 +69,8 @@ const MAX_SUMMARY_BYTES: usize = 360;
 const MAX_ARGUMENT_BYTES: usize = 65_536;
 const MAX_REVISION: u64 = 100_000;
 const MAX_UNDO_STEPS: u64 = 10;
+/// The hidden preview's views for `capture_app_screenshot`.
+const PREVIEW_VIEWS: [&str; 2] = ["conversation", "changes"];
 
 /// Largest base64 picture the bridge forwards (about 1.2 MB of PNG).
 const MAX_IMAGE_BASE64_BYTES: usize = 1_650_000;
@@ -210,14 +214,22 @@ pub(super) fn theme_tool_catalog() -> Vec<Value> {
         }),
         json!({
             "name": TOOL_THEME_CAPTURE,
-            "description": "Picture of the Mythra Code window plus the layout report, to check a theme. The picture goes to your provider and may show chats; the user can turn it off.",
-            "inputSchema": empty,
+            "description": "Preview a theme revision with sample content. Returns layout and a picture when supported.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "themeId": theme_id(),
+                    "revision": revision,
+                    "view": { "type": "string", "enum": PREVIEW_VIEWS },
+                },
+                "additionalProperties": false,
+            },
         }),
     ]
 }
 
 /// One bridge-instruction line, present only when the theme tools are.
-pub(super) const THEME_BRIDGE_INSTRUCTIONS: &str = "Use the theme tools when the user asks to create, change, restyle, animate or undo how Mythra Code looks. Read get_theme_design_kit first. Adjust an existing theme with update_custom_theme instead of creating a duplicate. After each change read the result's layout; call capture_app_screenshot when you need to see the window. Only the user can delete themes.";
+pub(super) const THEME_BRIDGE_INSTRUCTIONS: &str = "Use the theme tools when the user asks to create, change, restyle, animate or undo how Mythra Code looks. Read get_theme_design_kit first. Adjust an existing theme with update_custom_theme instead of creating a duplicate. After each change read the result's layout; call capture_app_screenshot to see a preview of the theme. Only the user can delete themes.";
 
 /// A valid PNG content block from a capture result's `image`, or None.
 fn png_image_block(image: &Value) -> Option<Value> {
@@ -245,12 +257,23 @@ pub(super) fn theme_tool_mcp_result(tool: &str, payload: &Value, is_error: bool)
     }
     let mut text = payload.as_object()?.clone();
     let image = text.remove("image");
-    let block = image.as_ref().and_then(png_image_block);
-    if image.is_some() && block.is_none() {
+    let claimed_image = text.get("captured").and_then(Value::as_bool) == Some(true);
+    let block = image.as_ref().filter(|_| claimed_image).and_then(png_image_block);
+    if claimed_image && block.is_none() {
         text.insert("captured".into(), json!(false));
+        text.remove("width");
+        text.remove("height");
+        if let Some(dimensions) = text.get_mut("dimensions").and_then(Value::as_object_mut) {
+            dimensions.remove("picture");
+        }
+        let note = if text.get("layout").is_some_and(Value::is_object) {
+            "The preview picture was dropped. Use the layout report."
+        } else {
+            "The preview picture was dropped. Use the layout report from your last theme change."
+        };
         text.insert(
             "note".into(),
-            json!("The picture was dropped because it was not a PNG within the size limit. Use the layout report."),
+            json!(note),
         );
     }
     let text = Value::Object(text);
@@ -418,7 +441,19 @@ pub(super) fn validate_theme_tool_call(tool: &str, arguments: &Value) -> Result<
         .ok_or_else(|| "Tool arguments must be an object.".to_string())?;
     total_size(arguments)?;
     match tool {
-        TOOL_THEME_KIT | TOOL_THEME_LIST | TOOL_THEME_CAPTURE => only_keys(object, &[], tool),
+        TOOL_THEME_KIT | TOOL_THEME_LIST => only_keys(object, &[], tool),
+        TOOL_THEME_CAPTURE => {
+            only_keys(object, &["themeId", "revision", "view"], tool)?;
+            optional_theme_id(object)?;
+            optional_integer(object, "revision", MAX_REVISION)?;
+            if object
+                .get("view")
+                .is_some_and(|value| !value.as_str().is_some_and(|view| PREVIEW_VIEWS.contains(&view)))
+            {
+                return Err(format!("`view` must be one of {}.", PREVIEW_VIEWS.join(", ")));
+            }
+            Ok(())
+        }
         TOOL_THEME_GET => {
             only_keys(object, &["themeId", "includeHistory"], tool)?;
             optional_theme_id(object)?;
@@ -556,7 +591,7 @@ mod tests {
         ok(TOOL_THEME_KIT, json!({}));
         ok(TOOL_THEME_LIST, json!({}));
         ok(TOOL_THEME_CAPTURE, json!({}));
-        assert!(err(TOOL_THEME_CAPTURE, json!({ "region": "sidebar" })).contains("no arguments"));
+        assert!(err(TOOL_THEME_CAPTURE, json!({ "region": "sidebar" })).contains("`view`"));
         assert!(err(TOOL_THEME_KIT, json!({ "verbose": true })).contains("no arguments"));
         assert!(err(TOOL_THEME_LIST, json!([])).contains("object"));
     }

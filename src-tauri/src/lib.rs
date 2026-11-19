@@ -71,6 +71,7 @@ mod startup_guard;
 mod transcription;
 mod live_transcription;
 mod workspace_folder;
+mod theme_preview;
 mod window_capture;
 use agents::{
     child_agent_bridge_config_native_conflict, child_agent_bridge_config_registered,
@@ -10562,6 +10563,11 @@ pub fn run() {
             // A page that reloads never ran its cleanup, so its capture ends here.
             if payload.event() == tauri::webview::PageLoadEvent::Started {
                 remote::upload_source::forget_window(webview.window().label());
+                // A reloaded app page can no longer receive a preview it
+                // asked for: end it now instead of at its deadline.
+                if webview.label() == "main" {
+                    theme_preview::close_active(webview.app_handle());
+                }
             }
         })
         .on_window_event(|window, event| {
@@ -10569,6 +10575,13 @@ pub fn run() {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if let Some(state) = window.try_state::<transcription::TranscriptionState>() {
                     state.live.cancel_window(window.label());
+                }
+                // A hidden theme preview must never outlive the app window
+                // (it would keep the app running with nothing on screen).
+                if window.label() == "main" {
+                    theme_preview::close_active(window.app_handle());
+                } else {
+                    theme_preview::window_destroyed(window.label());
                 }
             }
         })
@@ -10822,7 +10835,11 @@ pub fn run() {
                     child_agent_session_end,
                     child_agent_revoke_root_registration,
                     child_agent_respond,
-                    window_capture::capture_app_window,
+                    theme_preview::theme_preview_capture,
+                    theme_preview::theme_preview_cancel,
+                    theme_preview::theme_preview_job,
+                    theme_preview::theme_preview_rendered,
+                    theme_preview::theme_preview_failed,
                     child_agent_finished,
                     child_agent_reactivate,
                     child_agent_request_active,
@@ -10970,6 +10987,13 @@ pub fn run() {
                     remote::folders::remote_folders_select
                 ]);
             move |invoke: tauri::ipc::Invoke| {
+                // The hidden theme preview draws sample content only. Its
+                // webview may reach its own three commands. App commands
+                // have no capability check for pages on the app's origin.
+                if !theme_preview::may_invoke(invoke.message.webview_ref().label(), invoke.message.command()) {
+                    invoke.resolver.reject("This window cannot use the requested action.");
+                    return true;
+                }
                 if release_qa::active() {
                     if let Some(value) = release_qa::offline_status(invoke.message.command()) {
                         invoke.resolver.resolve(value);

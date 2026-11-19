@@ -16,7 +16,8 @@ import {
 } from "../lib/customThemes/store";
 import type { CustomThemeId, ThemeAuthor } from "../lib/customThemes/spec";
 import { normalizeThemeInput } from "../lib/customThemes/validate";
-import type { AppSettings, Project, Provider, ThemeId } from "../types";
+import { previewChatFont } from "../lib/customThemes/previewJob";
+import type { AppSettings, ChatFont, EffortSliderStyle, Project, Provider, ThemeId } from "../types";
 
 export interface ThemeToastAction {
   label: string;
@@ -36,8 +37,12 @@ export interface CustomThemeHostOptions {
   paintedTheme: ThemeId;
   /** The custom theme drawn right now, if any. */
   appliedCustom: CustomThemeRecord | null;
-  screenshotThreadId?: string;
-  screenshotWorkspacePath: string;
+  /**
+   * The saved pane preferences and look for a hidden theme preview, read
+   * when a model asks for one (a closure, so it can name values App defines
+   * later). The preview fits the panes to its own window.
+   */
+  previewSurface: () => { sidebar: number; dock: number; dockAuto: boolean; sidebarOpen: boolean; uiScale: number; chatFont: ChatFont; effortSlider: EffortSliderStyle };
   /** Settings is previewing a theme; a model's change replaces that preview. */
   setPreviewTheme: (update: (current: ThemeId | null) => ThemeId | null) => void;
   threadForSession: (sessionId: string) => string | undefined;
@@ -81,8 +86,15 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
   optionsRef.current = options;
   const appliedAtRef = useRef(0);
   const renderedRef = useRef({ theme: options.paintedTheme, revision: options.appliedCustom?.head ?? null });
-  const screenshotView = useRef({ threadId: options.screenshotThreadId, workspace: options.screenshotWorkspacePath });
   const waitersRef = useRef(new Set<{ theme: ThemeId; revision?: number; resolve: (shell: HTMLElement | null) => void }>());
+  const previewAccessWatchers = useRef(new Set<() => void>());
+
+  const { customThemeTools, customThemeScreenshots } = options.settingsRef.current;
+  useLayoutEffect(() => {
+    if (customThemeTools === false || customThemeScreenshots === false) {
+      for (const check of previewAccessWatchers.current) check();
+    }
+  }, [customThemeTools, customThemeScreenshots]);
 
   const isThemePainted = useCallback((theme: ThemeId, revision?: number) => {
     const rendered = renderedRef.current;
@@ -122,9 +134,6 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
     return () => window.clearTimeout(timer);
   }, [appliedId, appliedRevision, options.paintedTheme]);
   useLayoutEffect(() => {
-    if (screenshotView.current.threadId !== options.screenshotThreadId || screenshotView.current.workspace !== options.screenshotWorkspacePath) {
-      screenshotView.current = { threadId: options.screenshotThreadId, workspace: options.screenshotWorkspacePath };
-    }
     for (const waiter of [...waitersRef.current]) {
       if (!isThemePainted(waiter.theme, waiter.revision)) continue;
       waitersRef.current.delete(waiter);
@@ -236,19 +245,31 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
 
   // ---- The host the theme tools call ----
   useEffect(() => {
+    let mounted = true;
+    const watchers = previewAccessWatchers.current;
     const host: ThemeHost = {
-      toolsEnabled: () => optionsRef.current.settingsRef.current.customThemeTools !== false,
-      screenshotsEnabled: () => optionsRef.current.settingsRef.current.customThemeScreenshots !== false,
-      beginScreenshot: (threadId) => {
-        const view = screenshotView.current;
-        if (!threadId || view.threadId !== threadId) return null;
-        const surface = document.querySelector(".local-machine-surface");
-        if (!surface) return null;
-        const stillVisible = () => {
-          return screenshotView.current === view && surface.isConnected
-            && !surface.closest("[inert]") && !surface.hasAttribute("data-covered");
+      toolsEnabled: () => mounted && optionsRef.current.settingsRef.current.customThemeTools !== false,
+      screenshotsEnabled: () => mounted && optionsRef.current.settingsRef.current.customThemeScreenshots !== false,
+      watchPreviewAccess: (check) => {
+        watchers.add(check);
+        return () => { watchers.delete(check); };
+      },
+      // Sizes and look only. The hidden preview draws sample content, so it
+      // does not matter which thread, project or machine is on screen.
+      previewEnvironment: () => {
+        const settings = optionsRef.current.settingsRef.current;
+        const surface = optionsRef.current.previewSurface();
+        const reducedMotion = Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+        const paused = settings.themeMotion === "paused";
+        return {
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          uiScale: surface.uiScale,
+          panes: { sidebar: surface.sidebar, dock: surface.dock, dockAuto: surface.dockAuto, sidebarOpen: surface.sidebarOpen },
+          chatFont: previewChatFont(surface.chatFont),
+          effortSlider: surface.effortSlider,
+          logos: { openai: settings.openAiLogo, claude: settings.claudeLogo, cursor: settings.cursorLogo },
+          motion: { animate: !paused && !reducedMotion, paused, reducedMotion },
         };
-        return stillVisible() ? stillVisible : null;
       },
       activeThemeId: (threadId) => themeInEffect(threadId),
       applyTheme: (theme, ctx) => {
@@ -287,7 +308,12 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
         reducedMotion: Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches),
       }),
     };
-    return registerThemeHost(host);
+    const unregister = registerThemeHost(host);
+    return () => {
+      mounted = false;
+      for (const check of watchers) check();
+      unregister();
+    };
 
     /** "Applied “Nebula” (r7) · Undo · Open in Settings": the receipt for a model's change. */
     function announceModelChange(theme: ThemeId, before: ThemeId, ctx: { threadId?: string; by: ThemeAuthor; previous?: { theme: ThemeId; revision?: { id: CustomThemeId; n: number } } }) {

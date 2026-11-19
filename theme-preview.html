@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mythra Code theme preview</title>
+    <!-- The hidden theme preview (src-tauri/src/theme_preview.rs). Its own,
+         stricter Content-Security-Policy is prepended at build and dev time
+         (vite.config.ts, themePreviewCsp). Same base sheet as index.html, so
+         see-through themes show the same backdrop. -->
+    <link rel="stylesheet" href="/bootstrap.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/themePreview/main.tsx"></script>
+  </body>
+</html>

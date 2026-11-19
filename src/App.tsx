@@ -20,7 +20,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Check, ChevronDown, Circle, CircleAlert, CircleStop, Code2, Cpu, Keyboard, TextCursorInput, UsersRound, Download, Folder, FolderOpen, Gauge, GitBranch, Hand, Wrench, GitFork, GitPullRequest, ListFilter, LoaderCircle, MessageSquare, NotebookPen, Palette, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, RotateCcw, Search, Settings, ShieldAlert, Shrink, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, ChevronDown, Circle, CircleAlert, CircleStop, Code2, Cpu, Keyboard, TextCursorInput, UsersRound, Download, Folder, FolderOpen, Gauge, GitBranch, Hand, Wrench, GitFork, GitPullRequest, ListFilter, LoaderCircle, MessageSquare, NotebookPen, Palette, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, RotateCcw, Search, Settings, ShieldAlert, Shrink, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, RuntimeRestartBusyError, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeDefaultModel, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging, providerAuthGeneration } from "./lib/providerAuth";
@@ -28,12 +28,13 @@ import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { loadStored, readStoredRaw, storeValue, subscribeRemoteStateAdoption } from "./lib/storage";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeParentFollowUpLimit, sanitizeTerminalTimeoutMinutes, sanitizeThemeId, customThemeIdOf, themeColorScheme } from "./lib/appConfig";
-import { armBootGuard, checkBootGuard, getCustomTheme, pendingThemeDesigner, resolveThemeSetting, setPendingThemeDesigner, settleBootGuard, themeDesignerPurpose, useCustomThemes } from "./lib/customThemes/store";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeParentFollowUpLimit, sanitizeTerminalTimeoutMinutes, sanitizeThemeId, customThemeIdOf } from "./lib/appConfig";
+import { armBootGuard, checkBootGuard, getCustomTheme, pendingThemeDesigner, resolveThemeSetting, revokeThemeToolsForThread, setPendingThemeDesigner, settleBootGuard, themeDesignerPurpose, useCustomThemes } from "./lib/customThemes/store";
 import { useCustomThemeHost, type ThemeToastAction } from "./hooks/useCustomThemeHost";
 import "./components/AppToastActions.css";
 import { CustomThemeStyle } from "./components/CustomThemeStyle";
 import { ThemeEffectsLayer } from "./components/ThemeEffectsLayer";
+import { AttachButton, ComposerCaption, NewThreadButton, PaletteTrigger, ProjectHeading, RuntimeStatusAnnouncement, RuntimeStatusIndicator, RuntimeStatusWords, ShowSidebarButton, SidebarBrand, SidebarFooter, shellThemeAttributes, themeEffectNames, ToolsToggleButton } from "./components/AppChrome";
 import { useThemeMotionGate } from "./lib/customThemes/motion";
 import type { ThemeDesignerChoice } from "./components/CustomThemesSettings";
 import { modelCatalogRecentlyRefreshed, shareModelRefresh, type ModelRefreshState } from "./lib/modelCatalogRefresh";
@@ -43,9 +44,7 @@ import { compactSidebarIndex, countActiveThreadsByWorkspace, filterThreadsByKind
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isExcludeTurnsUnsupported, isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
 import { RowMenu } from "./components/RowMenu";
-import { Odometer } from "./components/Odometer";
 import { AnimatedMythraLogo } from "./components/AnimatedMythraLogo";
-import { MythraMark } from "./components/MythraMark";
 import { confirmDialog, useConfirmStore } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
 import { MachineSwitcher } from "./components/remote/MachineSwitcher";
@@ -200,7 +199,7 @@ import { useReviewFeedback } from "./hooks/useReviewFeedback";
 import { addRemoteFeedback, useRemoteFeedback } from "./lib/remote/remoteFeedback";
 import { feedbackSkillInvocationText, formatFeedbackPrompt, isFeedbackAnchorStale, feedbackScopeKey } from "./lib/reviewFeedback";
 import { useTerminal } from "./hooks/useTerminal";
-import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
+import { NARROW_WINDOW_QUERY, PANE_BOUNDS, sidebarTuckedFor, usePaneResize } from "./hooks/usePaneResize";
 import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedMythraCodeInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
@@ -275,7 +274,7 @@ import { containTab, hasModalLayer, reachableFocusables } from "./hooks/useModal
 import { useTopbarFit } from "./hooks/useTopbarFit";
 import { attentionIdsFromKey, attentionThreadKey, countAttentionByWorkspace, projectIndicator } from "./lib/sidebarAttention";
 import { PixelWorkingMark } from "./components/PixelWorkingMark";
-import { TOPBAR_SHED_PULL_REQUESTS, TOPBAR_SHED_SHORT_STATUS, TOPBAR_SHED_USAGE, topbarStatusLabel } from "./lib/topbarFit";
+import { TOPBAR_SHED_PULL_REQUESTS, TOPBAR_SHED_SHORT_STATUS, TOPBAR_SHED_USAGE } from "./lib/topbarFit";
 import {
   deleteCheckpointSnapshot,
   type CheckpointRecord,
@@ -1309,13 +1308,13 @@ export default function App() {
   // sidebar and still leave a usable chat column, so opening it tucks the
   // sidebar away. The preference is kept: the sidebar returns when the
   // Tools closes, and showing the sidebar closes the Tools panel.
-  const narrowWindow = useMediaQueryMatch("(min-width: 901px) and (max-width: 1250px)");
+  const narrowWindow = useMediaQueryMatch(NARROW_WINDOW_QUERY);
   // Sol R5 B02: pane widths are fitted to the window and UI scale (a saved
   // Tools width never squeezes the chat below its minimum), and the
   // sidebar also tucks away when even the narrowest Tools wouldn't fit.
   const dockBesideChat = shownRemote ? remoteStudioOpen : studioOpen && Boolean(activeProject);
-  const { paneSizes, dockWidth, dockMax, dockOverlay, sidebarCrowded, paneRefs, startPaneResize, resizePaneWithKeyboard } = usePaneResize(((previewUiScale ?? settings.uiScale) || 100) / 100, { sidebarOpen, sidebarTucked: narrowWindow && dockBesideChat, dockOpen: dockBesideChat });
-  const sidebarTucked = (narrowWindow || sidebarCrowded) && dockBesideChat;
+  const { paneSizes, dockAuto, dockWidth, dockMax, dockOverlay, sidebarCrowded, paneRefs, startPaneResize, resizePaneWithKeyboard } = usePaneResize(((previewUiScale ?? settings.uiScale) || 100) / 100, { sidebarOpen, sidebarTucked: narrowWindow && dockBesideChat, dockOpen: dockBesideChat });
+  const sidebarTucked = sidebarTuckedFor(narrowWindow, sidebarCrowded, dockBesideChat);
   // B05: asking for the sidebar while it is tucked no longer closes the
   // Tools. It floats over the chat until Escape, a click outside, or
   // opening a thread or project; the Tools panel keeps its tab and state.
@@ -7096,7 +7095,10 @@ export default function App() {
     const rootThread = rootThreadId ? knownThreadsRef.current?.[rootThreadId] : undefined;
     const rootProvider = parentRecoveryProvider(rootThread, priorRun);
     // Before anything that can wait: nothing may continue this parent after Stop.
-    if (rootThreadId) useTaskStore.getState().stopParentRun(rootThreadId, "stop", stoppingRun);
+    if (rootThreadId) {
+      useTaskStore.getState().stopParentRun(rootThreadId, "stop", stoppingRun);
+      revokeThemeToolsForThread(rootThreadId);
+    }
     const stopEpoch = rootThreadId ? parentRunStopEpoch(rootThreadId) : undefined;
     const startRevision = rootThreadId ? pendingTurnStartRevision(rootThreadId) : undefined;
     const sameStopAttempt = () => {
@@ -10207,9 +10209,7 @@ export default function App() {
     themeMotion: activeCustomSpec?.motion?.enabled !== false,
     pauseInBackground: settings.themePauseInBackground !== false,
   }).motion;
-  const activeThemeEffects = activeCustomSpec ? Object.keys(activeCustomSpec.effects ?? {}).filter((key) => (activeCustomSpec.effects as Record<string, unknown>)[key]).join(" ") : "";
-  const screenshotThreadInWorkspace = activeThread
-    && normalizedProjectPath(threadProjectBindingsRef.current?.[activeThread.id] || activeThread.cwd) === activeWorkspacePathRef.current;
+  const activeThemeEffects = themeEffectNames(activeCustomSpec);
   const { resetTheme, reportRenderError: reportThemeRenderError } = useCustomThemeHost({
     settingsRef,
     persistSettings: (update) => persistSettings((current) => update(current)),
@@ -10219,10 +10219,18 @@ export default function App() {
     activeProjectId: workspaceMode === "project" ? activeProjectId : null,
     paintedTheme: activeCustomTheme ? activeTheme : activeBaseTheme,
     appliedCustom: activeCustomTheme,
-    screenshotWorkspacePath: activeExecutionPath,
-    screenshotThreadId: screenshotThreadInWorkspace && !remoteActive && !shownRemote && !settingsOpen && !onboardingOpen
-      && !reviewWideShown && !threadLoadFailure && !pendingApproval && !commandPaletteOpen && !shortcutsOpen
-      && !workflowLaunch && !runtimeSetupOpen && !authRequiredOpen ? activeThreadId ?? undefined : undefined,
+    // Read only when a model asks for a hidden theme preview, after this render.
+    // Saved preferences, not the fitted widths: the preview fits them to its
+    // own window with the same rules (usePaneResize paneFit).
+    previewSurface: () => ({
+      sidebar: paneSizes.sidebar,
+      dock: paneSizes.dock,
+      dockAuto,
+      sidebarOpen,
+      uiScale: ((previewUiScale ?? settings.uiScale) || 100) / 100,
+      chatFont: activeChatFont,
+      effortSlider: activeEffortSlider,
+    }),
     setPreviewTheme,
     threadForSession: (sessionId) => childAgentPolicyForSession(childAgentPoliciesRef.current, sessionId)?.rootThreadId || undefined,
     threadModel: (threadId) => {
@@ -10279,13 +10287,7 @@ export default function App() {
     </button>;
   });
 
-  const paletteTrigger = (
-    <button className="command-palette-trigger" onClick={() => setCommandPaletteOpen(true)} aria-label="Search commands, projects and threads" aria-keyshortcuts="Meta+K Control+K" title={withShortcut("Search commands, projects and threads", "palette")}>
-      <Search size={13} aria-hidden="true" />
-      <span>Search</span>
-      <kbd>{formatShortcut("palette")}</kbd>
-    </button>
-  );
+  const paletteTrigger = <PaletteTrigger onClick={() => setCommandPaletteOpen(true)} />;
   const sidebarSplitter = (
     <div
       className="sidebar-section-resize"
@@ -10426,7 +10428,11 @@ export default function App() {
   }), [settings.warnOnMaxReasoning, attachmentKey, activeWorkspace?.path, effectiveSettings.provider, effectiveSettings.model, settingsOpen]);
 
   return (
-    <div className="app-shell" data-tools-overlay={dockOverlay || undefined} data-machine-phase={machinePhase === "idle" ? undefined : machinePhase} onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeBaseTheme} data-color-scheme={themeColorScheme(activeBaseTheme)} data-custom-theme={activeCustomTheme?.id} data-theme-motion={activeCustomTheme ? themeMotion : undefined} data-ct-fx={activeThemeEffects || undefined} data-model-provider={effectiveSettings.provider} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100, ...(activeChatFont.startsWith("custom:") ? { "--chat-font": chatFontCss(activeChatFont, customFonts) } : {}) } as CSSProperties}>
+    <div className="app-shell" data-tools-overlay={dockOverlay || undefined} data-machine-phase={machinePhase === "idle" ? undefined : machinePhase} onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} {...shellThemeAttributes({
+      base: activeBaseTheme, customThemeId: activeCustomTheme?.id, motion: themeMotion, effects: activeThemeEffects, provider: effectiveSettings.provider,
+      chatFont: activeChatFont, chatFontFamily: activeChatFont.startsWith("custom:") ? chatFontCss(activeChatFont, customFonts) : undefined,
+      logos: { openai: settings.openAiLogo, claude: settings.claudeLogo, cursor: settings.cursorLogo }, uiScale: ((previewUiScale ?? settings.uiScale) || 100) / 100,
+    })}>
       {/* A custom theme's styles and its effects layer (first child of the
           shell, behind every pane). Its own boundary: a failure here switches
           the theme off instead of taking the window down. */}
@@ -10482,25 +10488,12 @@ export default function App() {
             tabIndex={0}
           />
         )}
-        <div className="sidebar-brand">
-          <div className="brand-mark">
-            <MythraMark />
-          </div>
-          <span>Mythra Code</span>
-          <MachineSwitcher onManageDevices={() => openSettings("devices")} />
-          <button className="icon-button subtle collapse-button" onClick={() => setSidebarOpen(false)} title={withShortcut("Hide sidebar", "toggleSidebar")} aria-label="Hide sidebar" aria-keyshortcuts="Meta+Backslash Control+Backslash">
-            <PanelLeftClose size={17} />
-          </button>
-        </div>
+        <SidebarBrand machineSwitcher={<MachineSwitcher onManageDevices={() => openSettings("devices")} />} onHide={() => setSidebarOpen(false)} />
 
-        <button className="new-thread-button" onClick={remoteActive ? () => {
+        <NewThreadButton onClick={remoteActive ? () => {
           machineActions()?.newThread();
           if (sidebarPeeking) closeSidebarPeek(true);
-        } : newThread} disabled={!remoteActive && !activeWorkspace} title={activeWorkspace?.isChat ? "Start a chat without a project folder" : activeProject ? `Start a thread in ${activeProject.name}` : "Select a workspace first"}>
-          <Plus size={16} />
-          <span>New thread</span>
-          <kbd>{formatShortcut("newThread")}</kbd>
-        </button>
+        } : newThread} disabled={!remoteActive && !activeWorkspace} title={activeWorkspace?.isChat ? "Start a chat without a project folder" : activeProject ? `Start a thread in ${activeProject.name}` : "Select a workspace first"} />
 
         {/* Same arrangement as the sidebar edge: the split lives in
             --sidebar-split on this container, written directly while dragging
@@ -10681,13 +10674,7 @@ export default function App() {
         </ErrorBoundary>}
         </div>
 
-        <div className="sidebar-footer">
-          <button className="sidebar-settings" aria-keyshortcuts="Meta+Comma Control+Comma" title={withShortcut("Settings", "settings")} onClick={() => openSettings()} onMouseEnter={preloadSettingsModal} onFocus={preloadSettingsModal} onPointerDown={preloadSettingsModal}>
-            <Settings size={16} />
-            <span>{remoteActive ? `Settings for ${localMachine}` : "Settings"}</span>
-            <kbd aria-hidden="true">{formatShortcut("settings")}</kbd>
-          </button>
-        </div>
+        <SidebarFooter label={remoteActive ? `Settings for ${localMachine}` : "Settings"} onOpen={() => openSettings()} onPreload={preloadSettingsModal} />
       </aside>
 
       <main inert={settingsOpen || onboardingOpen || sidebarPeeking ? true : undefined} className="main-panel" data-review-wide={reviewWideShown || undefined} style={reviewWideShown ? { "--review-slot": `${dockWidth}px` } as CSSProperties : undefined}>
@@ -10695,17 +10682,14 @@ export default function App() {
         <div className="local-machine-surface" inert={remoteActive || undefined} data-covered={shownRemote || undefined}>
         <header className="topbar" ref={topbarRef}>
           <div className="topbar-left">
-            {!sidebarShown && (
-              <button className="icon-button sidebar-show-button" onClick={showSidebar} title={withShortcut(sidebarTucked ? "Show sidebar over the chat (Tools stays open)" : "Show sidebar", "toggleSidebar")} aria-label="Show sidebar" aria-keyshortcuts="Meta+Backslash Control+Backslash">
-                <PanelLeftOpen size={18} />
-              </button>
-            )}
-            <div className="project-heading">
-              <span>{activeWorkspace?.isChat ? "Chats" : (activeProject?.name ?? "No project selected")}</span>
-              <small title={activeThreadWorktree && activeThreadWorktree.status !== "removed" ? activeThreadWorktree.path : !activeThread && !visiblePendingFirstPrompt && !activeWorkspace?.isChat ? activeProject?.path : undefined}>{activeThreadWorktree && activeThreadWorktree.status !== "removed"
+            {!sidebarShown && <ShowSidebarButton tucked={sidebarTucked} onShow={showSidebar} />}
+            <ProjectHeading
+              name={activeWorkspace?.isChat ? "Chats" : (activeProject?.name ?? "No project selected")}
+              detailTitle={activeThreadWorktree && activeThreadWorktree.status !== "removed" ? activeThreadWorktree.path : !activeThread && !visiblePendingFirstPrompt && !activeWorkspace?.isChat ? activeProject?.path : undefined}
+              detail={activeThreadWorktree && activeThreadWorktree.status !== "removed"
                 ? `${activeThreadWorktree.branch} · ${homeRelativePath(activeThreadWorktree.path)}`
-                : activeThread ? <ThreadTitle key={activeThread.id} title={activeThread.name || activeThread.preview || "New thread"} pending={automaticTitles.pendingIds.has(activeThread.id)} /> : visiblePendingFirstPrompt ? <ThreadTitle key={visiblePendingFirstPrompt.id} title={visiblePendingFirstPrompt.text || "New thread"} pending={false} /> : threadLoadFailure ? threadLoadFailure.title : activeWorkspace?.isChat ? "New chat" : (activeProject ? <>New thread <span className="project-heading-path">· {homeRelativePath(activeProject.path)}</span></> : "Choose a project or use Chats")}</small>
-            </div>
+                : activeThread ? <ThreadTitle key={activeThread.id} title={activeThread.name || activeThread.preview || "New thread"} pending={automaticTitles.pendingIds.has(activeThread.id)} /> : visiblePendingFirstPrompt ? <ThreadTitle key={visiblePendingFirstPrompt.id} title={visiblePendingFirstPrompt.text || "New thread"} pending={false} /> : threadLoadFailure ? threadLoadFailure.title : activeWorkspace?.isChat ? "New chat" : (activeProject ? <>New thread <span className="project-heading-path">· {homeRelativePath(activeProject.path)}</span></> : "Choose a project or use Chats")}
+            />
             {activeThreadWorktree && activeThreadWorktree.status !== "removed" && (
               <button className="isolation-chip" onClick={() => void revealItemInDir(activeThreadWorktree.path)} title={activeThreadWorktree.path}>
                 <GitBranch size={12} /> <span>Isolated</span>
@@ -10753,10 +10737,7 @@ export default function App() {
               const statusKind = awaitingApproval ? "approval" : setupNeeded ? "setup" : parentRunStatus || openFailed ? "other" : running || childrenWorking ? "working" : childrenStatusUnknown ? "unknown" : "ready";
               // B06: the word is never shed. Only at the bar's last shedding
               // step does a long word take its short form ("Set up").
-              const words = <>
-                <span className="runtime-status-word-full" aria-hidden="true">{fullWord}</span>
-                <span className="runtime-status-word-short" aria-hidden="true">{topbarStatusLabel(statusKind, fullWord, true)}</span>
-              </>;
+              const words = <RuntimeStatusWords kind={statusKind} word={fullWord} />;
               const detail = awaitingApproval ? "This thread is waiting for you to allow or deny a request." : openFailed ? `“${threadLoadFailure?.title}” couldn’t be opened. Retry from the message in the conversation.` : setupNeeded ? `${providerLabel(activeProvider)} needs ${setupNeeded}, which isn’t installed on this computer.` : parentRunStatus ? parentRunStatus.title : childrenStatusUnknown && !running && !childrenWorking ? "A sub-agent's current status has not been confirmed." : status;
               // Approval and setup are both amber actions, so each has its own
               // shape as well as its own word: a raised hand vs. a wrench.
@@ -10766,7 +10747,7 @@ export default function App() {
               // opens the install guide for the missing runtime.
               // One persistent status region carries the full state for
               // assistive tech at every width; the visible word may be short.
-              const announced = <span className="sr-only" role="status">Status: {fullWord}.{detail && detail !== fullWord ? ` ${detail}` : ""}</span>;
+              const announced = <RuntimeStatusAnnouncement word={fullWord} detail={detail} />;
               if (awaitingApproval || setupNeeded) return <span className="runtime-status-slot" data-status={statusKind}>
                 {announced}
                 <button
@@ -10781,11 +10762,7 @@ export default function App() {
                   {words}
                 </button>
               </span>;
-              return <div className={`runtime-status ${running || childrenWorking ? "working" : openFailed ? "unavailable" : ""}`} data-status={statusKind} title={detail}>
-                {announced}
-                {icon}
-                {words}
-              </div>;
+              return <RuntimeStatusIndicator kind={statusKind} word={fullWord} detail={detail} icon={icon} tone={running || childrenWorking ? "working" : openFailed ? "unavailable" : undefined} />;
             })()}
             {activeProject && !activeWorkspace?.isChat && (
               <ProjectRunControl
@@ -10910,11 +10887,7 @@ export default function App() {
               </div>
             )}
             {/* Tools is a project tool; Chats and the empty state don't show it. */}
-            {activeProject && !activeWorkspace?.isChat && <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={`${studioOpen ? "Hide" : "Show"} Tools (${workspaceShortcutLabel()})`} aria-label={studioOpen ? "Hide Tools" : "Show Tools"} aria-keyshortcuts="Meta+B Control+B" aria-expanded={studioOpen}>
-              <PanelRight size={17} />
-              <span>Tools</span>
-              <kbd>{workspaceShortcutLabel()}</kbd>
-            </button>}
+            {activeProject && !activeWorkspace?.isChat && <ToolsToggleButton open={studioOpen} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} />}
           </div>
         </header>
 
@@ -11246,24 +11219,12 @@ export default function App() {
                       onAcceptWorker={acceptSubAgentWorker}
                       onReplaceWorker={replaceSubAgentWorker}
                     />
-                    <button type="button" className={`toolbar-button attach-button ${attachments.length ? "has-attachments" : ""}`} onClick={() => void addAttachment()} title="Attach files or images" aria-label={attachments.length ? `Attach, ${attachments.length} attached` : "Attach"}>
-                      <Paperclip size={14} aria-hidden="true" />
-                      {attachments.length ? attachments.length : "Attach"}
-                    </button>
+                    <AttachButton count={attachments.length} onClick={() => void addAttachment()} />
                   </>
                 }
               />
               </ErrorBoundary>
-              <div className="composer-caption">
-                Mythra Code can make mistakes. Review commands and changes before shipping.
-                {contextPercent !== null ? (
-                  <span className={`context-meter ${contextPercent > 80 ? "warn" : ""}`} title="Context window used by this conversation, and its estimated API cost">
-                    {" "}
-                    · Context <Odometer value={String(Math.round(contextPercent))} label={`${Math.round(contextPercent)} percent`} />% used
-                    {costEstimate ? <> · <Odometer value={costEstimate} /></> : null}
-                  </span>
-                ) : null}
-              </div>
+              <ComposerCaption contextPercent={contextPercent} costEstimate={costEstimate} />
             </section>
           </>
         )}

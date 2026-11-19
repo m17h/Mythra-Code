@@ -796,6 +796,8 @@ export function StudioDock(props: {
   activeThreadId?: string | null;
   /** The diff for the selected Changes scope (Uncommitted unless the person chose otherwise). */
   reviewDiff: ReviewDiff;
+  /** A caller-supplied starting view that takes precedence over saved preferences. */
+  initialChangesMode?: "list" | "diff";
   /** Which comparison `reviewDiff` is. Uncommitted is the default and what commits act on. */
   changesScope?: ChangesScope;
   /** The push comparison can be computed for this thread. */
@@ -959,7 +961,7 @@ export function StudioDock(props: {
   // The Git tab's own view (history or pull requests) survives tab switches,
   // as does the Changes tab's list or full diff.
   const [gitView, setGitView] = useState<GitView>("history");
-  const [changesMode, setChangesModeState] = useState<"list" | "diff">(readChangesMode);
+  const [changesMode, setChangesModeState] = useState(() => props.initialChangesMode ?? readChangesMode());
   const setChangesMode = (mode: "list" | "diff") => {
     setChangesModeState(mode);
     try { window.localStorage.setItem(CHANGES_MODE_KEY, mode); } catch { /* private mode: keep it for this session */ }
