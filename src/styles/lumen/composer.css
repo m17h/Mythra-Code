@@ -698,7 +698,10 @@ html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] .
 /* Live sub-agents shares the rows' 4px inset so every label lines up. */
 .app-shell[data-theme][data-color-scheme] .subagent-panel .sa-activity { padding-inline: 4px; }
 
-/* Text scrolled under the composer fades out instead of being cut mid-line. */
+/* Text scrolled under the composer fades out instead of being cut mid-line.
+   See-through custom themes swap this overlay (and the composer zone's
+   gradient above) for a mask on the list, so the backdrop shows through
+   (seeThroughCss in src/lib/customThemes/compile.ts; keep the 28px in step). */
 .app-shell[data-theme][data-color-scheme] .timeline-shell::after {
   content: "";
   position: absolute;

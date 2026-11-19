@@ -222,6 +222,7 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
   useEffect(() => {
     const host: ThemeHost = {
       toolsEnabled: () => optionsRef.current.settingsRef.current.customThemeTools !== false,
+      screenshotsEnabled: () => optionsRef.current.settingsRef.current.customThemeScreenshots !== false,
       activeThemeId: (threadId) => themeInEffect(threadId),
       applyTheme: (theme, ctx) => {
         const before = themeInEffect(ctx.threadId);

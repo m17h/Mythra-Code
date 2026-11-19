@@ -18,6 +18,15 @@
   .app-shell[data-theme][data-color-scheme] .ct-lib-backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
 }
 
+/* While the library is open, the app and Settings behind it are covered and
+   inert. Their own animations (the logo, the reasoning-slider samples) pause,
+   so the blurred backdrop isn't repainted every frame. */
+.app-shell[data-theme][data-color-scheme][data-ct-library-open] > .sidebar *,
+.app-shell[data-theme][data-color-scheme][data-ct-library-open] > .main-panel *,
+.app-shell[data-theme][data-color-scheme][data-ct-library-open] .settings-modal *,
+.app-shell[data-theme][data-color-scheme][data-ct-library-open] .settings-modal *::before,
+.app-shell[data-theme][data-color-scheme][data-ct-library-open] .settings-modal *::after { animation-play-state: paused !important; }
+
 .app-shell[data-theme][data-color-scheme] .ct-lib {
   width: min(1120px, 100%);
   height: min(780px, 100%);
@@ -151,6 +160,8 @@
 .app-shell[data-theme][data-color-scheme] .ct-lib-card-preview {
   position: relative;
   display: block;
+  /* Its own layer: a preview that animates repaints only itself, not the grid. */
+  will-change: transform;
   aspect-ratio: 16 / 10;
   overflow: hidden;
   border-radius: var(--r-md);
@@ -229,6 +240,7 @@
   flex: 0 0 auto;
   position: relative;
   display: block;
+  will-change: transform;
   aspect-ratio: 16 / 10;
   overflow: hidden;
   border-radius: var(--r-lg);

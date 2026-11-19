@@ -1,13 +1,11 @@
 import "./CustomThemesSettings.css";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Check, ChevronRight, Pencil, Sparkles, Trash2, TriangleAlert } from "lucide-react";
+import { ChevronRight, Sparkles, TriangleAlert } from "lucide-react";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
-import { CustomThemePreview } from "./CustomThemePreview";
-import { RowMenu } from "./RowMenu";
-import { EmptyState, rovingChoiceKeyDown, SettingInfo, Switch } from "./SettingsBits";
+import { EmptyState, SettingInfo, Switch } from "./SettingsBits";
 import { SmoothDisclosure } from "./SmoothDisclosure";
 import { ThemeLibraryDialog, type ThemeLibraryFocus } from "./ThemeLibraryDialog";
-import { tileMeta, useReducedMotion } from "./customThemeBits";
+import { useReducedMotion } from "./customThemeBits";
 import { THEMES, customThemeIdOf, customThemeSetting } from "../lib/appConfig";
 import { confirmDialog } from "../lib/confirmDialog";
 import { formatShortcut } from "../lib/shortcuts";
@@ -19,7 +17,6 @@ import {
   type CustomThemeRecord,
   type ThemeDisabledReason,
 } from "../lib/customThemes/store";
-import { settingsTiles } from "../lib/customThemes/library";
 import type { CustomThemeId } from "../lib/customThemes/spec";
 import type { AppSettings, Provider, ThemeId } from "../types";
 
@@ -68,7 +65,7 @@ export function CustomThemesSettings({
   /** The theme chosen in Settings (the draft). */
   selectedTheme: ThemeId;
   onSelectTheme: (theme: ThemeId) => void;
-  settings: Pick<AppSettings, "themeMotion" | "themePauseInBackground" | "customThemeTools">;
+  settings: Pick<AppSettings, "themeMotion" | "themePauseInBackground" | "customThemeTools" | "customThemeScreenshots">;
   onSettingsChange: (patch: Partial<AppSettings>) => void;
   /** Settings is open on Appearance: previews may animate. */
   active: boolean;
@@ -81,10 +78,8 @@ export function CustomThemesSettings({
   const library = useCustomThemes();
   const themes = library.themes;
   const selectedId = customThemeIdOf(selectedTheme);
-  const tiles = useMemo(() => settingsTiles(themes, selectedId), [themes, selectedId]);
   const [designOpen, setDesignOpen] = useState(false);
   const [designTarget, setDesignTarget] = useState<CustomThemeId | undefined>(undefined);
-  const [hovered, setHovered] = useState<CustomThemeId | null>(null);
   // Open with an optional theme to land on; null while closed.
   const [libraryOpen, setLibraryOpen] = useState<{ focus: ThemeLibraryFocus | null } | null>(null);
   const sectionRef = useRef<HTMLDivElement>(null);
@@ -108,6 +103,7 @@ export function CustomThemesSettings({
   }, [libraryRequest, active, themes.length, openLibrary]);
 
   const disabledThemes = themes.filter((record) => record.disabledReason);
+  const inUse = selectedId ? themes.find((record) => record.id === selectedId) ?? null : null;
   const openDesigner = (target?: CustomThemeId) => {
     setDesignTarget(target);
     setDesignOpen(true);
@@ -129,16 +125,6 @@ export function CustomThemesSettings({
     return true;
   };
 
-  const tileMenu = (record: CustomThemeRecord) => [
-    { label: "Rename", icon: <Pencil size={13} />, onSelect: () => {
-      const trigger = sectionRef.current?.querySelector<HTMLElement>(`[data-ct-tile="${record.id}"] .row-menu-trigger`);
-      openLibrary({ id: record.id, field: "name" }, trigger);
-    } },
-    { label: "Adjust with AI", icon: <Sparkles size={13} />, onSelect: () => openDesigner(record.id) },
-    { label: "Delete…", icon: <Trash2 size={13} />, danger: true, separatorBefore: true, onSelect: () => void removeTheme(record) },
-  ];
-
-  const hiddenCount = themes.length - tiles.length;
 
   return (
     <div ref={sectionRef} className="set-group ct-settings" id="appearance-custom-themes">
@@ -190,51 +176,15 @@ export function CustomThemesSettings({
       )}
 
       {themes.length > 0 && (
-        <div className="set-card bare"><div className="set-body">
-          <div className="theme-grid ct-grid" role="radiogroup" aria-label="Custom themes" onKeyDown={rovingChoiceKeyDown}>
-            {tiles.map((record, index) => {
-              const spec = headSpec(record);
-              const selected = selectedId === record.id;
-              const tabbable = selected || (!tiles.some((entry) => entry.id === selectedId) && index === 0);
-              const animate = motionAllowed && spec.motion?.enabled !== false
-                && (selected || hovered === record.id) && !record.disabledReason && !libraryOpen;
-              return (
-                <div key={record.id} data-ct-tile={record.id} className={`ct-tile${selected ? " selected" : ""}`}
-                  onPointerEnter={() => setHovered(record.id)} onPointerLeave={() => setHovered((current) => current === record.id ? null : current)}>
-                  <button
-                    type="button"
-                    className={`theme-card ct-card${selected ? " selected" : ""}`}
-                    role="radio"
-                    aria-checked={selected}
-                    tabIndex={tabbable ? 0 : -1}
-                    title={spec.description || undefined}
-                    onFocus={() => setHovered(record.id)}
-                    onBlur={() => setHovered((current) => current === record.id ? null : current)}
-                    onClick={() => onSelectTheme(customThemeSetting(record.id))}
-                  >
-                    <span className="ct-preview-slot" aria-hidden="true">
-                      <CustomThemePreview id={record.id} spec={spec} animate={animate} />
-                    </span>
-                    <span>
-                      <strong>{spec.name}</strong>
-                      <small>{tileMeta(record)}</small>
-                    </span>
-                    {selected && <Check size={14} />}
-                  </button>
-                  <span className="ct-tile-menu">
-                    <RowMenu label={`More for ${spec.name}`} items={() => tileMenu(record)} />
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-          <div className="ct-library-link-row">
-            <button ref={libraryButtonRef} type="button" className="ct-library-link" aria-haspopup="dialog" onClick={(event) => openLibrary(null, event.currentTarget)}>
-              {hiddenCount > 0 ? `See all ${themes.length} themes` : "Manage themes"}
-              <ChevronRight size={13} aria-hidden="true" />
-            </button>
-          </div>
-        </div></div>
+        <div className="set-card ct-library-card">
+          <button ref={libraryButtonRef} type="button" className="ct-library-button" aria-haspopup="dialog" onClick={(event) => openLibrary(null, event.currentTarget)}>
+            <span className="ct-library-button-copy">
+              <strong>Custom themes<span className="ct-library-count"> · {themes.length}</span></strong>
+              <small>{inUse ? `Using “${headSpec(inUse).name}”. ` : ""}Preview, use and manage your themes in the Theme library.</small>
+            </span>
+            <ChevronRight size={15} aria-hidden="true" />
+          </button>
+        </div>
       )}
 
       {libraryOpen && <ThemeLibraryDialog
@@ -307,6 +257,20 @@ export function CustomThemesSettings({
               checked={settings.customThemeTools !== false}
               labelledBy="ct-tools-label"
               onChange={(next) => onSettingsChange({ customThemeTools: next })}
+            />
+          </div>
+        </div>
+        <div className={`set-row${settings.customThemeTools === false ? " ct-row-off" : ""}`} data-settings-row="appearance-theme-screenshots">
+          <div className="set-copy">
+            <strong id="ct-see-label">Let models see the app</strong>
+            <small>When a model edits a theme it can take a picture of this window to check its work. The picture is sent to that model's provider.</small>
+          </div>
+          <div className="set-control">
+            <Switch
+              checked={settings.customThemeScreenshots !== false}
+              disabled={settings.customThemeTools === false}
+              labelledBy="ct-see-label"
+              onChange={(next) => onSettingsChange({ customThemeScreenshots: next })}
             />
           </div>
         </div>

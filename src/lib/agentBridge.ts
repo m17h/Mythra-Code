@@ -11,7 +11,7 @@ import type { PermissionMode, Provider, SubagentModelGuidance } from "../types";
  */
 
 /** App-appearance tools; see src/lib/customThemes/toolHandlers.ts. */
-export type ThemeBridgeTool = "get_theme_design_kit" | "list_custom_themes" | "get_custom_theme" | "create_custom_theme" | "update_custom_theme" | "undo_custom_theme" | "apply_custom_theme";
+export type ThemeBridgeTool = "get_theme_design_kit" | "list_custom_themes" | "get_custom_theme" | "create_custom_theme" | "update_custom_theme" | "undo_custom_theme" | "apply_custom_theme" | "capture_app_screenshot";
 
 export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "send_agent_message" | "accept_agent" | "message_parent" | "read_parent_messages" | "propose_agent_settings" | "set_project_run_command" | "set_project_check_command" | "read_project_terminal" | "get_commit_message_context" | "set_commit_message" | "language_tools_status" | "install_language_tool" | "language_tool_query" | ThemeBridgeTool;
 

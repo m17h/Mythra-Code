@@ -151,6 +151,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   themeMotion: "on",
   themePauseInBackground: true,
   customThemeTools: true,
+  customThemeScreenshots: true,
   effortSlider: "studio",
   chatFont: "system",
   escapeStopsRun: false,

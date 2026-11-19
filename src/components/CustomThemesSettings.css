@@ -1,40 +1,7 @@
 /* Settings > Appearance > Custom themes (docs/design/pro-ui.md).
    The section itself is app chrome and follows the Pro rules: tokens only,
-   neutral selection, hairline rows, no glow. Only the mini previews inside
-   the tiles show a theme's own colours and motion. */
-
-/* ---- Gallery tiles: the built-in theme card plus an overflow menu ---- */
-.app-shell[data-theme][data-color-scheme] .ct-grid { position: relative; }
-.app-shell[data-theme][data-color-scheme] .ct-tile { position: relative; min-width: 0; }
-.app-shell[data-theme][data-color-scheme] .ct-tile > .theme-card {
-  width: 100%;
-  grid-template-columns: 60px minmax(0, 1fr) 16px;
-  padding-right: 42px;
-}
-.app-shell[data-theme][data-color-scheme] .ct-tile > .theme-card > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.app-shell[data-theme][data-color-scheme] .ct-tile > .theme-card strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.app-shell[data-theme][data-color-scheme] .ct-preview-slot {
-  position: relative;
-  display: block;
-  width: 60px;
-  height: 42px;
-  overflow: hidden;
-  border-radius: var(--r-sm);
-}
-.app-shell[data-theme][data-color-scheme] .ct-preview-slot > * { width: 100%; height: 100%; }
-.app-shell[data-theme][data-color-scheme] .ct-tile-menu {
-  position: absolute;
-  top: 50%;
-  right: 8px;
-  transform: translateY(-50%);
-  display: flex;
-}
-.app-shell[data-theme][data-color-scheme] .ct-tile-menu .row-menu-trigger { width: 26px; height: 26px; }
-/* Always shown on theme tiles (the shared row menu otherwise waits for hover). */
-.app-shell[data-theme][data-color-scheme] .ct-tile-menu > .row-menu { position: static; opacity: 1; pointer-events: auto; }
-.app-shell[data-theme][data-color-scheme] .ct-tile-menu .row-menu-trigger { color: var(--muted); background: transparent; }
-.app-shell[data-theme][data-color-scheme] .ct-tile-menu .row-menu-trigger:hover,
-.app-shell[data-theme][data-color-scheme] .ct-tile-menu > .row-menu.open .row-menu-trigger { color: var(--text); background: var(--lm-press); }
+   neutral selection, hairline rows, no glow. Themes themselves are browsed
+   in the Theme library (ThemeLibraryDialog), which this section opens. */
 
 /* ---- Safe-mode notice: an amber outline, never a solid block ---- */
 .app-shell[data-theme][data-color-scheme] .ct-safe-notice {
@@ -65,27 +32,31 @@
 .app-shell[data-theme][data-color-scheme] .ct-design-note { margin: 0; color: var(--orange); font-size: 12px; line-height: 1.45; }
 .app-shell[data-theme][data-color-scheme] .ct-design-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-/* ---- The way into the Theme library, under the tiles ---- */
-.app-shell[data-theme][data-color-scheme] .ct-library-link-row { display: flex; justify-content: flex-end; margin-top: 2px; }
-.app-shell[data-theme][data-color-scheme] .ct-library-link {
-  display: inline-flex;
+/* ---- The way into the Theme library: one row-style button ---- */
+.app-shell[data-theme][data-color-scheme] .ct-library-card { overflow: hidden; }
+.app-shell[data-theme][data-color-scheme] .ct-library-button {
+  display: flex;
   align-items: center;
-  gap: 3px;
-  height: 26px;
-  padding: 0 6px 0 8px;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 14px;
   border: 0;
-  border-radius: var(--r-control);
-  color: var(--ink-2);
+  border-radius: inherit;
+  color: var(--text);
   background: none;
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
+  text-align: left;
   cursor: pointer;
 }
-.app-shell[data-theme][data-color-scheme] .ct-library-link > svg { color: var(--muted-2); }
-.app-shell[data-theme][data-color-scheme] .ct-library-link:hover { color: var(--text); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .ct-library-link:hover > svg { color: var(--text); }
-.app-shell[data-theme][data-color-scheme] .ct-library-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.app-shell[data-theme][data-color-scheme] .ct-library-button-copy { display: grid; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.app-shell[data-theme][data-color-scheme] .ct-library-button-copy strong { color: var(--text); font-size: var(--fs-ui); font-weight: 550; }
+.app-shell[data-theme][data-color-scheme] .ct-library-count { color: var(--muted); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .ct-library-button-copy small { overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.app-shell[data-theme][data-color-scheme] .ct-library-button > svg { flex: 0 0 auto; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .ct-library-button:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .ct-library-button:hover > svg { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .ct-library-button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ---- Fields shared with the library's name field ---- */
 .app-shell[data-theme][data-color-scheme] .ct-name-input,
@@ -122,3 +93,6 @@
 @media (max-width: 720px) {
   .app-shell[data-theme][data-color-scheme] .ct-safe-notice { flex-wrap: wrap; }
 }
+
+/* A behaviour row that depends on "Theme tools in chats": dimmed while that is off. */
+.app-shell[data-theme][data-color-scheme] .set-row.ct-row-off > .set-copy { opacity: .55; }

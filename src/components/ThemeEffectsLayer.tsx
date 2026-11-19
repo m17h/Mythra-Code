@@ -1,6 +1,8 @@
 // The custom theme's effects layers (DESIGN §5). Two absolutely positioned,
 // pointer-transparent layers inside the shell (the shell becomes an isolated
-// stacking context in compile.ts):
+// stacking context in compile.ts). Effects with area "chat" or "sidebar" sit
+// in a box that follows the main panel or the left navigator, so they never
+// paint the other region or the Tools panel:
 //   .ct-fx-back   z-index -1: aurora, mesh, starfield, particles, grid, vignette.
 //                 Visible only through the see-through window background and
 //                 sidebar; panels, menus, fields and code stay solid.
@@ -11,11 +13,11 @@
 // Animations API (motion.ts). Colours come in as inline custom properties on
 // these few nodes, never on the shell.
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import { formatColor, mixColors, parseColor, seededRandom, withAlpha, type Rgba } from "../lib/customThemes/color";
-import { blobOpacity, effectSeconds, grainOpacity, resolveEffectParams, scanlineOpacity, starLayers, vignetteAlpha, type EffectPalette, type ResolvedParams } from "../lib/customThemes/effects";
+import { PARTICLE_ANGLE, PARTICLE_DEFAULT_COUNT, PARTICLE_LIMITS, PARTICLE_SPEED_PX, blobOpacity, effectArea, effectSeconds, grainOpacity, resolveEffectParams, scanlineOpacity, starLayers, vignetteAlpha, type EffectPalette, type ResolvedParams } from "../lib/customThemes/effects";
 import { isThemeMotionTransientlyPaused, subscribeThemeMotion } from "../lib/customThemes/motion";
-import type { CustomThemeId, EffectType, ThemeSpec } from "../lib/customThemes/spec";
+import type { CustomThemeId, EffectArea, EffectType, ParticleShape, Speed, ThemeSpec } from "../lib/customThemes/spec";
 import { resolveTheme } from "../lib/customThemes/validate";
 
 type Vars = CSSProperties & Record<`--${string}`, string | number>;
@@ -172,9 +174,28 @@ export function ScanlinesLayer({ params, scheme }: { params: ResolvedParams; sch
 
 // ---- Particles (canvas) ---------------------------------------------------------
 
-interface Mote { x: number; y: number; vx: number; vy: number; r: number; color: number; phase: number }
+interface Mote { x: number; y: number; vx: number; vy: number; r: number; color: number; phase: number; depth: number; rot: number; spin: number }
 
-export function ParticlesCanvas({ params, seed, motion, scale = 1 }: { params: ResolvedParams; seed: string; motion: "on" | "paused"; scale?: number }) {
+/** Streak depth layers (far, mid, near): speed, length and alpha scale with depth; drawn as one path per colour and layer. */
+const STREAK_DEPTHS = [0.55, 0.78, 1] as const;
+const SHAPES: readonly ParticleShape[] = ["dot", "streak", "flake", "petal"];
+
+function softSprite(color: string, stops: Array<[number, number]>): HTMLCanvasElement {
+  const sprite = document.createElement("canvas");
+  const s = 32;
+  sprite.width = s; sprite.height = s;
+  const g = sprite.getContext("2d");
+  if (g) {
+    const parsed = parseColor(color) ?? { r: 1, g: 1, b: 1, a: 1 };
+    const grad = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    for (const [at, alpha] of stops) grad.addColorStop(at, formatColor(withAlpha(parsed, alpha)));
+    g.fillStyle = grad;
+    g.fillRect(0, 0, s, s);
+  }
+  return sprite;
+}
+
+export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio }: { params: ResolvedParams; seed: string; motion: "on" | "paused"; scale?: number; /** Backing-store pixels per CSS pixel (a scaled-down preview passes its own, so a still card keeps a small canvas). */ pixelRatio?: number }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const colors = useMemo(() => colorsOf(params.colors).map((c) => formatColor(c)), [params.colors]);
   useEffect(() => {
@@ -184,51 +205,70 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1 }: { params: R
     if (!ctx) return;
     const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const still = params.speed === "still" || motion !== "on" || reduced;
-    const dpr = Math.min(1.5, window.devicePixelRatio || 1);
+    const dpr = pixelRatio && pixelRatio > 0 ? Math.min(1.5, pixelRatio) : Math.min(1.5, window.devicePixelRatio || 1);
     const random = seededRandom(`particles:${seed}`);
-    const count = Math.min(params.links ? 40 : 60, Number(params.count) || 24);
+    const shape: ParticleShape = SHAPES.includes(params.shape as ParticleShape) ? params.shape as ParticleShape : "dot";
+    const links = shape === "dot" && params.links === true;
+    const cap = shape === "streak" ? PARTICLE_LIMITS.maxStreaks : links ? PARTICLE_LIMITS.maxWithLinks : PARTICLE_LIMITS.max;
+    const count = Math.min(cap, Number(params.count) || PARTICLE_DEFAULT_COUNT[shape]);
     const [minR, maxR] = (params.size as [number, number]) ?? [1, 2.5];
-    const speedPx = ({ still: 0, slow: 6, medium: 12, lively: 22 } as Record<string, number>)[String(params.speed)] ?? 6;
+    const speedPx = PARTICLE_SPEED_PX[shape][(params.speed as Speed) ?? "slow"] ?? PARTICLE_SPEED_PX[shape].slow;
+    const tilt = Math.max(PARTICLE_ANGLE.min, Math.min(PARTICLE_ANGLE.max, Number(params.angle) || 0)) * Math.PI / 180;
+    // Rain is near-parallel; snow and petals wander more.
+    const jitter = shape === "streak" ? 0.04 : shape === "dot" ? 0.8 : 0.5;
     let width = 0, height = 0;
     let motes: Mote[] = [];
-    const sprites = colors.map((color) => {
-      const sprite = document.createElement("canvas");
-      const s = 32;
-      sprite.width = s; sprite.height = s;
-      const g = sprite.getContext("2d");
-      if (g) {
-        const parsed = parseColor(color) ?? { r: 1, g: 1, b: 1, a: 1 };
-        const grad = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
-        grad.addColorStop(0, formatColor(withAlpha(parsed, 0.9)));
-        grad.addColorStop(0.25, formatColor(withAlpha(parsed, 0.45)));
-        grad.addColorStop(1, formatColor(withAlpha(parsed, 0)));
-        g.fillStyle = grad;
-        g.fillRect(0, 0, s, s);
-      }
-      return sprite;
-    });
-    const seedMotes = () => {
-      motes = Array.from({ length: count }, () => {
-        const dir = params.direction;
-        const angle = dir === "rise" ? -Math.PI / 2 + (random() - 0.5) * 0.8 : dir === "fall" ? Math.PI / 2 + (random() - 0.5) * 0.8 : random() * Math.PI * 2;
-        const speed = speedPx * (0.5 + random() * 0.8) * scale;
-        return { x: random() * width, y: random() * height, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, r: (minR + random() * (maxR - minR)) * scale, color: Math.floor(random() * colors.length), phase: random() * Math.PI * 2 };
-      });
+    const sprites = colors.map((color) => shape === "flake"
+      ? softSprite(color, [[0, 0.95], [0.35, 0.7], [0.7, 0.18], [1, 0]])
+      : softSprite(color, [[0, 0.9], [0.25, 0.45], [1, 0]]));
+    const motionAngle = (): number => {
+      const dir = params.direction;
+      // Screen angles: +y is down, so "fall" is +90°. A positive tilt leans the path to the right.
+      if (dir === "fall") return Math.PI / 2 - tilt + (random() - 0.5) * jitter;
+      if (dir === "rise") return -Math.PI / 2 + tilt + (random() - 0.5) * jitter;
+      return random() * Math.PI * 2;
     };
+    const spawn = (mote: Mote | null, anywhere: boolean): Mote => {
+      const depth = shape === "streak" ? STREAK_DEPTHS[Math.floor(random() * STREAK_DEPTHS.length)] : 0.6 + random() * 0.4;
+      const angle = motionAngle();
+      const speed = speedPx * (shape === "streak" ? depth * (0.9 + random() * 0.2) : 0.5 + random() * 0.8) * scale;
+      const next: Mote = mote ?? { x: 0, y: 0, vx: 0, vy: 0, r: 0, color: 0, phase: 0, depth: 1, rot: 0, spin: 0 };
+      next.vx = Math.cos(angle) * speed; next.vy = Math.sin(angle) * speed;
+      next.r = (minR + random() * (maxR - minR)) * scale;
+      next.color = Math.floor(random() * colors.length);
+      next.phase = random() * Math.PI * 2;
+      next.depth = depth;
+      next.rot = random() * Math.PI * 2;
+      next.spin = (random() < 0.5 ? -1 : 1) * (0.5 + random() * 1.2);
+      // A slant carries particles sideways, so spawn across a wider band to keep both edges filled.
+      const spread = params.direction === "drift" ? 0 : Math.abs(Math.tan(tilt)) * height;
+      const upwind = tilt > 0 ? -spread : 0; // positive tilt moves right for both rise and fall
+      next.x = upwind + random() * (width + spread);
+      next.y = anywhere ? random() * height : params.direction === "rise" ? height + 12 + random() * 40 : -12 - random() * 40;
+      return next;
+    };
+    const seedMotes = () => { motes = Array.from({ length: count }, () => spawn(null, true)); };
     const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      width = Math.max(1, rect.width);
-      height = Math.max(1, rect.height);
+      const nextWidth = Math.max(1, canvas.clientWidth || canvas.getBoundingClientRect().width);
+      const nextHeight = Math.max(1, canvas.clientHeight || canvas.getBoundingClientRect().height);
+      // Seeded into an empty box (an area box mounts before it is measured): seed again at the real size.
+      const wasEmpty = width <= 1 || height <= 1;
+      if (motes.length && !wasEmpty && (Math.abs(nextWidth - width) > 1 || Math.abs(nextHeight - height) > 1)) {
+        // Keep the scene, rescaled into the new box (no reseed pop on a sidebar drag).
+        const sx = nextWidth / width, sy = nextHeight / height;
+        for (const mote of motes) { mote.x *= sx; mote.y *= sy; }
+      }
+      width = nextWidth;
+      height = nextHeight;
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      if (!motes.length) seedMotes();
+      if (!motes.length || (wasEmpty && width > 1 && height > 1)) seedMotes();
       draw(0);
     };
     const linkDistance = 120 * scale;
-    const draw = (time: number) => {
-      ctx.clearRect(0, 0, width, height);
-      if (params.links) {
+    const drawDots = (time: number) => {
+      if (links) {
         ctx.lineWidth = 0.6 * scale;
         for (let i = 0; i < motes.length; i++) {
           for (let j = i + 1; j < motes.length; j++) {
@@ -253,11 +293,67 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1 }: { params: R
           ctx.beginPath(); ctx.arc(mote.x, mote.y, mote.r, 0, Math.PI * 2); ctx.fill();
         }
       }
+    };
+    const drawStreaks = () => {
+      // One stroke per colour and depth layer: 160 streaks cost at most 9 draw calls.
+      ctx.lineCap = "round";
+      for (let c = 0; c < colors.length; c++) {
+        for (const depth of STREAK_DEPTHS) {
+          let thickness = 0, n = 0;
+          ctx.beginPath();
+          for (const mote of motes) {
+            if (mote.color !== c || mote.depth !== depth) continue;
+            const speed = Math.hypot(mote.vx, mote.vy) || 1;
+            const length = Math.max(8, Math.min(48, speed * 0.05)) * depth;
+            ctx.moveTo(mote.x, mote.y);
+            ctx.lineTo(mote.x - (mote.vx / speed) * length, mote.y - (mote.vy / speed) * length);
+            thickness += mote.r; n++;
+          }
+          if (!n) continue;
+          ctx.strokeStyle = colors[c];
+          ctx.lineWidth = Math.max(0.6, (thickness / n) * 0.5 * depth);
+          ctx.globalAlpha = 0.22 + 0.5 * depth;
+          ctx.stroke();
+        }
+      }
+    };
+    const drawFlakes = () => {
+      for (const mote of motes) {
+        const s = mote.r * 3.4 * mote.depth;
+        ctx.globalAlpha = 0.45 + 0.5 * mote.depth;
+        ctx.drawImage(sprites[mote.color], mote.x - s / 2, mote.y - s / 2, s, s);
+      }
+    };
+    const drawPetals = (time: number) => {
+      for (const mote of motes) {
+        const length = mote.r * 3 * mote.depth;
+        const flutter = 0.3 + 0.7 * Math.abs(Math.cos(mote.phase + time / 900));
+        const cos = Math.cos(mote.rot), sin = Math.sin(mote.rot);
+        // Rotate, then squash across the petal to fake a tumble in 3D.
+        ctx.setTransform(dpr * cos, dpr * sin, -dpr * sin * flutter, dpr * cos * flutter, dpr * mote.x, dpr * mote.y);
+        ctx.globalAlpha = 0.55 + 0.4 * mote.depth;
+        ctx.fillStyle = colors[mote.color] ?? "#ffffff";
+        ctx.beginPath();
+        ctx.moveTo(-length, 0);
+        ctx.quadraticCurveTo(-length * 0.1, -length * 0.62, length, 0);
+        ctx.quadraticCurveTo(-length * 0.1, length * 0.62, -length, 0);
+        ctx.fill();
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+    const draw = (time: number) => {
+      ctx.clearRect(0, 0, width, height);
+      if (shape === "streak") drawStreaks();
+      else if (shape === "flake") drawFlakes();
+      else if (shape === "petal") drawPetals(time);
+      else drawDots(time);
       ctx.globalAlpha = 1;
     };
     let raf = 0;
     let last = 0;
     let running = false;
+    const sway = shape === "flake" ? 14 : shape === "petal" ? 22 : 0;
+    const margin = shape === "streak" ? 60 : 14;
     const frame = (now: number) => {
       raf = requestAnimationFrame(frame);
       if (now - last < 1000 / 30) return; // 30fps cap
@@ -265,8 +361,15 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1 }: { params: R
       last = now;
       for (const mote of motes) {
         mote.x += mote.vx * dt; mote.y += mote.vy * dt;
-        if (mote.x < -10) mote.x = width + 10; else if (mote.x > width + 10) mote.x = -10;
-        if (mote.y < -10) mote.y = height + 10; else if (mote.y > height + 10) mote.y = -10;
+        if (sway) { mote.x += Math.sin(mote.phase + now / 1300) * sway * mote.depth * scale * dt; mote.rot += mote.spin * dt; }
+        if (shape === "dot" || params.direction === "drift") {
+          const m = shape === "dot" ? 10 : margin;
+          if (mote.x < -m) mote.x = width + m; else if (mote.x > width + m) mote.x = -m;
+          if (mote.y < -m) mote.y = height + m; else if (mote.y > height + m) mote.y = -m;
+        } else if (mote.y > height + margin || mote.y < -margin - 60 || mote.x < -width * 0.6 || mote.x > width * 1.6) {
+          // Off the box: start again above (or below, for rise) at a fresh place, so rain never repeats a pattern.
+          spawn(mote, false);
+        }
       }
       draw(now);
     };
@@ -279,8 +382,83 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1 }: { params: R
     if (!isThemeMotionTransientlyPaused()) start();
     const unsubscribe = subscribeThemeMotion((paused) => (paused ? stop() : start()));
     return () => { stop(); unsubscribe(); observer?.disconnect(); window.clearTimeout(resizeTimer); };
-  }, [params, seed, motion, colors, scale]);
+  }, [params, seed, motion, colors, scale, pixelRatio]);
   return <canvas ref={ref} className="ct-fx-particles" />;
+}
+
+// ---- Areas ---------------------------------------------------------------------
+
+type PaneArea = Exclude<EffectArea, "window">;
+/** The shell child each pane area follows. */
+const AREA_TARGET: Record<PaneArea, string> = { chat: ".main-panel", sidebar: ".sidebar" };
+
+/**
+ * A box that tracks the main panel ("chat") or the left navigator ("sidebar")
+ * inside the shell and clips its effects to that region. Geometry is written
+ * straight to the node (no React render), so a sidebar drag stays cheap.
+ * Until it has measured, the box is empty: nothing flashes over the window.
+ */
+export function EffectAreaBox({ area, children }: { area: PaneArea; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = ref.current;
+    const shell = node?.closest<HTMLElement>(".app-shell");
+    if (!node || !shell) return;
+    const find = () => Array.from(shell.children).find((child): child is HTMLElement => child instanceof HTMLElement && child.matches(AREA_TARGET[area])) ?? null;
+    let target: HTMLElement | null = null;
+    let frame = 0;
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(() => schedule()) : null;
+    const measure = () => {
+      frame = 0;
+      const next = find();
+      if (next !== target) { if (target) observer?.unobserve(target); target = next; if (target) observer?.observe(target); }
+      if (!target) { node.style.width = "0px"; node.style.height = "0px"; return; }
+      const s = shell.getBoundingClientRect();
+      const r = target.getBoundingClientRect();
+      // getBoundingClientRect is in zoomed pixels; the box is laid out in the shell's own CSS pixels.
+      const k = shell.offsetWidth > 0 && s.width > 0 ? s.width / shell.offsetWidth : 1;
+      node.style.left = `${Math.round((r.left - s.left) / k)}px`;
+      node.style.top = `${Math.round((r.top - s.top) / k)}px`;
+      node.style.width = `${Math.max(0, Math.round(r.width / k))}px`;
+      node.style.height = `${Math.max(0, Math.round(r.height / k))}px`;
+    };
+    function schedule() { if (!frame) frame = requestAnimationFrame(measure); }
+    measure();
+    observer?.observe(shell);
+    // Panes open, close, peek and move (the sidebar slides; the Tools panel opens beside the main panel).
+    const mutations = typeof MutationObserver === "function" ? new MutationObserver(schedule) : null;
+    mutations?.observe(shell, { childList: true, subtree: false });
+    for (const child of Array.from(shell.children)) if (child instanceof HTMLElement && (child.matches(".sidebar") || child.matches(".studio-dock"))) {
+      observer?.observe(child);
+      mutations?.observe(child, { attributes: true, attributeFilter: ["class", "style"] });
+    }
+    const onTransition = (event: Event) => { const t = event.target; if (t instanceof HTMLElement && t.parentElement === shell) schedule(); };
+    shell.addEventListener("transitionend", onTransition);
+    window.addEventListener("resize", schedule);
+    return () => {
+      observer?.disconnect(); mutations?.disconnect();
+      shell.removeEventListener("transitionend", onTransition);
+      window.removeEventListener("resize", schedule);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [area]);
+  return <div ref={ref} className="ct-fx-area" data-area={area}>{children}</div>;
+}
+
+/** Group a layer's effect nodes by area. Window effects stay direct children of the layer, exactly as before. */
+function byArea(nodes: Array<[EffectArea, ReactNode]>): ReactNode[] {
+  const out: ReactNode[] = [];
+  const groups: Partial<Record<PaneArea, ReactNode[]>> = {};
+  for (const [where, node] of nodes) {
+    if (!node) continue;
+    if (where === "window") out.push(node);
+    else (groups[where] ??= []).push(node);
+  }
+  for (const where of ["chat", "sidebar"] as const) {
+    const list = groups[where];
+    if (list?.length) out.push(<EffectAreaBox key={`area-${where}`} area={where}>{list}</EffectAreaBox>);
+  }
+  return out;
 }
 
 // ---- The layer -----------------------------------------------------------------
@@ -289,8 +467,8 @@ function forcedColors(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(forced-colors: active)").matches;
 }
 
-export function ThemeEffectsLayer(props: { spec: ThemeSpec | null; id?: CustomThemeId; motion: "on" | "paused" }): ReactElement | null {
-  const { spec, id, motion } = props;
+export function ThemeEffectsLayer(props: { spec: ThemeSpec | null; id?: CustomThemeId; motion: "on" | "paused"; /** Particle canvas resolution override (theme previews). */ pixelRatio?: number }): ReactElement | null {
+  const { spec, id, motion, pixelRatio } = props;
   const model = useMemo(() => {
     if (!spec || !id) return null;
     try { return effectLayerModel(spec, id); } catch { return null; }
@@ -305,18 +483,22 @@ export function ThemeEffectsLayer(props: { spec: ThemeSpec | null; id?: CustomTh
     <>
       {backVisible && (
         <div className="ct-fx-layer ct-fx-back" data-motion={effectiveMotion} data-scheme={model.scheme} aria-hidden="true">
-          {p.vignette && <VignetteLayer params={p.vignette} />}
-          {p.mesh && <MeshLayer params={p.mesh} scheme={model.scheme} />}
-          {p.aurora && <AuroraLayer params={p.aurora} scheme={model.scheme} />}
-          {p.grid && <GridLayer params={p.grid} scheme={model.scheme} />}
-          {p.starfield && <StarfieldLayer params={p.starfield} seed={model.seed} />}
-          {p.particles && <ParticlesCanvas params={p.particles} seed={model.seed} motion={effectiveMotion} />}
+          {byArea([
+            [effectArea(p.vignette), p.vignette && <VignetteLayer key="vignette" params={p.vignette} />],
+            [effectArea(p.mesh), p.mesh && <MeshLayer key="mesh" params={p.mesh} scheme={model.scheme} />],
+            [effectArea(p.aurora), p.aurora && <AuroraLayer key="aurora" params={p.aurora} scheme={model.scheme} />],
+            [effectArea(p.grid), p.grid && <GridLayer key="grid" params={p.grid} scheme={model.scheme} />],
+            [effectArea(p.starfield), p.starfield && <StarfieldLayer key="starfield" params={p.starfield} seed={model.seed} />],
+            [effectArea(p.particles), p.particles && <ParticlesCanvas key="particles" params={p.particles} seed={model.seed} motion={effectiveMotion} pixelRatio={pixelRatio} />],
+          ])}
         </div>
       )}
       {frontVisible && (
         <div className="ct-fx-layer ct-fx-front" data-motion={effectiveMotion} data-scheme={model.scheme} aria-hidden="true">
-          {p.grain && <GrainLayer params={p.grain} scheme={model.scheme} />}
-          {p.scanlines && <ScanlinesLayer params={p.scanlines} scheme={model.scheme} />}
+          {byArea([
+            [effectArea(p.grain), p.grain && <GrainLayer key="grain" params={p.grain} scheme={model.scheme} />],
+            [effectArea(p.scanlines), p.scanlines && <ScanlinesLayer key="scanlines" params={p.scanlines} scheme={model.scheme} />],
+          ])}
         </div>
       )}
     </>

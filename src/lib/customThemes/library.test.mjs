@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SETTINGS_TILE_LIMIT, filterThemes, isThemeLibrarySort, libraryView, settingsTiles, sortThemes } from "./library.ts";
+import { filterThemes, isThemeLibrarySort, libraryView, sortThemes } from "./library.ts";
 
 const user = { kind: "user" };
 function record(id, name, { createdAt = 0, updatedAt = createdAt, description = "" } = {}) {
@@ -17,33 +17,6 @@ const themes = [
   record("ct_f", "Aurora 9", { createdAt: 60, updatedAt: 10 }),
 ];
 const ids = (list) => list.map((entry) => entry.id);
-
-test("Settings shows at most three tiles (one row), most recently edited first", () => {
-  assert.equal(SETTINGS_TILE_LIMIT, 3);
-  assert.deepEqual(ids(settingsTiles(themes, null)), ["ct_a", "ct_c", "ct_b"]);
-});
-
-test("the chosen custom theme comes first, then the two most recently edited", () => {
-  assert.deepEqual(ids(settingsTiles(themes, "ct_f")), ["ct_f", "ct_a", "ct_c"]);
-  // Already among the recent ones: moved to the front, not shown twice.
-  assert.deepEqual(ids(settingsTiles(themes, "ct_c")), ["ct_c", "ct_a", "ct_b"]);
-});
-
-test("three themes all fit; a fourth is left for the library", () => {
-  // Three or fewer: every theme is a tile (Settings offers "Manage themes").
-  assert.deepEqual(ids(settingsTiles(themes.slice(0, 3), "ct_b")), ["ct_b", "ct_a", "ct_c"]);
-  // Four: one stays in the library (Settings offers "See all 4 themes").
-  const four = themes.slice(0, 4);
-  assert.equal(settingsTiles(four, null).length, 3);
-  assert.deepEqual(ids(settingsTiles(four, null)), ["ct_a", "ct_c", "ct_b"]);
-  assert.deepEqual(ids(settingsTiles(four, "ct_d")), ["ct_d", "ct_a", "ct_c"]);
-});
-
-test("an unknown or missing selection is ignored, empty libraries show nothing", () => {
-  assert.deepEqual(ids(settingsTiles(themes, "ct_gone")), ["ct_a", "ct_c", "ct_b"]);
-  assert.deepEqual(settingsTiles([], "ct_a"), []);
-  assert.deepEqual(settingsTiles(themes, "ct_a", 0), []);
-});
 
 test("search matches name and description, ignoring case and extra spaces", () => {
   assert.deepEqual(ids(filterThemes(themes, "EMBER")), ["ct_b"]);

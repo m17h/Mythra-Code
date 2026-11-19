@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { THEME_TOOLS, ThemeToolRefusal, createThemeToolHandler, isThemeTool } from "./toolHandlerCore.ts";
+import { THEME_TOOLS, ThemeToolRefusal, createThemeToolHandler, isThemeTool, providerTakesImages } from "./toolHandlerCore.ts";
 import { libraryCommit, libraryCreate, librarySetDisabled, librarySetFocus, libraryUndo } from "./store.ts";
 
 const BUILT_INS = [
@@ -62,7 +62,7 @@ function diff(before, after) {
   return out;
 }
 
-function setup({ toolsEnabled = true, provider = "claude", sessionThreads = {}, probe = async () => ({ ok: true, failures: [] }), shell = {}, motion = { paused: false, reducedMotion: false } } = {}) {
+function setup({ toolsEnabled = true, provider = "claude", sessionThreads = {}, probe = async () => ({ ok: true, failures: [] }), shell = {}, motion = { paused: false, reducedMotion: false }, screenshotsEnabled, deps: extraDeps = {} } = {}) {
   let library = { version: 1, themes: [], threadFocus: {} };
   let now = 1_000;
   let ids = 0;
@@ -76,6 +76,7 @@ function setup({ toolsEnabled = true, provider = "claude", sessionThreads = {}, 
     threadForSession: () => ({ provider, model: "opus" }),
     waitForApplied: async () => shell,
     motionState: () => motion,
+    ...(screenshotsEnabled === undefined ? {} : { screenshotsEnabled: () => screenshotsEnabled }),
   };
   const deps = {
     normalize, applyPatch, diff,
@@ -91,6 +92,7 @@ function setup({ toolsEnabled = true, provider = "claude", sessionThreads = {}, 
     host: () => host,
     builtInThemes: BUILT_INS,
     applyWaitMs: 50,
+    ...extraDeps,
   };
   const handle = createThemeToolHandler(deps);
   const call = (tool, args = {}, context = { policyThreadId: "thread-1" }, sessionId = "session-1") =>
@@ -105,8 +107,8 @@ function setup({ toolsEnabled = true, provider = "claude", sessionThreads = {}, 
 
 const NEBULA = { name: "Nebula", base: "mythra", tokens: { bg: "#16131f", text: "#ece8f6", accent: "#b794ff" } };
 
-test("exposes exactly the seven tools", () => {
-  assert.deepEqual([...THEME_TOOLS], ["get_theme_design_kit", "list_custom_themes", "get_custom_theme", "create_custom_theme", "update_custom_theme", "undo_custom_theme", "apply_custom_theme"]);
+test("exposes exactly the eight tools", () => {
+  assert.deepEqual([...THEME_TOOLS], ["get_theme_design_kit", "list_custom_themes", "get_custom_theme", "create_custom_theme", "update_custom_theme", "undo_custom_theme", "apply_custom_theme", "capture_app_screenshot"]);
   assert.equal(isThemeTool("undo_custom_theme"), true);
   assert.equal(isThemeTool("delete_custom_theme"), false);
 });
@@ -315,4 +317,96 @@ test("sanitizer warnings from the engine reach the model", async () => {
   const { call } = setup();
   const result = await call("create_custom_theme", { ...NEBULA, customCss: ".composer::after { position: fixed; }" });
   assert.match(result.warnings.join(" "), /position: fixed/);
+});
+
+// ---- Layout report and screenshots ----------------------------------------------
+
+const LAYOUT = { window: { w: 1440, h: 900 }, regions: [{ region: ".sidebar", name: "sidebar", x: 0, y: 0, w: 300, h: 900 }] };
+const PNG = { ok: true, data: "iVBORw0KGgo=", mimeType: "image/png", width: 1280, height: 800 };
+
+test("every applied change carries the layout report for the theme as drawn", async () => {
+  const seen = [];
+  const inspect = (shell, theme, motion) => { seen.push({ shell, theme, motion }); return LAYOUT; };
+  const { call } = setup({ deps: { inspect } });
+  const created = await call("create_custom_theme", { ...NEBULA, customCss: ".sidebar { border-color: var(--line); }" });
+  assert.deepEqual(created.layout, LAYOUT);
+  assert.equal(seen[0].theme.id, created.themeId);
+  assert.equal(seen[0].theme.spec.customCss, ".sidebar { border-color: var(--line); }");
+  assert.deepEqual(seen[0].motion, { paused: false, reducedMotion: false });
+  const updated = await call("update_custom_theme", { patch: { tokens: { accent: "#ff8fd1" } }, summary: "Pink" });
+  assert.deepEqual(updated.layout, LAYOUT);
+  const undone = await call("undo_custom_theme", {});
+  assert.deepEqual(undone.layout, LAYOUT);
+  const applied = await call("apply_custom_theme", { themeId: created.themeId });
+  assert.deepEqual(applied.layout, LAYOUT);
+  // Not applied: nothing on screen to measure.
+  const quiet = await call("update_custom_theme", { patch: { tokens: { accent: "#00aa88" } }, summary: "Teal", apply: false });
+  assert.equal(quiet.layout, undefined);
+});
+
+test("a failing inspector never breaks a theme change", async () => {
+  const { call } = setup({ deps: { inspect: () => { throw new Error("boom"); } } });
+  const created = await call("create_custom_theme", NEBULA);
+  assert.equal(created.applied, true);
+  assert.equal(created.layout, undefined);
+});
+
+test("stripped customCss is measured again without the stylesheet", async () => {
+  const specs = [];
+  const probe = async () => ({ ok: false, failures: [{ landmark: "sidebar row title", ratio: 2.1, fg: "#333", bg: "#222", selectorHint: ".thread-card-title", causedByCustomCss: true }], customCssCulprit: true });
+  const { call } = setup({ probe, deps: { inspect: (_shell, theme) => { specs.push(theme.spec.customCss); return LAYOUT; } } });
+  const created = await call("create_custom_theme", { ...NEBULA, customCss: ".thread-card-title { color: #333; }" });
+  assert.equal(created.revision, 2);
+  assert.deepEqual(specs, [""]);
+  assert.deepEqual(created.layout, LAYOUT);
+});
+
+test("capture returns the picture with the layout report", async () => {
+  let captures = 0;
+  const { call } = setup({ deps: { inspect: () => LAYOUT, capture: async () => { captures++; return PNG; } } });
+  const created = await call("create_custom_theme", NEBULA);
+  const shot = await call("capture_app_screenshot");
+  assert.equal(captures, 1);
+  assert.equal(shot.captured, true);
+  assert.deepEqual(shot.image, { data: PNG.data, mimeType: "image/png" });
+  assert.equal(shot.width, 1280);
+  assert.equal(shot.themeId, created.themeId);
+  assert.deepEqual(shot.layout, LAYOUT);
+  assert.match(shot.note, /don't repeat/);
+});
+
+test("capture refuses when the user doesn't let models see the app, or theme tools are off", async () => {
+  let captures = 0;
+  const capture = async () => { captures++; return PNG; };
+  const off = setup({ screenshotsEnabled: false, deps: { capture } });
+  await assert.rejects(off.call("capture_app_screenshot"), /Let models see the app/);
+  const toolsOff = setup({ toolsEnabled: false, deps: { capture } });
+  await assert.rejects(toolsOff.call("capture_app_screenshot"), /turned off theme tools/);
+  assert.equal(captures, 0);
+});
+
+test("capture sends no picture to a runtime that drops tool images", async () => {
+  let captures = 0;
+  const { call } = setup({ provider: "cursor", deps: { inspect: () => LAYOUT, capture: async () => { captures++; return PNG; } } });
+  const shot = await call("capture_app_screenshot");
+  assert.equal(captures, 0);
+  assert.equal(shot.captured, false);
+  assert.equal(shot.image, undefined);
+  assert.deepEqual(shot.layout, LAYOUT);
+  assert.match(shot.note, /does not pass pictures/);
+  assert.equal(providerTakesImages("claude"), true);
+  assert.equal(providerTakesImages("openai"), true);
+  assert.equal(providerTakesImages("openrouter"), true);
+  assert.equal(providerTakesImages("cursor"), false);
+});
+
+test("capture falls back to text when the platform can't take a picture", async () => {
+  const unavailable = setup({ deps: { capture: async () => ({ ok: false, unavailable: true, error: "Screenshots are not available on this system." }) } });
+  const shot = await unavailable.call("capture_app_screenshot");
+  assert.equal(shot.captured, false);
+  assert.match(shot.note, /not available on this system/);
+  const missing = setup();
+  assert.match((await missing.call("capture_app_screenshot")).note, /not available here/);
+  const slow = setup({ deps: { capture: () => new Promise(() => {}), captureWaitMs: 20 } });
+  assert.match((await slow.call("capture_app_screenshot")).note, /did not answer in time/);
 });

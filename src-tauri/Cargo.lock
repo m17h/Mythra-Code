@@ -2328,6 +2328,7 @@ version = "1.32.3"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "block2",
  "cookie",
  "futures-util",
  "getrandom 0.3.4",
@@ -2337,6 +2338,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-web-kit",
+ "png 0.17.16",
  "pulldown-cmark",
  "reqwest",
  "ring",

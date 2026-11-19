@@ -13,7 +13,12 @@
 //!
 //! Rust checks only shape and size. Colour parsing, contrast, effects and the
 //! CSS sanitizer run in the webview, which owns the browser CSS parser.
+//!
+//! `capture_app_screenshot` is the one tool whose result can carry a picture:
+//! the webview takes it natively (window_capture.rs) only while the user
+//! allows it, and the bridge turns it into an MCP image content block.
 
+use base64::Engine;
 use serde_json::{json, Map, Value};
 
 pub(super) const TOOL_THEME_KIT: &str = "get_theme_design_kit";
@@ -23,8 +28,9 @@ pub(super) const TOOL_THEME_CREATE: &str = "create_custom_theme";
 pub(super) const TOOL_THEME_UPDATE: &str = "update_custom_theme";
 pub(super) const TOOL_THEME_UNDO: &str = "undo_custom_theme";
 pub(super) const TOOL_THEME_APPLY: &str = "apply_custom_theme";
+pub(super) const TOOL_THEME_CAPTURE: &str = "capture_app_screenshot";
 
-pub(super) const THEME_TOOLS: [&str; 7] = [
+pub(super) const THEME_TOOLS: [&str; 8] = [
     TOOL_THEME_KIT,
     TOOL_THEME_LIST,
     TOOL_THEME_GET,
@@ -32,6 +38,7 @@ pub(super) const THEME_TOOLS: [&str; 7] = [
     TOOL_THEME_UPDATE,
     TOOL_THEME_UNDO,
     TOOL_THEME_APPLY,
+    TOOL_THEME_CAPTURE,
 ];
 
 pub(super) const BUILT_IN_THEMES: [&str; 6] =
@@ -61,7 +68,11 @@ const MAX_ARGUMENT_BYTES: usize = 65_536;
 const MAX_REVISION: u64 = 100_000;
 const MAX_UNDO_STEPS: u64 = 10;
 
-/// Exactly one of the app's seven theme tools.
+/// Largest base64 picture the bridge forwards (about 1.2 MB of PNG).
+const MAX_IMAGE_BASE64_BYTES: usize = 1_650_000;
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// Exactly one of the app's eight theme tools.
 pub(super) fn is_theme_tool(tool: &str) -> bool {
     THEME_TOOLS.contains(&tool)
 }
@@ -101,7 +112,7 @@ fn theme_id() -> Value {
     json!({ "type": "string" })
 }
 
-/// Seven short tool definitions, about 2.9 KB of JSON (roughly 750 tokens):
+/// Eight short tool definitions, about 3.2 KB of JSON (roughly 850 tokens):
 /// every turn of every conversation pays for these, so the details live in
 /// `get_theme_design_kit`'s result and shapes are checked here and in the app.
 pub(super) fn theme_tool_catalog() -> Vec<Value> {
@@ -131,7 +142,7 @@ pub(super) fn theme_tool_catalog() -> Vec<Value> {
         }),
         json!({
             "name": TOOL_THEME_CREATE,
-            "description": "Create a NEW app theme and apply it. Needs name, base, tokens.bg/text/accent. To change an existing theme, use update_custom_theme instead. Saves automatically.",
+            "description": "Create a NEW app theme and apply it. Needs name, base, tokens.bg/text/accent. To change an existing theme, use update_custom_theme. The result's layout shows what your CSS hit.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -156,7 +167,7 @@ pub(super) fn theme_tool_catalog() -> Vec<Value> {
         }),
         json!({
             "name": TOOL_THEME_UPDATE,
-            "description": "Patch a theme: a new undoable revision of the SAME theme, applied. Omit themeId for this chat's theme. tokens, effects, typography, surfaces, motion merge per key (null removes); rest replace.",
+            "description": "Patch a theme: a new undoable revision of the SAME theme, applied; read layout in the result. Omit themeId for this chat's theme. tokens, effects, typography, surfaces, motion merge per key (null removes).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -197,11 +208,59 @@ pub(super) fn theme_tool_catalog() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        json!({
+            "name": TOOL_THEME_CAPTURE,
+            "description": "Picture of the Mythra Code window plus the layout report, to check a theme. The picture goes to your provider and may show chats; the user can turn it off.",
+            "inputSchema": empty,
+        }),
     ]
 }
 
 /// One bridge-instruction line, present only when the theme tools are.
-pub(super) const THEME_BRIDGE_INSTRUCTIONS: &str = "Use the theme tools when the user asks to create, change, restyle, animate or undo how Mythra Code looks. Read get_theme_design_kit first. Adjust an existing theme with update_custom_theme instead of creating a duplicate. Only the user can delete themes.";
+pub(super) const THEME_BRIDGE_INSTRUCTIONS: &str = "Use the theme tools when the user asks to create, change, restyle, animate or undo how Mythra Code looks. Read get_theme_design_kit first. Adjust an existing theme with update_custom_theme instead of creating a duplicate. After each change read the result's layout; call capture_app_screenshot when you need to see the window. Only the user can delete themes.";
+
+/// A valid PNG content block from a capture result's `image`, or None.
+fn png_image_block(image: &Value) -> Option<Value> {
+    let image = image.as_object()?;
+    if image.get("mimeType")?.as_str()? != "image/png" {
+        return None;
+    }
+    let data = image.get("data")?.as_str()?;
+    if data.is_empty() || data.len() > MAX_IMAGE_BASE64_BYTES {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
+    if !bytes.starts_with(PNG_SIGNATURE) {
+        return None;
+    }
+    Some(json!({ "type": "image", "data": data, "mimeType": "image/png" }))
+}
+
+/// The MCP result for a theme tool whose answer may carry a picture: the
+/// text payload (without the base64) followed by one image content block.
+/// None for every other tool and for errors, which use the plain text result.
+pub(super) fn theme_tool_mcp_result(tool: &str, payload: &Value, is_error: bool) -> Option<Value> {
+    if tool != TOOL_THEME_CAPTURE || is_error {
+        return None;
+    }
+    let mut text = payload.as_object()?.clone();
+    let image = text.remove("image");
+    let block = image.as_ref().and_then(png_image_block);
+    if image.is_some() && block.is_none() {
+        text.insert("captured".into(), json!(false));
+        text.insert(
+            "note".into(),
+            json!("The picture was dropped because it was not a PNG within the size limit. Use the layout report."),
+        );
+    }
+    let text = Value::Object(text);
+    let mut content = vec![json!({
+        "type": "text",
+        "text": serde_json::to_string_pretty(&text).unwrap_or_else(|_| text.to_string()),
+    })];
+    content.extend(block);
+    Some(json!({ "content": content, "isError": false }))
+}
 
 fn valid_theme_id(value: &Value) -> bool {
     value.as_str().is_some_and(|id| {
@@ -359,7 +418,7 @@ pub(super) fn validate_theme_tool_call(tool: &str, arguments: &Value) -> Result<
         .ok_or_else(|| "Tool arguments must be an object.".to_string())?;
     total_size(arguments)?;
     match tool {
-        TOOL_THEME_KIT | TOOL_THEME_LIST => only_keys(object, &[], tool),
+        TOOL_THEME_KIT | TOOL_THEME_LIST | TOOL_THEME_CAPTURE => only_keys(object, &[], tool),
         TOOL_THEME_GET => {
             only_keys(object, &["themeId", "includeHistory"], tool)?;
             optional_theme_id(object)?;
@@ -445,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_lists_the_seven_tools_with_closed_schemas() {
+    fn catalog_lists_the_eight_tools_with_closed_schemas() {
         let catalog = theme_tool_catalog();
         let names: Vec<_> = catalog.iter().filter_map(|tool| tool["name"].as_str()).collect();
         assert_eq!(names, THEME_TOOLS.to_vec());
@@ -455,16 +514,49 @@ mod tests {
             let description = tool["description"].as_str().unwrap();
             assert!(description.len() < 220, "{} description is {} bytes", tool["name"], description.len());
         }
-        // The whole always-on surface stays small: under 2.9 KB of JSON
-        // (roughly 700-800 tokens), inside the 1k-token budget.
+        // The whole always-on surface stays small: under 3.3 KB of JSON
+        // (roughly 850 tokens), inside the 1k-token budget.
         let bytes = serde_json::to_string(&catalog).unwrap().len();
-        assert!(bytes <= 2_900, "theme catalog is {bytes} bytes");
+        assert!(bytes <= 3_300, "theme catalog is {bytes} bytes");
+    }
+
+    #[test]
+    fn capture_result_carries_one_validated_png() {
+        let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nrest-of-file");
+        let payload = json!({ "captured": true, "width": 1280, "height": 800, "layout": { "regions": [] }, "image": { "data": png, "mimeType": "image/png" } });
+        let result = theme_tool_mcp_result(TOOL_THEME_CAPTURE, &payload, false).expect("capture result");
+        let content = result["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(text.contains("\"layout\"") && !text.contains(&png), "the base64 stays out of the text");
+        assert_eq!(content[1], json!({ "type": "image", "data": png, "mimeType": "image/png" }));
+        assert_eq!(result["isError"], false);
+        // Not a PNG, the wrong type, or too large: dropped with a note.
+        for image in [
+            json!({ "data": base64::engine::general_purpose::STANDARD.encode(b"GIF89a"), "mimeType": "image/png" }),
+            json!({ "data": png, "mimeType": "image/svg+xml" }),
+            json!({ "data": "%%%", "mimeType": "image/png" }),
+            json!({ "data": "A".repeat(MAX_IMAGE_BASE64_BYTES + 4), "mimeType": "image/png" }),
+        ] {
+            let result = theme_tool_mcp_result(TOOL_THEME_CAPTURE, &json!({ "captured": true, "image": image }), false).unwrap();
+            let content = result["content"].as_array().unwrap();
+            assert_eq!(content.len(), 1);
+            assert!(content[0]["text"].as_str().unwrap().contains("dropped"));
+        }
+        // Text-only answers (switch off, runtime without images) stay text.
+        let plain = theme_tool_mcp_result(TOOL_THEME_CAPTURE, &json!({ "captured": false, "note": "no" }), false).unwrap();
+        assert_eq!(plain["content"].as_array().unwrap().len(), 1);
+        assert!(theme_tool_mcp_result(TOOL_THEME_CAPTURE, &json!({ "error": "off" }), true).is_none());
+        assert!(theme_tool_mcp_result(TOOL_THEME_UPDATE, &payload, false).is_none());
     }
 
     #[test]
     fn empty_argument_tools_take_nothing() {
         ok(TOOL_THEME_KIT, json!({}));
         ok(TOOL_THEME_LIST, json!({}));
+        ok(TOOL_THEME_CAPTURE, json!({}));
+        assert!(err(TOOL_THEME_CAPTURE, json!({ "region": "sidebar" })).contains("no arguments"));
         assert!(err(TOOL_THEME_KIT, json!({ "verbose": true })).contains("no arguments"));
         assert!(err(TOOL_THEME_LIST, json!([])).contains("object"));
     }
