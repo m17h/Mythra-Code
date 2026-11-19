@@ -604,7 +604,7 @@ export interface AppSettings {
   themePauseInBackground?: boolean;
   /** Theme tools in every conversation. Absent: on. */
   customThemeTools?: boolean;
-  /** "Let models see the app": theme tools may send a picture of the window to the model's provider. Absent: on. */
+  /** "Let models see theme previews". Images contain sample content and go to the model's provider. Absent means on. */
   customThemeScreenshots?: boolean;
   /** Last model chosen for "Design a theme with AI". */
   themeDesignerProvider?: Provider;

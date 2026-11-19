@@ -1,11 +1,3 @@
-/* While a remote machine is on screen the local tree stays mounted and laid
-   out, so its scrollers, listeners and measurements carry on undisturbed. */
-.local-machine-surface { display: contents; }
-.local-machine-surface[data-covered] { visibility: hidden; }
-/* The lists stay direct children of the split as far as layout is concerned. */
-.sidebar-machine-lists { display: contents; }
-.sidebar-machine-lists[hidden] { display: none; }
-
 .app-shell[data-machine-phase] .studio-dock { transition: none; }
 
 /* Switching machines: old content leaves upward, new content arrives downward.

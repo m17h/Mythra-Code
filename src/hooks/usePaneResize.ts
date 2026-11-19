@@ -67,7 +67,8 @@ export interface PaneFitInput {
   sidebarWidth: number;
 }
 
-function toolsNeedOverlay(windowWidth: number, scale: number): boolean {
+/** Tools floats over the chat instead of beside it (the shell's `data-tools-overlay`). */
+export function toolsNeedOverlay(windowWidth: number, scale: number): boolean {
   if (!Number.isFinite(windowWidth) || windowWidth <= 0) return false;
   return windowWidth <= DOCK_OVERLAY_MAX || windowWidth / (scale > 0 ? scale : 1) < PANE_BOUNDS.dock.min + STAGE_MIN_WIDTH;
 }
@@ -105,7 +106,7 @@ export function reviewWideFit({ shellWidth, mainLeft, mainWidth }: { shellWidth:
   return { strip, width: Math.max(0, Math.min(1180, shellWidth - mainLeft - strip)) };
 }
 
-function useWindowWidth(): number {
+export function useWindowWidth(): number {
   const [width, setWidth] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth));
   useEffect(() => {
     const onResize = () => setWidth(window.innerWidth);
@@ -144,10 +145,7 @@ interface StoredPaneSizes extends Partial<PaneSizes> {
 
 function writePaneVariable(root: HTMLElement | null, pane: PaneKey, size: number, auto = false, fitMax = Infinity): void {
   // The automatic width follows the window too, but never past the fit.
-  const value = auto
-    ? fitMax < PANE_BOUNDS.dock.max ? `min(${AUTO_DOCK_WIDTH}, ${fitMax}px)` : AUTO_DOCK_WIDTH
-    : `${Math.min(size, fitMax)}px`;
-  root?.style.setProperty(PANE_VARIABLE[pane], value);
+  root?.style.setProperty(PANE_VARIABLE[pane], paneWidthValue(size, auto, fitMax));
 }
 
 /** The width the dock is actually drawn at, in the shell's own pixels. */
@@ -160,6 +158,8 @@ function measuredPaneSize(root: HTMLElement | null, pane: PaneKey, fallback: num
 export interface PaneResizeApi {
   /** The saved preferences (what a larger window gets back). */
   paneSizes: PaneSizes;
+  /** The dock follows the window (never resized by hand). */
+  dockAuto: boolean;
   /** The dock width drawn now: the saved width fitted to the window and UI scale. */
   dockWidth: number;
   /** The widest the dock may be dragged to right now. */
@@ -183,6 +183,34 @@ export interface PaneLayout {
   dockOpen: boolean;
 }
 
+/**
+ * D11: between 901 and 1250px the Tools panel can't share the window with
+ * the sidebar and still leave a usable chat column.
+ */
+export const NARROW_WINDOW_QUERY = "(min-width: 901px) and (max-width: 1250px)";
+
+/** How the panes fit a window: whether the sidebar crowds the dock, and the widest dock. */
+export function paneFit(windowWidth: number, scale: number, sizes: PaneSizes, layout: PaneLayout): { sidebarCrowded: boolean; dockMax: number } {
+  const sidebarCrowded = layout.dockOpen && layout.sidebarOpen && !layout.sidebarTucked
+    && sidebarCrowdsDock({ windowWidth, scale, sidebarWidth: sizes.sidebar });
+  // Only a sidebar that takes room in the layout narrows what the dock may use.
+  const sidebarInLayout = layout.sidebarOpen && !layout.sidebarTucked && !sidebarCrowded;
+  const dockMax = dockFitMax({ windowWidth, scale, sidebarWidth: sidebarInLayout ? sizes.sidebar : 0 });
+  return { sidebarCrowded, dockMax };
+}
+
+/** The sidebar steps aside while the Tools panel is open beside the chat (App and the theme preview). */
+export function sidebarTuckedFor(narrowWindow: boolean, sidebarCrowded: boolean, dockOpen: boolean): boolean {
+  return (narrowWindow || sidebarCrowded) && dockOpen;
+}
+
+/** A pane's width property: the saved width (or the dock's automatic one) within the fit. */
+export function paneWidthValue(saved: number, auto: boolean, fitMax: number): string {
+  return auto
+    ? fitMax < PANE_BOUNDS.dock.max ? `min(${AUTO_DOCK_WIDTH}, ${fitMax}px)` : AUTO_DOCK_WIDTH
+    : `${Math.min(saved, fitMax)}px`;
+}
+
 export function usePaneResize(uiScale: number, layout: PaneLayout = { sidebarOpen: true, sidebarTucked: false, dockOpen: false }): PaneResizeApi {
   const [storedSizes] = useState(() => loadStored<StoredPaneSizes | null>("kiwi.paneSizes", null));
   const [paneSizes, setPaneSizes] = useState<PaneSizes>(() => normalizePaneSizes(storedSizes ?? DEFAULT_PANE_SIZES));
@@ -195,11 +223,7 @@ export function usePaneResize(uiScale: number, layout: PaneLayout = { sidebarOpe
   const uiScaleRef = useRef(uiScale);
   uiScaleRef.current = uiScale;
   const windowWidth = useWindowWidth();
-  const sidebarCrowded = layout.dockOpen && layout.sidebarOpen && !layout.sidebarTucked
-    && sidebarCrowdsDock({ windowWidth, scale: uiScale, sidebarWidth: paneSizes.sidebar });
-  // Only a sidebar that takes room in the layout narrows what the dock may use.
-  const sidebarInLayout = layout.sidebarOpen && !layout.sidebarTucked && !sidebarCrowded;
-  const dockMax = dockFitMax({ windowWidth, scale: uiScale, sidebarWidth: sidebarInLayout ? paneSizes.sidebar : 0 });
+  const { sidebarCrowded, dockMax } = paneFit(windowWidth, uiScale, paneSizes, layout);
   const dockMaxRef = useRef(dockMax);
   dockMaxRef.current = dockMax;
   const clampToFit = (pane: PaneKey, value: number) => pane === "dock" ? Math.min(clampPaneSize(pane, value), dockMaxRef.current) : clampPaneSize(pane, value);
@@ -396,5 +420,5 @@ export function usePaneResize(uiScale: number, layout: PaneLayout = { sidebarOpe
 
   const desiredDockWidth = autoDockRef.current ? Math.max(420, windowWidth * 0.3) : paneSizes.dock;
   const dockWidth = Math.min(desiredDockWidth, dockMax);
-  return { paneSizes, dockWidth, dockMax, dockOverlay: toolsNeedOverlay(windowWidth, uiScale), sidebarCrowded, paneRefs, startPaneResize, resizePaneWithKeyboard };
+  return { paneSizes, dockAuto: autoDockRef.current, dockWidth, dockMax, dockOverlay: toolsNeedOverlay(windowWidth, uiScale), sidebarCrowded, paneRefs, startPaneResize, resizePaneWithKeyboard };
 }

@@ -6,17 +6,9 @@ import { hydrateNativeStorage } from "./storage";
 import { installContextMenuBlocker } from "./contextMenu";
 import { installGlobalErrorCapture } from "./errorLog";
 import { failStartup, hasStartupFailed, markStartupReady, registerStartupNotifier, setStartupStage } from "./startup";
-import { isMacPlatform, isWindowsPlatform } from "./platform";
-import "../styles.css";
-// Bundled chat fonts. @font-face rules only download a face once text uses it.
-import "@fontsource/pixelify-sans/400.css";
-import "@fontsource/pixelify-sans/500.css";
-import "@fontsource/pixelify-sans/600.css";
-import "@fontsource/pixelify-sans/700.css";
-import "@fontsource/vt323/400.css";
-// The Lumen redesign must follow styles.css: same-named @keyframes and any
-// equal-specificity rules resolve to whichever sheet comes last.
-import "../styles/lumen/index.css";
+import { markDocumentPlatform } from "./platform";
+// Global stylesheets in cascade order (shared with the hidden theme preview).
+import "./appStyles";
 
 function StartupCommitted() {
   // This acknowledges a committed React tree, not painted pixels or the
@@ -30,6 +22,9 @@ function StartupCommitted() {
 }
 
 export async function startApplication(): Promise<void> {
+  // Tauri can serve index.html when a packaged HTML entry is missing. The
+  // hidden preview must never mount the live app from that fallback.
+  if (window.location.pathname === "/theme-preview.html") return;
   registerStartupNotifier((command, stage) => {
     void invoke(command, stage ? { stage } : undefined).catch(() => {
       // Browser previews have no native IPC. The native watchdog owns its own
@@ -53,7 +48,7 @@ async function mountApplication(): Promise<void> {
   installGlobalErrorCapture();
   // Platform-specific tuning in CSS (for example Windows' heavier text
   // rendering on dark themes, see lumen/tokens.css) keys off this marker.
-  document.documentElement.setAttribute("data-platform", isWindowsPlatform() ? "windows" : isMacPlatform() ? "mac" : "other");
+  markDocumentPlatform();
 
   setStartupStage("hydration");
   await hydrateNativeStorage();

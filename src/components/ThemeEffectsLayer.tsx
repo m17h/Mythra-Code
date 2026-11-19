@@ -18,7 +18,7 @@ import { useMediaQueryMatch } from "../hooks/useMediaQueryMatch";
 import { formatColor, mixColors, parseColor, seededRandom, withAlpha, type Rgba } from "../lib/customThemes/color";
 import { PARTICLE_ANGLE, PARTICLE_DEFAULT_COUNT, PARTICLE_LIMITS, PARTICLE_SPEED_PX, blobOpacity, effectArea, effectSeconds, grainOpacity, resolveEffectParams, scanlineOpacity, starLayers, vignetteAlpha, type EffectPalette, type ResolvedParams } from "../lib/customThemes/effects";
 import { isThemeMotionTransientlyPaused, subscribeThemeMotion } from "../lib/customThemes/motion";
-import type { CustomThemeId, EffectArea, EffectType, ParticleShape, Speed, ThemeSpec } from "../lib/customThemes/spec";
+import { builtInScheme, type CustomThemeId, type EffectArea, type EffectType, type ParticleShape, type Speed, type ThemeSpec } from "../lib/customThemes/spec";
 import { resolveTheme } from "../lib/customThemes/validate";
 
 type Vars = CSSProperties & Record<`--${string}`, string | number>;
@@ -151,13 +151,25 @@ function grainTile(scheme: "light" | "dark"): Promise<string> {
   return promise;
 }
 
-export function GrainLayer({ params, scheme }: { params: ResolvedParams; scheme: "light" | "dark" }) {
-  const [url, setUrl] = useState("");
+export async function preparePreviewGrain(spec: ThemeSpec | null): Promise<string> {
+  if (!spec?.effects.grain || window.matchMedia("(forced-colors: active)").matches) return "";
+  const url = await grainTile(builtInScheme(spec.base));
+  if (!url) throw new Error("the grain texture could not be drawn");
+  const image = new Image();
+  image.src = url;
+  await image.decode();
+  return url;
+}
+
+export function GrainLayer({ params, scheme, preparedUrl }: { params: ResolvedParams; scheme: "light" | "dark"; preparedUrl?: string }) {
+  const [loadedUrl, setUrl] = useState("");
   useEffect(() => {
+    if (preparedUrl !== undefined) return;
     let live = true;
     void grainTile(scheme).then((value) => { if (live) setUrl(value); });
     return () => { live = false; };
-  }, [scheme]);
+  }, [scheme, preparedUrl]);
+  const url = preparedUrl ?? loadedUrl;
   if (!url) return null;
   return <i className="ct-fx-grain" data-animated={params.animated ? "on" : "off"} data-scheme={scheme} style={{ backgroundImage: `url("${url}")`, opacity: grainOpacity(params.amount as number) }} />;
 }
@@ -179,6 +191,7 @@ interface Mote { x: number; y: number; vx: number; vy: number; r: number; color:
 
 /** Streak depth layers (far, mid, near): speed, length and alpha scale with depth; drawn as one path per colour and layer. */
 const STREAK_DEPTHS = [0.55, 0.78, 1] as const;
+const PARTICLE_FRAME_MS = 1000 / 30;
 const SHAPES: readonly ParticleShape[] = ["dot", "streak", "flake", "petal"];
 
 function softSprite(color: string, stops: Array<[number, number]>): HTMLCanvasElement {
@@ -196,7 +209,7 @@ function softSprite(color: string, stops: Array<[number, number]>): HTMLCanvasEl
   return sprite;
 }
 
-export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio }: { params: ResolvedParams; seed: string; motion: "on" | "paused"; scale?: number; /** Backing-store pixels per CSS pixel (a scaled-down preview passes its own, so a still card keeps a small canvas). */ pixelRatio?: number }) {
+export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio, stillAtMs }: { params: ResolvedParams; seed: string; motion: "on" | "paused"; scale?: number; /** Backing-store pixels per CSS pixel (a scaled-down preview passes its own, so a still card keeps a small canvas). */ pixelRatio?: number; stillAtMs?: number }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const colors = useMemo(() => colorsOf(params.colors).map((c) => formatColor(c)), [params.colors]);
   useEffect(() => {
@@ -209,7 +222,7 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio }:
     const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const still = params.speed === "still" || motion !== "on" || reduced;
     const dpr = pixelRatio && pixelRatio > 0 ? Math.min(1.5, pixelRatio) : Math.min(1.5, window.devicePixelRatio || 1);
-    const random = seededRandom(`particles:${seed}`);
+    let random = seededRandom(`particles:${seed}`);
     const shape: ParticleShape = SHAPES.includes(params.shape as ParticleShape) ? params.shape as ParticleShape : "dot";
     const links = shape === "dot" && params.links === true;
     const cap = shape === "streak" ? PARTICLE_LIMITS.maxStreaks : links ? PARTICLE_LIMITS.maxWithLinks : PARTICLE_LIMITS.max;
@@ -254,9 +267,10 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio }:
     const resize = () => {
       const nextWidth = Math.max(1, canvas.clientWidth || canvas.getBoundingClientRect().width);
       const nextHeight = Math.max(1, canvas.clientHeight || canvas.getBoundingClientRect().height);
+      if (stillAtMs !== undefined && motes.length && width === nextWidth && height === nextHeight) return;
       // Seeded into an empty box (an area box mounts before it is measured): seed again at the real size.
       const wasEmpty = width <= 1 || height <= 1;
-      if (motes.length && !wasEmpty && (Math.abs(nextWidth - width) > 1 || Math.abs(nextHeight - height) > 1)) {
+      if (stillAtMs === undefined && motes.length && !wasEmpty && (Math.abs(nextWidth - width) > 1 || Math.abs(nextHeight - height) > 1)) {
         // Keep the scene, rescaled into the new box (no reseed pop on a sidebar drag).
         const sx = nextWidth / width, sy = nextHeight / height;
         for (const mote of motes) { mote.x *= sx; mote.y *= sy; }
@@ -266,6 +280,17 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio }:
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // A snapshot is seeded against the final geometry. A resize during
+      // layout draws the same moment at the new size.
+      if (stillAtMs !== undefined) {
+        random = seededRandom(`particles:${seed}`);
+        seedMotes();
+        const time = still ? 0 : stillAtMs;
+        const frames = Math.ceil(time / PARTICLE_FRAME_MS);
+        for (let index = 1; index <= frames; index++) advance(index * time / frames, time / frames / 1000);
+        draw(time);
+        return;
+      }
       if (!motes.length || (wasEmpty && width > 1 && height > 1)) seedMotes();
       draw(0);
     };
@@ -357,11 +382,7 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio }:
     let running = false;
     const sway = shape === "flake" ? 14 : shape === "petal" ? 22 : 0;
     const margin = shape === "streak" ? 60 : 14;
-    const frame = (now: number) => {
-      raf = requestAnimationFrame(frame);
-      if (now - last < 1000 / 30) return; // 30fps cap
-      const dt = Math.min(0.1, (now - (last || now)) / 1000);
-      last = now;
+    const advance = (now: number, dt: number) => {
       for (const mote of motes) {
         mote.x += mote.vx * dt; mote.y += mote.vy * dt;
         if (sway) { mote.x += Math.sin(mote.phase + now / 1300) * sway * mote.depth * scale * dt; mote.rot += mote.spin * dt; }
@@ -374,12 +395,22 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio }:
           spawn(mote, false);
         }
       }
+    };
+    const frame = (now: number) => {
+      raf = requestAnimationFrame(frame);
+      if (now - last < PARTICLE_FRAME_MS) return;
+      const dt = Math.min(0.1, (now - (last || now)) / 1000);
+      last = now;
+      advance(now, dt);
       draw(now);
     };
-    const start = () => { if (!running && !still) { running = true; last = 0; raf = requestAnimationFrame(frame); } };
+    const start = () => { if (!running && !still && stillAtMs === undefined) { running = true; last = 0; raf = requestAnimationFrame(frame); } };
     const stop = () => { running = false; cancelAnimationFrame(raf); };
     let resizeTimer = 0;
-    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(() => { window.clearTimeout(resizeTimer); resizeTimer = window.setTimeout(resize, 120); }) : null;
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(() => {
+      if (stillAtMs !== undefined) resize();
+      else { window.clearTimeout(resizeTimer); resizeTimer = window.setTimeout(resize, 120); }
+    }) : null;
     observer?.observe(canvas);
     resize();
     const syncRunning = () => {
@@ -391,7 +422,7 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio }:
     const unsubscribe = subscribeThemeMotion(syncRunning);
     syncRunning();
     return () => { stop(); unsubscribe(); observer?.disconnect(); modalObserver?.disconnect(); window.clearTimeout(resizeTimer); };
-  }, [params, seed, motion, colors, scale, pixelRatio]);
+  }, [params, seed, motion, colors, scale, pixelRatio, stillAtMs]);
   return <canvas ref={ref} className="ct-fx-particles" />;
 }
 
@@ -472,8 +503,8 @@ function byArea(nodes: Array<[EffectArea, ReactNode]>): ReactNode[] {
 
 // ---- The layer -----------------------------------------------------------------
 
-export function ThemeEffectsLayer(props: { spec: ThemeSpec | null; id?: CustomThemeId; motion: "on" | "paused"; /** Particle canvas resolution override (theme previews). */ pixelRatio?: number }): ReactElement | null {
-  const { spec, id, motion, pixelRatio } = props;
+export function ThemeEffectsLayer(props: { spec: ThemeSpec | null; id?: CustomThemeId; motion: "on" | "paused"; /** Particle canvas resolution override (theme previews). */ pixelRatio?: number; snapshot?: { time: number; grainUrl: string } }): ReactElement | null {
+  const { spec, id, motion, pixelRatio, snapshot } = props;
   const forcedColors = useMediaQueryMatch("(forced-colors: active)");
   const model = useMemo(() => {
     if (!spec || !id) return null;
@@ -495,14 +526,14 @@ export function ThemeEffectsLayer(props: { spec: ThemeSpec | null; id?: CustomTh
             [effectArea(p.aurora), p.aurora && <AuroraLayer key="aurora" params={p.aurora} scheme={model.scheme} />],
             [effectArea(p.grid), p.grid && <GridLayer key="grid" params={p.grid} scheme={model.scheme} />],
             [effectArea(p.starfield), p.starfield && <StarfieldLayer key="starfield" params={p.starfield} seed={model.seed} />],
-            [effectArea(p.particles), p.particles && <ParticlesCanvas key="particles" params={p.particles} seed={model.seed} motion={effectiveMotion} pixelRatio={pixelRatio} />],
+            [effectArea(p.particles), p.particles && <ParticlesCanvas key="particles" params={p.particles} seed={model.seed} motion={effectiveMotion} pixelRatio={pixelRatio} stillAtMs={snapshot?.time} />],
           ])}
         </div>
       )}
       {frontVisible && (
         <div className="ct-fx-layer ct-fx-front" data-motion={effectiveMotion} data-scheme={model.scheme} aria-hidden="true">
           {byArea([
-            [effectArea(p.grain), p.grain && <GrainLayer key="grain" params={p.grain} scheme={model.scheme} />],
+            [effectArea(p.grain), p.grain && <GrainLayer key="grain" params={p.grain} scheme={model.scheme} preparedUrl={snapshot?.grainUrl} />],
             [effectArea(p.scanlines), p.scanlines && <ScanlinesLayer key="scanlines" params={p.scanlines} scheme={model.scheme} />],
           ])}
         </div>

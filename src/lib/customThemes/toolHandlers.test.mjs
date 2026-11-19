@@ -72,7 +72,7 @@ function setup({ toolsEnabled = true, provider = "claude", sessionThreads = {}, 
   const host = {
     toolsEnabled: () => toolsEnabled,
     screenshotsEnabled: () => screenshotsEnabled !== false,
-    beginScreenshot: (threadId) => threadId ? () => true : null,
+    previewEnvironment: () => ENVIRONMENT,
     activeThemeId: () => active,
     applyTheme: (theme, ctx) => { applied.push({ theme, ...ctx }); active = theme; return { appliedTo: "app" }; },
     threadForSession: () => ({ provider, model: "opus" }),
@@ -324,7 +324,16 @@ test("sanitizer warnings from the engine reach the model", async () => {
 // ---- Layout report and screenshots ----------------------------------------------
 
 const LAYOUT = { window: { w: 1440, h: 900 }, regions: [{ region: ".sidebar", name: "sidebar", x: 0, y: 0, w: 300, h: 900 }] };
-const PNG = { ok: true, data: "iVBORw0KGgo=", mimeType: "image/png", width: 1280, height: 800 };
+const ENVIRONMENT = {
+  viewport: { width: 1440, height: 900 }, uiScale: 1, panes: { sidebar: 260, dock: 430, dockAuto: true, sidebarOpen: true },
+  chatFont: "system", effortSlider: "studio", logos: { openai: "openai", claude: "claude", cursor: "cube" },
+  motion: { animate: true, paused: false, reducedMotion: false },
+};
+/** A hidden preview that draws every job at its requested size. */
+const PREVIEW = async (job) => ({ ok: true, result: {
+  layout: LAYOUT, viewport: job.viewport,
+  ...(job.capture ? { image: { mimeType: "image/png", data: "iVBORw0KGgo=", width: 1280, height: 800 } } : {}),
+} });
 
 test("every applied change carries the layout report for the theme as drawn", async () => {
   const seen = [];
@@ -364,52 +373,64 @@ test("stripped customCss is measured again without the stylesheet", async () => 
   assert.deepEqual(created.layout, LAYOUT);
 });
 
-test("capture returns the picture with the layout report", async () => {
-  let captures = 0;
-  const { call } = setup({ deps: { inspect: () => LAYOUT, capture: async () => { captures++; return PNG; } } });
+test("capture draws the conversation's exact revision in a hidden preview and returns its picture and layout", async () => {
+  const jobs = [];
+  const { call } = setup({ deps: { preview: async (job) => { jobs.push(job); return PREVIEW(job); } } });
   const created = await call("create_custom_theme", NEBULA);
   const shot = await call("capture_app_screenshot");
-  assert.equal(captures, 1);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].capture, true);
+  assert.equal(jobs[0].view, "conversation");
+  assert.equal(jobs[0].theme.custom.id, created.themeId);
+  assert.equal(jobs[0].theme.custom.revision, created.revision);
+  assert.deepEqual(jobs[0].viewport, ENVIRONMENT.viewport);
   assert.equal(shot.captured, true);
-  assert.deepEqual(shot.image, { data: PNG.data, mimeType: "image/png" });
+  assert.deepEqual(shot.image, { data: "iVBORw0KGgo=", mimeType: "image/png" });
   assert.equal(shot.width, 1280);
   assert.equal(shot.themeId, created.themeId);
+  assert.equal(shot.revision, created.revision);
+  assert.equal(shot.layoutAvailable, true);
   assert.deepEqual(shot.layout, LAYOUT);
-  assert.match(shot.note, /don't repeat/);
+  assert.deepEqual(shot.dimensions.window, ENVIRONMENT.viewport);
+  assert.equal(shot.scenario.view, "conversation");
+  assert.match(shot.note, /hidden preview of Mythra Code/);
 });
 
 test("capture refuses when the user doesn't let models see the app, or theme tools are off", async () => {
-  let captures = 0;
-  const capture = async () => { captures++; return PNG; };
-  const off = setup({ screenshotsEnabled: false, deps: { capture } });
-  await assert.rejects(off.call("capture_app_screenshot"), /Let models see the app/);
-  const toolsOff = setup({ toolsEnabled: false, deps: { capture } });
+  let previews = 0;
+  const preview = async (job) => { previews++; return PREVIEW(job); };
+  const off = setup({ screenshotsEnabled: false, deps: { preview } });
+  await assert.rejects(off.call("capture_app_screenshot"), /Let models see theme previews/);
+  const toolsOff = setup({ toolsEnabled: false, deps: { preview } });
   await assert.rejects(toolsOff.call("capture_app_screenshot"), /turned off theme tools/);
-  assert.equal(captures, 0);
+  assert.equal(previews, 0);
 });
 
-test("capture sends no picture to a runtime that drops tool images", async () => {
-  let captures = 0;
-  const { call } = setup({ provider: "cursor", deps: { inspect: () => LAYOUT, capture: async () => { captures++; return PNG; } } });
+test("capture asks for no picture for a runtime that drops tool images, but still measures", async () => {
+  const jobs = [];
+  const { call } = setup({ provider: "cursor", deps: { preview: async (job) => { jobs.push(job); return PREVIEW(job); } } });
   const shot = await call("capture_app_screenshot");
-  assert.equal(captures, 0);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].capture, false);
+  assert.equal(jobs[0].theme.custom, null);
   assert.equal(shot.captured, false);
   assert.equal(shot.image, undefined);
   assert.deepEqual(shot.layout, LAYOUT);
-  assert.match(shot.note, /does not pass pictures/);
+  assert.match(shot.note, /supports text results/);
   assert.equal(providerTakesImages("claude"), true);
   assert.equal(providerTakesImages("openai"), true);
   assert.equal(providerTakesImages("openrouter", true), true);
   assert.equal(providerTakesImages("cursor"), false);
 });
 
-test("capture falls back to text when the platform can't take a picture", async () => {
-  const unavailable = setup({ deps: { capture: async () => ({ ok: false, unavailable: true, error: "Screenshots are not available on this system." }) } });
+test("capture falls back to text when the preview can't be drawn, never to the app window", async () => {
+  const unavailable = setup({ deps: { preview: async () => ({ ok: false, unavailable: true, error: "Previews are not available on this system." }) } });
   const shot = await unavailable.call("capture_app_screenshot");
   assert.equal(shot.captured, false);
   assert.match(shot.note, /not available on this system/);
+  assert.match(shot.note, /layout report from your last theme change/);
   const missing = setup();
   assert.match((await missing.call("capture_app_screenshot")).note, /not available here/);
-  const slow = setup({ deps: { capture: () => new Promise(() => {}), captureWaitMs: 20 } });
+  const slow = setup({ deps: { preview: () => new Promise(() => {}), previewWaitMs: 20 } });
   assert.match((await slow.call("capture_app_screenshot")).note, /did not answer in time/);
 });

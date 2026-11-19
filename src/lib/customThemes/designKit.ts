@@ -216,7 +216,7 @@ export function buildDesignKit(): DesignKit {
       "1. Read this kit once, including regions (the map of the app: real selectors, which tokens paint what, where effects show).",
       "2. create_custom_theme with name, base, tokens (bg, text, accent at least), and optionally effects/typography. Reach for curated effects (with area to pick a side) before customCss.",
       "3. Read adjustments and warnings in the result; tell the user in plain words what was nudged for readability. A customCss warning that a rule was dropped means it never reached the screen.",
-      "4. Read `layout` in every create/update/undo/apply result: real region boxes, how many elements each customCss selector matched (0 = hits nothing; use didYouMean) and whether each decoration and effect is visible (with why and fix). After a big visual change, or when layout says something is partly hidden, call capture_app_screenshot to see the window (use it only to check the theme; never repeat what it shows).",
+      "4. Read `layout` in every create/update/undo/apply result for region boxes, customCss selector matches and decoration and effect visibility. Use didYouMean when a selector matched zero elements. After a big visual change or when layout says something is partly hidden, call capture_app_screenshot for a hidden preview with sample content. Set view to conversation or changes.",
       "5. For any later change use update_custom_theme with a small patch; use undo_custom_theme to go back.",
     ],
     spec: {
