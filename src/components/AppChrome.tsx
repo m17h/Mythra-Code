@@ -1,3 +1,5 @@
+// `data-ct-control` marks the buttons a custom theme may give bounded
+// hover/focus motion (src/lib/customThemes/previewScenes.ts CONTROL_TARGETS).
 // The window chrome around the shared views, written once. App.tsx fills it
 // with live state; the hidden theme preview (src/themePreview) fills it with
 // sample content, so a theme preview always draws this exact markup.
@@ -59,7 +61,7 @@ export function SidebarBrand({ machineSwitcher, onHide }: { machineSwitcher?: Re
     </div>
     <span>Mythra Code</span>
     {machineSwitcher}
-    <button className="icon-button subtle collapse-button" onClick={onHide} title={withShortcut("Hide sidebar", "toggleSidebar")} aria-label="Hide sidebar" aria-keyshortcuts="Meta+Backslash Control+Backslash">
+    <button className="icon-button subtle collapse-button" data-ct-control="sidebar-icon" onClick={onHide} title={withShortcut("Hide sidebar", "toggleSidebar")} aria-label="Hide sidebar" aria-keyshortcuts="Meta+Backslash Control+Backslash">
       <PanelLeftClose size={17} />
     </button>
   </div>;
@@ -72,7 +74,7 @@ export function ShowSidebarButton({ tucked, onShow }: { tucked: boolean; onShow:
 }
 
 export function NewThreadButton({ onClick, disabled, title }: { onClick: () => void; disabled?: boolean; title: string }) {
-  return <button className="new-thread-button" onClick={onClick} disabled={disabled} title={title}>
+  return <button className="new-thread-button" data-ct-control="new-thread" onClick={onClick} disabled={disabled} title={title}>
     <Plus size={16} />
     <span>New thread</span>
     <kbd>{formatShortcut("newThread")}</kbd>
@@ -81,7 +83,7 @@ export function NewThreadButton({ onClick, disabled, title }: { onClick: () => v
 
 export function SidebarFooter({ label, onOpen, onPreload }: { label: string; onOpen: () => void; onPreload?: () => void }) {
   return <div className="sidebar-footer">
-    <button className="sidebar-settings" aria-keyshortcuts="Meta+Comma Control+Comma" title={withShortcut("Settings", "settings")} onClick={onOpen} onMouseEnter={onPreload} onFocus={onPreload} onPointerDown={onPreload}>
+    <button className="sidebar-settings" data-ct-control="sidebar-settings" aria-keyshortcuts="Meta+Comma Control+Comma" title={withShortcut("Settings", "settings")} onClick={onOpen} onMouseEnter={onPreload} onFocus={onPreload} onPointerDown={onPreload}>
       <Settings size={16} />
       <span>{label}</span>
       <kbd aria-hidden="true">{formatShortcut("settings")}</kbd>
@@ -128,7 +130,7 @@ export function PaletteTrigger({ onClick }: { onClick: () => void }) {
 
 /** The top bar's Tools toggle for this machine's project. */
 export function ToolsToggleButton({ open, onClick }: { open: boolean; onClick: () => void }) {
-  return <button className={`workspace-tools-trigger studio-toggle ${open ? "active" : ""}`} onClick={onClick} title={`${open ? "Hide" : "Show"} Tools (${workspaceShortcutLabel()})`} aria-label={open ? "Hide Tools" : "Show Tools"} aria-keyshortcuts="Meta+B Control+B" aria-expanded={open}>
+  return <button className={`workspace-tools-trigger studio-toggle ${open ? "active" : ""}`} data-ct-control="tools-toggle" onClick={onClick} title={`${open ? "Hide" : "Show"} Tools (${workspaceShortcutLabel()})`} aria-label={open ? "Hide Tools" : "Show Tools"} aria-keyshortcuts="Meta+B Control+B" aria-expanded={open}>
     <PanelRight size={17} />
     <span>Tools</span>
     <kbd>{workspaceShortcutLabel()}</kbd>
@@ -149,7 +151,7 @@ export function ComposerCaption({ contextPercent, costEstimate }: { contextPerce
 }
 
 export function AttachButton({ count, onClick }: { count: number; onClick: () => void }) {
-  return <button type="button" className={`toolbar-button attach-button ${count ? "has-attachments" : ""}`} onClick={onClick} title="Attach files or images" aria-label={count ? `Attach, ${count} attached` : "Attach"}>
+  return <button type="button" className={`toolbar-button attach-button ${count ? "has-attachments" : ""}`} data-ct-control="attach" onClick={onClick} title="Attach files or images" aria-label={count ? `Attach, ${count} attached` : "Attach"}>
     <Paperclip size={14} aria-hidden="true" />
     {count ? count : "Attach"}
   </button>;

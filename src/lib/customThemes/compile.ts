@@ -19,7 +19,7 @@ import type { ResolvedTokens } from "./baseTokens";
 import { formatColor, mixColors, parseColor, shiftLightness, withAlpha, type Rgba } from "./color";
 import { EFFECTS, effectSeconds, resolveEffectParams, type EffectPalette } from "./effects";
 import { replicaScope } from "./replicaCss";
-import { customCssScope, sanitizeCustomCss } from "./sanitizeCss";
+import { ACCENT_FLOW_ANIMATION_VAR, CONTROL_GROW_ANIMATION_PREFIX, customCssScope, sanitizeCustomCss } from "./sanitizeCss";
 import { EFFECT_TYPES, FONT_STACKS, KIT_TOKENS, seeThroughAlpha, type CustomThemeId, type EffectType, type ThemeSpec } from "./spec";
 import { resolveTheme, type ResolvedTheme } from "./validate";
 
@@ -264,7 +264,7 @@ function accentEffectCss(spec: ThemeSpec, resolved: ResolvedTheme, id: CustomThe
     // Only these controls use the onAccent ink that was checked against the gradient.
     for (const hook of [H.send, H.accentPrimary, H.switchOn]) {
       rules.push(`${scope} ${hook} { background-image: var(--ct-fx-flow); background-size: 300% 100%; background-position: 0% 50%; }`);
-      if (seconds) animate(`${motion} ${hook}`, `ct-fx-flow ${seconds}s ease-in-out infinite alternate`);
+      if (seconds) moving.push(`${motion} ${hook} { ${ACCENT_FLOW_ANIMATION_VAR}: ct-fx-flow ${seconds}s ease-in-out infinite alternate; animation: var(${ACCENT_FLOW_ANIMATION_VAR}); }`);
     }
   }
 
@@ -374,7 +374,7 @@ export function compileThemeCss(spec: ThemeSpec, opts: CompileOptions): Compiled
     accent.css, typographyCss(spec, scope),
   ].filter(Boolean).join("\n");
 
-  const customMoves = /animation-name:/.test(customCss) && spec.motion.enabled;
+  const customMoves = spec.motion.enabled && (customCss.includes("animation-name:") || customCss.includes(`@keyframes ${CONTROL_GROW_ANIMATION_PREFIX}`));
   return {
     css: customCss ? `${tokenCss}\n/* customCss */\n${customCss}` : tokenCss,
     tokenCss,

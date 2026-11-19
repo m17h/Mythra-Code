@@ -20,7 +20,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Check, ChevronDown, Circle, CircleAlert, CircleStop, Code2, Cpu, Keyboard, TextCursorInput, UsersRound, Download, Folder, FolderOpen, Gauge, GitBranch, Hand, Wrench, GitFork, GitPullRequest, ListFilter, LoaderCircle, MessageSquare, NotebookPen, Palette, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, RotateCcw, Search, Settings, ShieldAlert, Shrink, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, ChevronDown, Circle, CircleAlert, CircleStop, Cpu, Keyboard, TextCursorInput, UsersRound, Download, FolderOpen, Gauge, GitBranch, Hand, Wrench, GitFork, GitPullRequest, ListFilter, LoaderCircle, MessageSquare, NotebookPen, Palette, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, RotateCcw, Search, Settings, ShieldAlert, Shrink, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, RuntimeRestartBusyError, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeDefaultModel, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging, providerAuthGeneration } from "./lib/providerAuth";
@@ -44,7 +44,6 @@ import { compactSidebarIndex, countActiveThreadsByWorkspace, filterThreadsByKind
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isExcludeTurnsUnsupported, isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
 import { RowMenu } from "./components/RowMenu";
-import { AnimatedMythraLogo } from "./components/AnimatedMythraLogo";
 import { confirmDialog, useConfirmStore } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
 import { MachineSwitcher } from "./components/remote/MachineSwitcher";
@@ -180,7 +179,7 @@ import { FOCUS_APPROVAL_EVENT, OPEN_MODEL_PICKER_EVENT, formatShortcut, withShor
 import { visibleModelTrigger } from "./hooks/useMenuKeyboard";
 import { missingProviderRuntime } from "./lib/statusLabels";
 import { STUDIO_TAB_IDS } from "./lib/studioTabs";
-import { STUDIO_TAB_META } from "./components/studioTabMeta";
+import { ThreadLanding, WelcomeLanding } from "./components/ThreadLanding";
 import type { PaletteCommand } from "./components/CommandPalette";
 import { useThreadHealth } from "./hooks/useThreadHealth";
 import { useCodexEvents } from "./hooks/useCodexEvents";
@@ -10907,34 +10906,20 @@ export default function App() {
         </div>
 
         {!activeWorkspace ? (
-          <section className="welcome-screen">
-            {error && (
-              <div className="error-banner" role="alert">
-                <span>{error}</span>
-                <div className="error-banner-actions">
-                  {promptRepairActions}
-                  {errorSuggestsSettings && !promptRepairActions.length && <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>{errorSettingsLabel}</button>}
-                  <button onClick={() => setError(null)} aria-label="Dismiss error"><X size={14} /></button>
+          <WelcomeLanding
+            banner={error && (
+                <div className="error-banner" role="alert">
+                  <span>{error}</span>
+                  <div className="error-banner-actions">
+                    {promptRepairActions}
+                    {errorSuggestsSettings && !promptRepairActions.length && <button className="error-settings" onClick={() => openSettings(errorSettingsSection ?? "system")}>{errorSettingsLabel}</button>}
+                    <button onClick={() => setError(null)} aria-label="Dismiss error"><X size={14} /></button>
+                  </div>
                 </div>
-              </div>
             )}
-            <div className="welcome-orbit">
-              <Code2 size={34} />
-            </div>
-            <h1>Choose how to work</h1>
-            <p>Open a project folder for coding, or chat without one.</p>
-            <div className="welcome-actions">
-              <button className="primary-button large" onClick={addProject}>
-                <FolderOpen size={17} /> Open project
-              </button>
-              <button
-                className="secondary-button"
-                onClick={() => setWorkspaceMode("chat")}
-              >
-                <MessageSquare size={16} /> Open Chats
-              </button>
-            </div>
-          </section>
+            onOpenProject={addProject}
+            onOpenChats={() => setWorkspaceMode("chat")}
+          />
         ) : (
           <>
             <section className="conversation" inert={reviewWideShown || undefined}>
@@ -10949,11 +10934,14 @@ export default function App() {
               {visibleStartingPrompt && timelineEmpty ? (
                 <PendingFirstPrompt prompt={visibleStartingPrompt} />
               ) : timelineEmpty || !activeThreadId ? (
-                <div className={`thread-empty-state${threadLoadFailure && !activeThread ? " after-unavailable" : ""}`}>
-                  {/* D10/M04: a thread that can't open keeps its title in the
-                      stage with its own recovery row; the landing below is
-                      labelled as a separate new thread. */}
-                  {threadLoadFailure && !activeThread && (
+                // D10/M04: a thread that can't open keeps its title in the
+                // stage with its own recovery row; the landing below is
+                // labelled as a separate new thread.
+                <ThreadLanding
+                  isChat={Boolean(activeWorkspace.isChat)}
+                  project={activeProject ? { name: activeProject.name, path: activeProject.path } : undefined}
+                  unavailable={Boolean(threadLoadFailure && !activeThread)}
+                  notice={threadLoadFailure && !activeThread && (
                     <section className="thread-unavailable-panel" role="alert" aria-labelledby="thread-unavailable-title">
                       <div className="thread-unavailable-head">
                         <CircleAlert size={16} aria-hidden="true" />
@@ -10970,86 +10958,21 @@ export default function App() {
                       </div>
                     </section>
                   )}
-                  {pendingHandoffForWorkspace && (
+                  banner={pendingHandoffForWorkspace && (
                     <div className="handoff-draft-banner">
                       <GitFork size={15} />
                       <span><strong>Provider handoff ready</strong><small>From {providerLabel(pendingHandoffForWorkspace.sourceProvider)} · review the visible context below, then send it to {providerLabel(pendingHandoffForWorkspace.targetProvider)}.</small></span>
                     </div>
                   )}
-                  <AnimatedMythraLogo />
-                  <h1>{threadLoadFailure && !activeThread ? "Or start a separate thread" : activeWorkspace.isChat ? "What should we talk about?" : "What should we build?"}</h1>
-                  <p>{threadLoadFailure && !activeThread
-                    ? <>A new thread in <span className="thread-empty-project" title={activeWorkspace.isChat ? undefined : activeProject?.path}>{activeWorkspace.isChat ? "Chats" : activeProject?.name}</span>; the one above stays in the sidebar.</>
-                    : activeWorkspace.isChat ? "A chat with no project folder attached." : <>Start a new thread in <span className="thread-empty-project" title={activeProject?.path}>{activeProject?.name}</span>.</>}</p>
-                  {!activeWorkspace.isChat && !activeThread && (
-                    <div className="isolation-choice" role="group" aria-label="Where this thread works">
-                      <button className={!draftThreadIsolated ? "active" : ""} aria-pressed={!draftThreadIsolated} onClick={() => setDraftThreadIsolated(false)} title={`Work directly in ${activeProject?.name}`}>
-                        <Folder size={14} />
-                        <span><strong>Shared project</strong></span>
-                      </button>
-                      {workspaceGitInfo && !workspaceGitInfo.error && (
-                        (!workspaceGitInfo.isRepo || (workspaceGitInfo.isRoot && !workspaceGitInfo.hasCommit)) ? (
-                          <button
-                            className="git-initialize-choice"
-                            onClick={() => void initializeActiveProjectGit()}
-                            disabled={gitInitializing}
-                            aria-busy={gitInitializing}
-                            title="Create a local Git repository and initial snapshot. Nothing is pushed."
-                          >
-                            {gitInitializing ? <LoaderCircle className="spin" size={14} /> : <GitBranch size={14} />}
-                            <span>
-                              <strong>{gitInitializing ? "Preparing Git…" : workspaceGitInfo.isRepo ? "Create initial Git snapshot" : "Initialize Git"}</strong>
-                            </span>
-                          </button>
-                        ) : (
-                          <button
-                            className={draftThreadIsolated ? "active" : ""}
-                            aria-pressed={draftThreadIsolated}
-                            onClick={() => setDraftThreadIsolated(true)}
-                            disabled={!workspaceGitInfo.isRoot || !workspaceGitInfo.hasCommit}
-                            title={!workspaceGitInfo.isRoot ? "Open the Git repository root to use an isolated worktree" : !workspaceGitInfo.hasCommit ? "Requires at least one Git commit" : "A private branch and worktree; apply or merge when ready"}
-                          >
-                            <GitBranch size={14} />
-                            <span>
-                              <strong className="isolated-worktree-title">Isolated worktree</strong>
-                            </span>
-                          </button>
-                        )
-                      )}
-                      {!workspaceGitInfo && (
-                        <button disabled title="Checking this project's Git status">
-                          <LoaderCircle className="spin" size={14} />
-                          <span>
-                            <strong>Checking Git…</strong>
-                          </span>
-                        </button>
-                      )}
-                      {workspaceGitInfo?.error && (
-                        <button disabled title={`${workspaceGitInfo.error}. Check that the project folder still exists.`}>
-                          <GitBranch size={14} />
-                          <span>
-                            <strong>Git unavailable</strong>
-                          </span>
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  {!activeWorkspace.isChat && !activeThread && workspaceGitInfo?.isRepo && workspaceGitInfo.isRoot && workspaceGitInfo.hasCommit && (
-                    <small className="isolation-caption" aria-live="polite">{draftThreadIsolated ? "On a private branch; apply or merge when ready." : `Edits go straight into ${activeProject?.name}.`}</small>
-                  )}
-                  {!activeWorkspace.isChat && (
-                    // Opus R6 D11: each link is named and drawn like the Tools
-                    // tab it opens, so it teaches where it goes.
-                    <div className="empty-state-actions" role="group" aria-label="Open in Tools">
-                      {(["files", "terminal", "changes"] as const).map((tab) => {
-                        const { label, icon: TabIcon } = STUDIO_TAB_META[tab];
-                        return <button key={tab} onClick={() => openStudio(tab)} title={`Open ${label} in Tools`}>
-                          <TabIcon size={14} /> {label}
-                        </button>;
-                      })}
-                    </div>
-                  )}
-                </div>
+                  isolation={activeThread ? undefined : {
+                    isolated: draftThreadIsolated,
+                    onChange: setDraftThreadIsolated,
+                    git: workspaceGitInfo,
+                    initializing: gitInitializing,
+                    onInitializeGit: () => void initializeActiveProjectGit(),
+                  }}
+                  onOpenTool={activeWorkspace.isChat ? undefined : openStudio}
+                />
               ) : (
                 <ErrorBoundary label="conversation" key={timelineView.attempt} resetKey={activeThreadId} onError={() => reportThemeRenderErrorRef.current()} onRetry={() => setTimelineView((current) => ({ View: lazy(loadChatTimeline), attempt: current.attempt + 1 }))}>
                   <Suspense

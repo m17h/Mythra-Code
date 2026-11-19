@@ -11,6 +11,7 @@
 import { parseColor } from "./color";
 import { EFFECTS } from "./effects";
 import { CUSTOM_CSS_STYLE_ID } from "./probe";
+import { CONTROL_GUARD } from "./sanitizeCss";
 
 // ---- Regions -----------------------------------------------------------------
 
@@ -64,6 +65,7 @@ export function splitSelectorList(text: string): string[] {
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (quote) { if (c === "\\") i++; else if (c === quote) quote = ""; continue; }
+    if (c === "\\") { i++; continue; }
     if (c === "\"" || c === "'") quote = c;
     else if (c === "(" || c === "[") depth++;
     else if (c === ")" || c === "]") depth = Math.max(0, depth - 1);
@@ -73,7 +75,66 @@ export function splitSelectorList(text: string): string[] {
   return out.filter(Boolean);
 }
 
-const DYNAMIC = /:(hover|focus-within|focus-visible|focus|active|visited|target)(?![\w-])/g;
+const STATE_NAMES = new Set(["hover", "focus-within", "focus-visible", "focus", "active", "visited", "target"]);
+/** Legacy single-colon pseudo-elements. */
+const LEGACY_PSEUDO_ELEMENTS = new Set(["before", "after", "first-line", "first-letter"]);
+
+/**
+ * Rewrite the interaction-state pseudo-classes of a selector, token by token:
+ * quoted strings, escapes and attribute values are copied untouched, and
+ * every state is seen with its nesting depth (0: the selector itself; more:
+ * inside :not()/:is()/:where()) and whether it follows a pseudo-element.
+ * `replace` returns the new text for that state, or null to keep it.
+ */
+export function rewriteSelectorStates(
+  selector: string,
+  replace: (state: string, depth: number, afterPseudoElement: boolean) => string | null,
+): string {
+  let out = "";
+  let depth = 0;
+  const pseudoElement = [false];
+  let attribute = false;
+  for (let i = 0; i < selector.length;) {
+    const c = selector[i];
+    if (c === "\\") { out += selector.slice(i, i + 2); i += 2; continue; }
+    if (c === "\"" || c === "'") {
+      let j = i + 1;
+      while (j < selector.length && selector[j] !== c) j += selector[j] === "\\" ? 2 : 1;
+      out += selector.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    if (c === "[") attribute = true;
+    if (attribute) {
+      if (c === "]") attribute = false;
+      out += c;
+      i++;
+      continue;
+    }
+    if (c === "(") { pseudoElement[++depth] = pseudoElement[depth - 1]; out += c; i++; continue; }
+    if (c === ")") { depth = Math.max(0, depth - 1); out += c; i++; continue; }
+    if (/[\s,>+~]/.test(c) && (depth === 0 || !pseudoElement[depth - 1])) pseudoElement[depth] = false;
+    if (c === ":") {
+      const element = selector[i + 1] === ":";
+      const start = i + (element ? 2 : 1);
+      const name = /^-?[a-zA-Z_][\w-]*/.exec(selector.slice(start))?.[0] ?? "";
+      const end = start + name.length;
+      const lower = name.toLowerCase();
+      if (element || LEGACY_PSEUDO_ELEMENTS.has(lower)) {
+        pseudoElement[depth] = true;
+      } else if (STATE_NAMES.has(lower) && !/[(\\\u0080-\uffff]/.test(selector[end] ?? "")) {
+        const next = replace(lower, depth, pseudoElement[depth]);
+        if (next !== null) { out += next; i = end; continue; }
+      }
+      out += selector.slice(i, end);
+      i = end;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
 
 export interface QueryableSelector {
   /** Selector for querySelectorAll: pseudo-element and interaction states removed. */
@@ -93,12 +154,17 @@ export function queryableSelector(selector: string): QueryableSelector {
     pseudo = name === "before" || name === "after" ? name : "other";
     base = base.slice(0, match.index).trim();
   }
-  const states = Array.from(new Set(Array.from(base.matchAll(DYNAMIC), (m) => `:${m[1]}`)));
-  // Only strip states outside :not(...), where removing them keeps a valid selector.
-  if (states.length && !/:not\(/i.test(base)) base = base.replace(DYNAMIC, "");
+  const states = new Set<string>();
+  // Strip the states the selector itself needs (depth 0), so it can be
+  // matched at rest. States inside :not()/:is() stay: removing them would
+  // change the selector's meaning, and at rest they evaluate as written.
+  base = rewriteSelectorStates(base, (state, depth) => {
+    states.add(`:${state}`);
+    return depth > 0 ? null : "";
+  });
   base = base.trim();
   if (!base || /[>+~]$/.test(base)) base = `${base} *`.trim();
-  return { base, ...(pseudo ? { pseudo } : {}), states };
+  return { base, ...(pseudo ? { pseudo } : {}), states: [...states] };
 }
 
 /** The model's own selector: the scope prefix the sanitizer added is removed. */
@@ -107,6 +173,9 @@ export function displaySelector(full: string, scopes: readonly string[]): string
   for (const scope of [...scopes].sort((a, b) => b.length - a.length)) {
     if (text.startsWith(scope)) { text = text.slice(scope.length).trim(); break; }
   }
+  // The engine's opt-in guard on control grows is not the model's selector;
+  // the match query keeps it (see inspectLayout).
+  text = text.split(CONTROL_GUARD).join("");
   return text || ".app-shell";
 }
 
@@ -466,6 +535,14 @@ function styleRules(sheet: CSSStyleSheet): Array<{ rule: CSSStyleRule; condition
   return out;
 }
 
+/** Expose the hidden fixture's paint order during synchronous hit tests only. Keep any inert subtrees intact. */
+export function withFixtureHitTesting<T>(shell: HTMLElement, run: () => T): T {
+  const inert = shell.getAttribute("inert");
+  if (inert === null) return run();
+  shell.removeAttribute("inert");
+  try { return run(); } finally { shell.setAttribute("inert", inert); }
+}
+
 /** Temporarily make everything hit-testable so stacking can be read with elementsFromPoint. */
 function withHitTesting<T>(run: () => T): T {
   const style = document.createElement("style");
@@ -739,9 +816,10 @@ export interface InspectOptions {
   /** The plain scope: a motion-only selector is also counted without the motion gate, so paused animations don't read as "matches nothing". */
   queryScope?: string;
   motion?: { paused?: boolean; reducedMotion?: boolean };
+  fixture?: boolean;
 }
 
-/** Measure the live window and build the `layout` report. Never throws. */
+/** Measure a window and build the `layout` report. Never throws. */
 export function inspectLayout(shell: HTMLElement, options: InspectOptions = {}): LayoutReport | null {
   try {
     const win = { w: window.innerWidth, h: window.innerHeight };
@@ -758,7 +836,7 @@ export function inspectLayout(shell: HTMLElement, options: InspectOptions = {}):
     const customCss: LayoutFacts["customCss"] = !spec?.customCss?.trim() ? "none" : sheet && !sheet.disabled && styleEl?.textContent?.trim() ? "on" : "off";
     const rules: RuleFact[] = [];
     const decorations: DecorationFact[] = [];
-    return withHitTesting(() => {
+    const measure = () => withHitTesting(() => {
       if (customCss === "on" && sheet) {
         const seen = new Set<string>();
         for (const { rule, condition } of styleRules(sheet)) {
@@ -793,6 +871,7 @@ export function inspectLayout(shell: HTMLElement, options: InspectOptions = {}):
       const effects = spec ? effectFacts(shell, spec, regions, win, cache) : [];
       return buildLayoutReport({ window: win, regions, rules, decorations, effects, customCss, motion: options.motion }, known);
     });
+    return options.fixture ? withFixtureHitTesting(shell, measure) : measure();
   } catch {
     return null;
   }

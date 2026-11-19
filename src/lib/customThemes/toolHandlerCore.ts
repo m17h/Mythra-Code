@@ -7,15 +7,24 @@
 // the conversation's focus → apply through the app host (P2) → probe the
 // real screen for readability → measure the layout (which selectors matched
 // which regions, whether decorations and effects can be seen) → answer the
-// model with what changed. capture_app_screenshot draws one exact theme
-// revision in a hidden preview with sample content (never the user's window)
-// and returns its picture and layout when the user allows it.
+// model with what changed. Every result says where its layout came from:
+// the user's own window (live, whatever is on screen) or, when the theme is
+// not on screen, a layout-only hidden preview. capture_app_screenshot draws
+// one exact theme revision in a hidden preview of a fixed scene with sample
+// content (never the user's window), optionally with one control in a
+// mirrored hover/focus/press state, and returns its picture and layout when
+// the user allows it.
 
 import type { Provider, ThemeName } from "../../types";
 import { SPEC_KEYS, type ContrastAdjustment, type CustomThemeId, type NormalizeResult, type ThemeAuthor, type ThemeId, type ThemeSpec, type ValidationIssue } from "./spec";
 import type { CommitMeta, CreateMeta, CustomThemeLibrary, CustomThemeRecord, CustomThemeRevision, StoreResult, ThemeHost, UndoOptions, UndoResult } from "./store";
 import { THEME_DESIGN_GUIDE } from "./designGuide";
-import { PREVIEW_VIEW_DESCRIPTIONS, type PreviewJob, type PreviewOutcome } from "./previewJob";
+import type { PreviewInteractionRequest, PreviewJob, PreviewOutcome } from "./previewJob";
+import { customCssMoves } from "./sanitizeCss";
+import {
+  CONTROL_TARGET_IDS, controlTarget, isControlTargetId, isPreviewInteraction, isPreviewScene, PREVIEW_INTERACTIONS,
+  PREVIEW_SCENE_IDS, PREVIEW_SCENES, type ControlTargetId, type PreviewInteraction,
+} from "./previewScenes";
 
 export const THEME_TOOLS = [
   "get_theme_design_kit",
@@ -52,11 +61,17 @@ export interface ThemeToolContext {
   watchAuthorization?(check: () => void): () => void;
   /** The bridge still owns this exact relay before a preview reaches its model. */
   checkAuthorization?(): Promise<boolean>;
+  /**
+   * The turn-level authority a hidden preview needs when a theme change asks
+   * for one (a layout-only fallback). Absent: the fields above are used.
+   */
+  previewAuthority?: Pick<ThemeToolContext, "stillAuthorized" | "watchAuthorization" | "checkAuthorization">;
 }
 
 export interface ProbeOutcome {
   ok: boolean;
   failures: Array<{ landmark: string; ratio: number; fg: string; bg: string; selectorHint?: string; causedByCustomCss?: boolean }>;
+  checked?: number;
   /** At least one failure goes away without customCss (absent: unknown). */
   customCssCulprit?: boolean;
 }
@@ -76,7 +91,7 @@ export interface ThemeToolDeps {
   applyPatch(current: ThemeSpec, patch: unknown): NormalizeResult;
   diff(before: ThemeSpec, after: ThemeSpec): string[];
   designKit(): unknown;
-  probe(shell: HTMLElement): Promise<ProbeOutcome>;
+  probe(shell: HTMLElement, signal: AbortSignal, isCurrent: () => boolean): Promise<ProbeOutcome | null>;
   library(): CustomThemeLibrary;
   create(spec: ThemeSpec, meta: CreateMeta): StoreResult;
   commit(id: CustomThemeId, spec: ThemeSpec, meta: CommitMeta): StoreResult;
@@ -97,6 +112,8 @@ export interface ThemeToolDeps {
   preview?(job: PreviewJob, signal: AbortSignal): Promise<PreviewOutcome>;
   /** How long a preview may take (ms). */
   previewWaitMs?: number;
+  /** How long a theme change waits for a layout-only hidden preview (ms). */
+  layoutPreviewWaitMs?: number;
 }
 
 const LIGHT_BUILT_INS: readonly string[] = ["light-mythra", "daylight", "atari"];
@@ -166,13 +183,42 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   });
 }
 
+// ---- Where a result's layout came from (layoutFrom) -------------------------------
+
+const SCENE_HINT = "capture_app_screenshot draws any listed scene (new thread, new chat, welcome, Tools tabs, Settings > Appearance, command palette) and control hover/focus/press states from sample data, without the user navigating.";
+
+/** Measured in the user's own window, after the live readability check. */
+function liveLayoutSource(readability: string): Record<string, unknown> {
+  return {
+    source: "live-window",
+    shows: "the user's own window as it is right now: only the thread, project or screen they have open, so regions and selectors for other screens can show 0 matches",
+    readabilityCheck: readability,
+    note: SCENE_HINT,
+  };
+}
+
+export function noLayoutSource(why: string): Record<string, unknown> {
+  return { source: "none", why, note: SCENE_HINT };
+}
+
+const NOT_APPLIED = noLayoutSource("the revision was saved without applying it");
+
+/** The preview page's report: its layout, plus what it drew under `preview`. */
+function splitPreviewLayout(value: Record<string, unknown> | null): { layout: Record<string, unknown> | null; drawn: Record<string, unknown> | null } {
+  if (!value) return { layout: null, drawn: null };
+  const { preview, ...layout } = value;
+  const drawn = preview && typeof preview === "object" && !Array.isArray(preview) ? preview as Record<string, unknown> : null;
+  return { layout: Object.keys(layout).length ? layout : null, drawn };
+}
+
 async function drawPreview(
   render: NonNullable<ThemeToolDeps["preview"]>,
   job: PreviewJob,
   timeoutMs: number,
-  context: ThemeToolContext,
+  outer: ThemeToolContext,
   host: ThemeHost,
 ): Promise<PreviewOutcome | null> {
+  const context = outer.previewAuthority ?? outer;
   const controller = new AbortController();
   const { signal } = controller;
   let refusal: string | undefined;
@@ -196,10 +242,13 @@ async function drawPreview(
     if (refusal) return refuse(refusal);
     const aborted = new Promise<null>((resolve) => signal.addEventListener("abort", () => resolve(null), { once: true }));
     const draw = async () => {
+      if (context.checkAuthorization && !await context.checkAuthorization()) revoke(conversationEnded);
+      check();
+      if (signal.aborted) return null;
       const outcome = await render(job, signal);
       check();
       if (signal.aborted) return null;
-      if (context.checkAuthorization && !await context.checkAuthorization()) revoke(conversationEnded);
+      if (outcome.ok && context.checkAuthorization && !await context.checkAuthorization()) revoke(conversationEnded);
       check();
       return signal.aborted ? null : outcome;
     };
@@ -263,26 +312,48 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
   /**
    * Apply, wait for the new look to paint, and probe real landmarks. A
    * stylesheet that makes text unreadable is switched off with an undoable
-   * revision; token and effect choices are kept.
+   * revision; token and effect choices are kept. `applied` is the exact
+   * revision being applied: a hidden fallback draws that object (or the
+   * stripped one), never whatever the library holds after an await.
    */
-  async function applyAndProbe(record: CustomThemeRecord, revision: number, conversationInfo: Conversation, host: ThemeHost, previous: { theme: ThemeId; revision?: { id: CustomThemeId; n: number } }) {
+  async function applyAndProbe(record: CustomThemeRecord, applied: CustomThemeRevision, conversationInfo: Conversation, host: ThemeHost, previous: { theme: ThemeId; revision?: { id: CustomThemeId; n: number } }, context: ThemeToolContext) {
+    const revision = applied.n;
     const theme: ThemeId = `custom:${record.id}`;
     const { appliedTo } = host.applyTheme(theme, { threadId: conversationInfo.threadId, by: conversationInfo.by, previous });
     const warnings: string[] = [];
-    let finalRevision = revision;
+    const provider: Provider = conversationInfo.by.kind === "model" ? conversationInfo.by.provider : "openai";
+    const done = (revision: CustomThemeRevision, layout: Record<string, unknown> | null, layoutFrom: Record<string, unknown>) => ({ appliedTo, warnings, revision, layout, layoutFrom });
+    /** The live window could not be measured: the same bounded hidden preview, of exactly `shown`. */
+    const fallback = async (shown: CustomThemeRevision, readability: string) => {
+      const hidden = await hiddenLayout(record.id, shown, provider, host, context, readability);
+      return done(shown, hidden.layout, hidden.from);
+    };
+    /** A live measurement, labelled live only when there is one. */
+    const live = async (target: HTMLElement, shown: CustomThemeRevision, readability: string) => {
+      if (target.isConnected === false || !host.isThemePainted(theme, shown.n)) {
+        return fallback(shown, readability);
+      }
+      const layout = measureLayout(target, { id: record.id, spec: shown.spec }, host);
+      return layout ? done(shown, layout, liveLayoutSource(readability)) : fallback(shown, readability);
+    };
     const shell = await withTimeout(host.waitForApplied(theme, revision), applyWaitMs);
     if (!shell) {
-      warnings.push("The theme was saved and selected, but it isn't on screen right now (for example another project is open), so on-screen readability and layout were not checked. capture_app_screenshot can still preview it.");
-      return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false };
+      warnings.push("The theme was selected for this conversation. Its revision did not paint in the visible window before the readability check, which can happen when another project is open.");
+      return fallback(applied, "not run (the requested revision did not paint in the visible window)");
     }
-    const spec = headRevision(record).spec;
-    const measure = (target: HTMLElement, measured: ThemeSpec) => measureLayout(target, { id: record.id, spec: measured }, host);
-    const probe = await deps.probe(shell).catch(() => null);
-    if (!host.isThemePainted(theme, revision)) {
-      warnings.push("The window changed themes during the readability check. The saved theme was left as it was.");
-      return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false };
+    const spec = applied.spec;
+    const isCurrent = () => shell.isConnected !== false && host.isThemePainted(theme, revision);
+    const probeController = new AbortController();
+    const probe = await withTimeout(deps.probe(shell, probeController.signal, isCurrent), applyWaitMs);
+    probeController.abort();
+    if (!isCurrent()) {
+      warnings.push("The requested revision stopped being visible during the readability check.");
+      return fallback(applied, "interrupted (the requested revision stopped being visible)");
     }
-    if (!probe || probe.ok) return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false, layout: measure(shell, spec) };
+    if (!probe) return fallback(applied, "the live readability check did not finish");
+    if (probe.ok) return live(shell, applied, probe.checked === 0
+      ? "no visible text landmarks were available for the live readability check"
+      : "passed on the user's screen");
     const describe = (list: ProbeOutcome["failures"]) => list.slice(0, 6).map((failure) =>
       `${failure.selectorHint ?? failure.landmark} color resolves to ${failure.fg} on ${failure.bg} (${failure.ratio.toFixed(1)}:1)`);
     const cssFailures = probe.failures.filter((failure) => failure.causedByCustomCss !== false);
@@ -295,15 +366,59 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         expectedRevision: revision,
       });
       if (stripped.ok) {
-        finalRevision = stripped.revision.n;
+        const strippedRevision = stripped.revision;
         host.applyTheme(theme, { threadId: conversationInfo.threadId, by: conversationInfo.by, previous: { theme, revision: { id: record.id, n: revision } } });
-        warnings.push(`customCss disabled: ${failures.join("; ")}. Saved as revision ${finalRevision} without customCss; tokens and effects were kept. Fix the rule (use var(--text)/var(--muted) colours) and send customCss again if the user wants it.`);
-        const redrawn = await withTimeout(host.waitForApplied(theme, finalRevision), applyWaitMs);
-        return { appliedTo, warnings, revision: finalRevision, customCssDisabled: true, layout: redrawn ? measure(redrawn, { ...spec, customCss: "" }) : null };
+        warnings.push(`customCss disabled: ${failures.join("; ")}. Saved as revision ${strippedRevision.n} without customCss; tokens and effects were kept. Fix the rule (use var(--text)/var(--muted) colours) and send customCss again if the user wants it.`);
+        const redrawn = await withTimeout(host.waitForApplied(theme, strippedRevision.n), applyWaitMs);
+        const readability = `r${revision} failed the live check. Custom CSS was disabled in r${strippedRevision.n}.`;
+        return redrawn ? live(redrawn, strippedRevision, readability) : fallback(strippedRevision, readability);
       }
     }
     warnings.push(`Some text may be hard to read on screen: ${describe(probe.failures).join("; ")}. Adjust the related tokens (text, muted and their surfaces).`);
-    return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false, layout: measure(shell, spec) };
+    return live(shell, applied, "failed on the user's screen");
+  }
+
+  /**
+   * A layout-only hidden preview of one exact revision (the conversation
+   * scene, no picture), for a change the user's window can't show. Bounded
+   * by layoutPreviewWaitMs, and only with previews allowed and the turn's
+   * native call still authorized, checked before it starts and again when
+   * it returns; otherwise it says why there is no layout.
+   */
+  async function hiddenLayout(id: CustomThemeId, revision: CustomThemeRevision, provider: Provider, host: ThemeHost, context: ThemeToolContext, readability: string): Promise<{ layout: Record<string, unknown> | null; from: Record<string, unknown> }> {
+    const noLayout = (why: string) => ({ layout: null, from: { ...noLayoutSource(why), readabilityCheck: readability } });
+    if (!deps.preview) return noLayout("Hidden previews are unavailable here.");
+    const authority = context.previewAuthority ?? context;
+    const allowed = () => host.toolsEnabled() && host.screenshotsEnabled();
+    const consentOff = noLayout("Theme tools or “Let models see theme previews” are turned off.");
+    if (!allowed()) return consentOff;
+    const ended = noLayout("The requesting turn ended before the hidden layout could be returned.");
+    if (authority.stillAuthorized?.() === false) return ended;
+    let outcome: PreviewOutcome | null;
+    try {
+      const spec = savedPreviewSpec(revision);
+      if (!spec) return noLayout(`r${revision.n} no longer passes the theme checks.`);
+      const job: PreviewJob = {
+        ...host.previewEnvironment(), version: 1, view: "conversation", capture: false, provider,
+        theme: { base: spec.base, custom: { id, revision: revision.n, spec } },
+      };
+      outcome = await drawPreview(deps.preview, job, deps.layoutPreviewWaitMs ?? 8_000, context, host);
+    } catch (reason) {
+      return noLayout(reason instanceof ThemeToolRefusal ? reason.message : "The hidden preview could not be prepared.");
+    }
+    if (!allowed()) return consentOff;
+    if (authority.stillAuthorized?.() === false) return ended;
+    if (!outcome || !outcome.ok) return noLayout(outcome ? outcome.error : "The hidden preview did not answer in time.");
+    const { layout } = splitPreviewLayout(outcome.result.layout);
+    if (!layout) return noLayout("The hidden preview did not return a layout report.");
+    return {
+      layout,
+      from: {
+        source: "hidden-preview", scene: "conversation", shows: PREVIEW_SCENES.conversation.shows, revision: revision.n,
+        readabilityCheck: readability,
+        note: "Measured in a hidden copy of the app with bundled sample content. Use capture_app_screenshot for other scenes or a picture.",
+      },
+    };
   }
 
   function measureLayout(shell: HTMLElement, theme: { id: CustomThemeId; spec: ThemeSpec } | null, host: ThemeHost): Record<string, unknown> | null {
@@ -312,11 +427,18 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
   }
 
   function motionNotes(spec: ThemeSpec, host: ThemeHost): string[] {
-    if (!Object.keys(spec.effects ?? {}).length || spec.motion?.enabled === false) return [];
+    const hasEffects = Boolean(Object.keys(spec.effects ?? {}).length) && spec.motion?.enabled !== false;
+    if (!hasEffects && !customCssMoves(spec.customCss ?? "")) return [];
     const motion = host.motionState();
     if (motion.reducedMotion) return ["The user's system asks apps to reduce motion, so this theme's animations stay still for them."];
     if (motion.paused) return ["The user has paused theme animations in Mythra Code, so they will see this theme still until they resume them."];
     return [];
+  }
+
+  /** Pass only engine fields from this immutable saved revision. */
+  function savedPreviewSpec(revision: CustomThemeRevision): ThemeSpec | null {
+    const saved = Object.fromEntries(SPEC_KEYS.map((key) => [key, revision.spec[key]]));
+    return deps.normalize(saved).ok ? structuredClone(saved) as unknown as ThemeSpec : null;
   }
 
   /**
@@ -365,11 +487,10 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
     }
     // Pass the exact saved fields accepted by the engine. The preview page
     // uses the same compiler as the app and supplies defaults for older specs.
-    const saved = Object.fromEntries(SPEC_KEYS.map((key) => [key, revision.spec[key]]));
-    if (!deps.normalize(saved).ok) {
+    const spec = savedPreviewSpec(revision);
+    if (!spec) {
       return refuse(`r${revision.n} of ${quoted(revision.spec.name)} no longer passes the theme checks. Preview another revision or fix it with update_custom_theme.`);
     }
-    const spec = structuredClone(saved) as unknown as ThemeSpec;
     return {
       theme: { base: spec.base, custom: { id: found.id, revision: revision.n, spec } },
       facts: {
@@ -379,14 +500,14 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
     };
   }
 
-  function mutationResult(record: CustomThemeRecord, revision: number, extra: {
+  function mutationResult(record: CustomThemeRecord, revision: CustomThemeRevision, extra: {
     applied: boolean; appliedTo?: "app" | "project"; changed: string[]; adjustments?: ContrastAdjustment[]; warnings: string[]; note: string; layout?: Record<string, unknown> | null; [key: string]: unknown;
   }): Record<string, unknown> {
     const { applied, appliedTo, changed, adjustments, warnings, note, layout, ...rest } = extra;
     return {
       themeId: record.id,
-      name: headRevision(record).spec.name,
-      revision,
+      name: revision.spec.name,
+      revision: revision.n,
       applied,
       ...(appliedTo ? { appliedTo } : {}),
       changed,
@@ -493,19 +614,21 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
       const saved = created as Extract<StoreResult, { ok: true }>;
       remember(info.threadId, saved.record.id);
       const warnings = [...ok.warnings];
-      let revision = saved.revision.n;
+      let revision = saved.revision;
       let appliedTo: "app" | "project" | undefined;
       let layout: Record<string, unknown> | null | undefined;
+      let layoutFrom: Record<string, unknown> | undefined;
       const shouldApply = bool(apply, true);
       if (shouldApply) {
-        const outcome = await applyAndProbe(saved.record, revision, info, host, { theme: previous });
+        const outcome = await applyAndProbe(saved.record, saved.revision, info, host, { theme: previous }, context);
         appliedTo = outcome.appliedTo;
         revision = outcome.revision;
         layout = outcome.layout;
+        layoutFrom = outcome.layoutFrom;
         warnings.push(...outcome.warnings);
       }
-      warnings.push(...motionNotes(ok.spec, host));
-      const name = ok.spec.name;
+      warnings.push(...motionNotes(revision.spec, host));
+      const name = revision.spec.name;
       return mutationResult(saved.record, revision, {
         applied: shouldApply,
         appliedTo,
@@ -513,7 +636,8 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         adjustments: ok.adjustments,
         warnings,
         layout,
-        note: `Saved ${quoted(name)} as revision ${revision}${shouldApply ? " and applied it" : ""}. The user can undo from the toast or in Settings. Adjust it later with update_custom_theme.`,
+        layoutFrom: layoutFrom ?? NOT_APPLIED,
+        note: `Saved ${quoted(name)} as revision ${revision.n}${shouldApply ? " and applied it" : ""}. The user can undo from the toast or in Settings. Adjust it later with update_custom_theme.`,
       });
     },
 
@@ -537,9 +661,10 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         if (shouldApply && activeTheme(host, info.threadId) !== `custom:${record.id}`) {
           appliedTo = host.applyTheme(`custom:${record.id}`, { threadId: info.threadId, by: info.by, previous: { theme: activeTheme(host, info.threadId) } }).appliedTo;
         }
-        return mutationResult(record, record.head, {
+        return mutationResult(record, headRevision(record), {
           applied: Boolean(appliedTo), appliedTo, changed: [], adjustments: ok.adjustments, warnings: ok.warnings, unchanged: true,
-          note: `Nothing changed: the patch matches ${quoted(current.name)} r${record.head} after normalization. No revision was saved.`,
+          layoutFrom: noLayoutSource("The patch matched the saved revision, so there was no new measurement."),
+          note: `The patch matches ${quoted(current.name)} r${record.head} after normalization. ${appliedTo ? "Selected the existing revision." : "No revision was saved."}`,
         });
       }
       const previousTheme = activeTheme(host, info.threadId);
@@ -558,20 +683,22 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
       const saved = committed as Extract<StoreResult, { ok: true }>;
       remember(info.threadId, record.id);
       const warnings = [...ok.warnings];
-      let revision = saved.revision.n;
+      let revision = saved.revision;
       let appliedTo: "app" | "project" | undefined;
       let layout: Record<string, unknown> | null | undefined;
+      let layoutFrom: Record<string, unknown> | undefined;
       if (shouldApply) {
         const previous = previousTheme === `custom:${record.id}`
           ? { theme: previousTheme, revision: { id: record.id, n: record.head } }
           : { theme: previousTheme };
-        const outcome = await applyAndProbe(saved.record, revision, info, host, previous);
+        const outcome = await applyAndProbe(saved.record, saved.revision, info, host, previous, context);
         appliedTo = outcome.appliedTo;
         revision = outcome.revision;
         layout = outcome.layout;
+        layoutFrom = outcome.layoutFrom;
         warnings.push(...outcome.warnings);
       }
-      warnings.push(...motionNotes(ok.spec, host));
+      warnings.push(...motionNotes(revision.spec, host));
       return mutationResult(saved.record, revision, {
         applied: shouldApply,
         appliedTo,
@@ -579,7 +706,8 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         adjustments: ok.adjustments,
         warnings,
         layout,
-        note: `Saved as revision ${revision} of ${quoted(ok.spec.name)}. The user can undo it from the toast or in Settings; you can with undo_custom_theme.`,
+        layoutFrom: layoutFrom ?? NOT_APPLIED,
+        note: `Saved as revision ${revision.n} of ${quoted(revision.spec.name)}. The user can undo it from the toast or in Settings. Models can use undo_custom_theme.`,
       });
     },
 
@@ -607,20 +735,22 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
       const spec = saved.revision.spec;
       const changed = deps.diff(headRevision(record).spec, spec);
       const warnings: string[] = [];
-      let revision = saved.revision.n;
+      let revision = saved.revision;
       let appliedTo: "app" | "project" | undefined;
       let layout: Record<string, unknown> | null | undefined;
+      let layoutFrom: Record<string, unknown> | undefined;
       if (shouldApply) {
         const previous = previousTheme === `custom:${record.id}`
           ? { theme: previousTheme, revision: { id: record.id, n: before } }
           : { theme: previousTheme };
-        const outcome = await applyAndProbe(saved.record, revision, info, host, previous);
+        const outcome = await applyAndProbe(saved.record, saved.revision, info, host, previous, context);
         appliedTo = outcome.appliedTo;
         revision = outcome.revision;
         layout = outcome.layout;
+        layoutFrom = outcome.layoutFrom;
         warnings.push(...outcome.warnings);
       }
-      warnings.push(...motionNotes(spec, host));
+      warnings.push(...motionNotes(revision.spec, host));
       const restoredFrom = saved.restoredFrom ?? saved.revision.restoredFrom;
       return mutationResult(saved.record, revision, {
         applied: shouldApply,
@@ -628,9 +758,10 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         changed,
         warnings,
         layout,
+        layoutFrom: layoutFrom ?? NOT_APPLIED,
         ...(restoredFrom ? { restoredFrom } : {}),
         ...(saved.undone?.length ? { undone: saved.undone } : {}),
-        note: `${quoted(spec.name)} ${restoredFrom ? `now looks like r${restoredFrom} again` : "was reverted"}, saved as revision ${revision}. Nothing was deleted: undo_custom_theme with toRevision ${before} brings the previous look back.`,
+        note: `${quoted(revision.spec.name)} ${restoredFrom ? `was restored from r${restoredFrom}` : "was reverted"}, saved as revision ${revision.n}. Use undo_custom_theme with toRevision ${before} to restore the previous look.`,
       });
     },
 
@@ -647,7 +778,11 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
           threadId: info.threadId, by: info.by,
           previous: record ? { theme: previous, revision: { id: record.id, n: record.head } } : { theme: previous },
         });
-        return { theme: theme.id, name: theme.name, applied: true, appliedTo, note: `${theme.name} is now the active theme. The user can undo from the toast.` };
+        return {
+          theme: theme.id, name: theme.name, applied: true, appliedTo,
+          layoutFrom: noLayoutSource("A built-in theme was selected."),
+          note: `${theme.name} is now the active theme. The user can undo from the toast.`,
+        };
       }
       const record = targetTheme(request.arguments.themeId, info.threadId, host);
       if (record.disabledReason) {
@@ -656,16 +791,16 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         refuse(`${quoted(headRevision(record).spec.name)} is turned off because ${why}. Fix it with update_custom_theme (which saves a new revision), or ask the user to turn it back on in Settings > Appearance > Custom themes.`);
       }
       remember(info.threadId, record.id);
-      const outcome = await applyAndProbe(record, record.head, info, host, { theme: previous });
-      const warnings = [...outcome.warnings, ...motionNotes(headRevision(record).spec, host)];
-      const latest = findRecord(deps.library(), record.id) ?? record;
-      return mutationResult(latest, outcome.revision, {
+      const outcome = await applyAndProbe(record, headRevision(record), info, host, { theme: previous }, context);
+      const warnings = [...outcome.warnings, ...motionNotes(outcome.revision.spec, host)];
+      return mutationResult(record, outcome.revision, {
         applied: true,
         appliedTo: outcome.appliedTo,
         changed: [],
         warnings,
         layout: outcome.layout,
-        note: `${quoted(headRevision(latest).spec.name)} is now the active theme. The user can undo from the toast.`,
+        layoutFrom: outcome.layoutFrom,
+        note: `Selected r${outcome.revision.n} of ${quoted(outcome.revision.spec.name)} for this conversation. The user can undo from the toast.`,
       });
     },
 
@@ -676,31 +811,64 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
       const info = conversation(request, context, host);
       const { provider: hostedProvider, supportsImageInput } = host.threadForSession(request.sessionId);
       const provider = request.provider ?? hostedProvider;
-      const { view = "conversation" } = request.arguments;
-      if (view !== "changes" && view !== "conversation") return refuse("`view` must be conversation or changes.");
+      // The scene and state come from fixed lists, never from the user's
+      // window: what is on their screen doesn't change what this draws.
+      const { view = "conversation", control, interaction: state } = request.arguments;
+      if (!isPreviewScene(view)) return refuse(`\`view\` must be one of ${PREVIEW_SCENE_IDS.join(", ")}.`);
+      if (control !== undefined && !isControlTargetId(control)) return refuse(`\`control\` must be one of ${CONTROL_TARGET_IDS.join(", ")}.`);
+      if (state !== undefined && !isPreviewInteraction(state)) return refuse(`\`interaction\` must be one of ${PREVIEW_INTERACTIONS.join(", ")}.`);
+      const scene = PREVIEW_SCENES[view];
+      let interaction: PreviewInteractionRequest | null = null;
+      if (control !== undefined || state !== undefined) {
+        const chosen: ControlTargetId | undefined = (control as ControlTargetId | undefined) ?? scene.controls[0];
+        if (!chosen) return refuse(`The ${view} scene has no listed controls to put in a state. Leave out control and interaction, or pick a scene from get_theme_design_kit's preview.scenes.`);
+        if (!scene.controls.includes(chosen)) {
+          const scenes = PREVIEW_SCENE_IDS.filter((id) => PREVIEW_SCENES[id].controls.includes(chosen));
+          return refuse(`${controlTarget(chosen)!.label} (${chosen}) is not drawn in the ${view} scene. Controls there: ${scene.controls.join(", ") || "none"}. Scenes with ${chosen}: ${scenes.join(", ")}.`);
+        }
+        interaction = { control: chosen, state: (state as PreviewInteraction | undefined) ?? "hover" };
+      }
       // The revision is fixed now: later edits, theme switches or navigation
       // in the user's window don't change what this preview draws.
       const target = previewTarget(request.arguments, info.threadId, host);
       const details = {
         ...target.facts,
-        scenario: { view, shows: PREVIEW_VIEW_DESCRIPTIONS[view], content: "bundled sample content" },
+        scenario: {
+          view, shows: scene.shows, content: "bundled sample content only (never the user's projects, threads or screen)",
+          ...(interaction ? { control: interaction.control, interaction: interaction.state, controlSelector: controlTarget(interaction.control)!.selector } : {}),
+        },
       };
       if (!deps.preview) {
-        return { ...details, captured: false, note: "Previews are not available here. Use the layout report from your last theme change." };
+        return { ...details, captured: false, layoutAvailable: false, layoutFrom: noLayoutSource("Previews are not available here."), note: "Previews are not available here. Use the layout report from your last theme change." };
       }
       // A model picker can change during the turn. Only the provider carried
       // by its bridge registration can authorize an image.
       const wantsImage = providerTakesImages(request.provider, supportsImageInput);
-      const job: PreviewJob = { ...host.previewEnvironment(), version: 1, view, capture: wantsImage, provider: provider ?? "openai", theme: target.theme };
+      const job: PreviewJob = { ...host.previewEnvironment(), version: 1, view, interaction, capture: wantsImage, provider: provider ?? "openai", theme: target.theme };
       const outcome = await drawPreview(deps.preview, job, deps.previewWaitMs ?? 25_000, context, host);
       if (!host.toolsEnabled() || !host.screenshotsEnabled()) return refuse("The user turned off theme tools or app previews.");
       if (context.stillAuthorized?.() === false) return refuse("The requesting turn ended while preparing the preview.");
       if (!outcome || !outcome.ok) {
         const why = !outcome ? "The hidden preview did not answer in time." : outcome.unavailable ? "Previews are not available on this system." : `The hidden preview could not be drawn (${outcome.error}).`;
-        return { ...details, captured: false, note: `${why} Use the layout report from your last theme change.` };
+        return { ...details, captured: false, layoutAvailable: false, layoutFrom: noLayoutSource(why), note: `${why} Use the layout report from your last theme change.` };
       }
-      const { layout, viewport, imageError } = outcome.result;
+      const { viewport, imageError } = outcome.result;
+      const { layout, drawn } = splitPreviewLayout(outcome.result.layout);
       const image = wantsImage ? outcome.result.image : undefined;
+      const drawnState = drawn?.scene === view && drawn.interaction && typeof drawn.interaction === "object"
+        ? drawn.interaction as Record<string, unknown> : null;
+      let stateFacts: Record<string, unknown> | undefined;
+      let stateLine = "";
+      if (interaction) {
+        stateFacts = drawnState?.control === interaction.control && drawnState.state === interaction.state && typeof drawnState.drawn === "boolean"
+          ? drawnState
+          : { ...interaction, drawn: false, why: "The preview did not report this control's state." };
+        const label = controlTarget(interaction.control)!.label;
+        stateLine = stateFacts.drawn === false
+          ? ` ${String(stateFacts.why ?? `The requested state for ${label} was unavailable.`)}`
+          : ` ${label} is shown ${String(stateFacts.how ?? (interaction.state === "rest" ? "at rest" : `in its ${interaction.state} state`))}.`;
+        if (stateFacts.drawn && interaction.state !== "rest") stateLine += " See interaction.changed for the measured differences.";
+      }
       // The window as actually drawn; a size outside the preview's bounds is
       // clamped natively, and that is said rather than hidden.
       const adjusted = viewport && (viewport.width !== job.viewport.width || viewport.height !== job.viewport.height);
@@ -712,10 +880,20 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
           ...(adjusted ? { requestedWindow: job.viewport, adjusted: "Layout and picture use the actual preview window size above." } : {}),
           ...(image ? { picture: { width: image.width, height: image.height } } : {}),
         },
+        ...(stateFacts ? { interaction: stateFacts } : {}),
+        ...(typeof drawn?.fixture === "string" ? { fixture: drawn.fixture } : {}),
+        ...(typeof drawn?.sidebar === "string" ? { sidebar: drawn.sidebar } : {}),
+        // The landings' marks (the animated logo's visible square, the welcome mark).
+        ...(Array.isArray(drawn?.landmarks) ? { landmarks: drawn.landmarks } : {}),
         layoutAvailable: Boolean(layout),
+        layoutFrom: layout ? {
+          source: "hidden-preview", scene: view,
+          ...(job.theme.custom ? { revision: job.theme.custom.revision } : {}),
+          state: "all controls at rest",
+        } : noLayoutSource("The hidden preview did not return a layout report."),
         ...(layout ? { layout } : {}),
       };
-      const layoutLine = layout ? "Use the layout report above." : "The preview layout could not be measured. Use the layout report from your last theme change.";
+      const layoutLine = `${layout ? "Use the layout report above." : "The preview layout could not be measured. Use the layout report from your last theme change."}${stateLine}`;
       if (!wantsImage) {
         const note = provider === "cursor"
           ? `This runtime supports text results from the preview. ${layoutLine}`
@@ -731,7 +909,7 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         width: image.width,
         height: image.height,
         image: { data: image.data, mimeType: image.mimeType },
-        note: `The attached picture shows a hidden preview of Mythra Code with sample content and ${"revision" in target.facts ? `r${String(target.facts.revision)} of ` : ""}${String(target.facts.name)}. The dimensions describe the preview window and picture. Animations and particles show one still moment. ${layout ? "The layout report uses the preview's CSS pixels." : "The preview's layout could not be measured."}`,
+        note: `The attached picture shows a hidden preview of Mythra Code's ${view} scene with sample content and ${"revision" in target.facts ? `r${String(target.facts.revision)} of ` : ""}${String(target.facts.name)}. Animations and particles show one still moment. ${layout ? "The layout report uses the preview's CSS pixels." : "The preview's layout could not be measured."}${stateLine}`,
       };
     },
   };

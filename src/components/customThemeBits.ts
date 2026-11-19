@@ -4,10 +4,12 @@
 
 import { useEffect, useState } from "react";
 import { headSpec, providerName, type CustomThemeRecord } from "../lib/customThemes/store";
-import { builtInScheme, type EffectType } from "../lib/customThemes/spec";
+import { builtInScheme, type EffectType, type ThemeSpec } from "../lib/customThemes/spec";
 import { effectMoves } from "../lib/customThemes/compile";
+import { customCssMoves } from "../lib/customThemes/sanitizeCss";
 
 export const USER = { kind: "user" } as const;
+const motionBySpec = new WeakMap<ThemeSpec, boolean>();
 
 /** "just now", "3 min ago", "2 h ago", "4 days ago", then a date. */
 export function ago(at: number, now = Date.now()): string {
@@ -24,9 +26,14 @@ export function ago(at: number, now = Date.now()): string {
 
 export function hasMotion(record: CustomThemeRecord): boolean {
   const spec = headSpec(record);
+  const cached = motionBySpec.get(spec);
+  if (cached !== undefined) return cached;
   // Only effects that actually move (static grain or a vignette is not "Animated").
-  return Object.entries(spec.effects ?? {}).some(([type, params]) => Boolean(params) && effectMoves(type as EffectType, (params ?? {}) as Record<string, unknown>))
-    || /animation/i.test(spec.customCss ?? "");
+  const moves = Object.entries(spec.effects ?? {}).some(([type, params]) => Boolean(params) && effectMoves(type as EffectType, (params ?? {}) as Record<string, unknown>))
+    // customCss animations and button hover/focus grows both move.
+    || customCssMoves(spec.customCss ?? "");
+  motionBySpec.set(spec, moves);
+  return moves;
 }
 
 export function tileMeta(record: CustomThemeRecord): string {

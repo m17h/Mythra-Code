@@ -274,10 +274,14 @@ What stays the same:
 - Readability is enforced, not suggested: every ink is checked against every
   surface it sits on (4.5:1 for text), and inks are nudged or the theme is
   refused. Effects never sit behind panels, menus, fields or code.
-- Motion: no bounce, overshoot, hover lift or press shrink; entrances move at
-  most 6px; nothing flashes faster than 3 times a second. All theme motion
-  stops for `prefers-reduced-motion`, the "Theme animations" switch, a theme's
-  own switch, and (by default) while the window is in the background.
+- Theme entrances move up to 6px, and theme effects and keyframes use the
+  sanitizer's flash limits. An enabled, app-selected button may grow up to
+  4% on hover or keyboard focus, easing in over 140ms. Press feedback uses
+  cosmetics, such as background, border colour or inset shadow. The grow,
+  effects and other theme keyframe animations respect
+  `prefers-reduced-motion`, the "Theme animations" switch, the theme's own
+  switch and (by default) background pausing. Saved cosmetic transitions
+  keep their existing behaviour.
 - `PixelWorkingMark` stays the one working mark, and status words are never
   hidden or recoloured into the accent.
 - Escape hatches always work, whatever a theme does: ⌘⌥⇧T (Ctrl+Alt+Shift+T),

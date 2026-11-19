@@ -46,7 +46,7 @@ import { InfoPopover } from "./InfoPopover";
 import { ThreadCompactionControl, type ThreadCompactionSetting } from "./ThreadCompactionControl";
 import { CHANGES_SCOPE_LABELS, STAGED_DIFF_FILE_LIMIT, STAGED_VIEW_LABEL, diffEmptyCopy, diffReadState, partialCommitNote, projectRelativePath, stagedDiffSections, type ChangesScope, type StagedDiffResult } from "../lib/changesScope";
 import { useTaskStore } from "../lib/taskStore";
-import { FileBrowser } from "./FileBrowser";
+import { FileBrowser, type FileBrowserSource } from "./FileBrowser";
 import { DiffFileSections, DiffText, setDiffWrap, useDiffWrap } from "./DiffView";
 import { splitChangePath } from "../lib/gitChanges";
 import { AppActionMenu, type AppActionMenuItem } from "./AppActionMenu";
@@ -739,6 +739,7 @@ export function StudioDockFrame({ children, ...props }: {
             id={tabId(id)}
             data-studio-tab={id}
             data-studio-group={group}
+            data-ct-control="tools-tab"
             role="tab"
             className={props.tab === id ? "active" : ""}
             onClick={() => props.onTab(id)}
@@ -791,6 +792,8 @@ export function StudioDock(props: {
   tab: StudioTab;
   projectName?: string;
   projectPath?: string;
+  /** A separate Files source for callers whose project isn't on this device. */
+  fileSource?: FileBrowserSource;
   activeThread: boolean;
   /** For the last turn's instruction receipt in Thread usage. */
   activeThreadId?: string | null;
@@ -1523,7 +1526,7 @@ export function StudioDock(props: {
 
         {props.tab === "files" && <>
           <PanelHeader tab="files" onClose={props.onClose} />
-          {props.projectPath ? <FileBrowser root={props.projectPath} onAttach={props.onAttachPath} /> : <Empty icon={FolderTree} title="No project folder" text="Open a project to browse its files." />}
+          {props.projectPath ? <FileBrowser root={props.projectPath} onAttach={props.onAttachPath} source={props.fileSource} /> : <Empty icon={FolderTree} title="No project folder" text="Open a project to browse its files." />}
         </>}
 
         {props.tab === "terminal" && <>

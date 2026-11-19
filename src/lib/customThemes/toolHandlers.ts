@@ -24,7 +24,7 @@ import {
 } from "./store";
 import { applyThemePatch, diffThemeSpecs, normalizeThemeInput } from "./validate";
 import { parsePreviewResult, type PreviewJob, type PreviewOutcome } from "./previewJob";
-import { createThemeToolHandler, ThemeToolRefusal, type ThemeToolContext } from "./toolHandlerCore";
+import { createThemeToolHandler, noLayoutSource, ThemeToolRefusal, type ThemeToolContext } from "./toolHandlerCore";
 
 /**
  * Draw a job in the hidden preview window (src-tauri/src/theme_preview.rs).
@@ -54,6 +54,9 @@ async function renderHiddenPreview(job: PreviewJob, signal: AbortSignal): Promis
     return { ok: false, error: message, ...(/not available/i.test(message) ? { unavailable: true } : {}) };
   }
 }
+
+/** Theme changes that apply and may fall back to a layout-only hidden preview. */
+const MUTATING_TOOLS = new Set(["create_custom_theme", "update_custom_theme", "undo_custom_theme", "apply_custom_theme"]);
 
 export { THEME_TOOLS, isThemeTool, ThemeToolRefusal, type ThemeTool, type ThemeToolContext } from "./toolHandlerCore";
 
@@ -88,19 +91,20 @@ export async function handleThemeToolRequest(request: ChildAgentRequest, context
   const identity = themeSessionIdentity(request.sessionId);
   if (!identity) throw new ThemeToolRefusal("Theme tools are available only during a turn started on this device.");
   const stillAuthorized = () => themeSessionIdentity(request.sessionId) === identity && context.stillAuthorized?.() !== false;
-  let authority: ThemeToolContext = { ...context, stillAuthorized };
-  const previewHost = request.tool === "capture_app_screenshot" ? themeHost() : null;
-  if (request.tool === "capture_app_screenshot") {
+  const isCapture = request.tool === "capture_app_screenshot";
+  const previewHost = isCapture || MUTATING_TOOLS.has(request.tool) ? themeHost() : null;
+  // A hidden preview needs the requesting turn itself to still be running,
+  // whether it is a screenshot or the layout-only fallback of a theme change.
+  const turnAuthority = (): NonNullable<ThemeToolContext["previewAuthority"]> => {
     const { threadId } = identity;
     const task = useTaskStore.getState().tasks[threadId];
     const stopEpoch = parentRunStopEpoch(threadId);
     let turnId = task?.activeTurnId;
-    authority = {
-      ...authority,
+    return {
       stillAuthorized: () => {
         if (!stillAuthorized() || parentRunStopEpoch(threadId) !== stopEpoch) return false;
         const current = useTaskStore.getState().tasks[threadId];
-        if (!current || current.agentRunId !== task?.agentRunId
+        if (!current || current.agentRunId !== task?.agentRunId || current.agentRunStartedAt !== task?.agentRunStartedAt
           || (current.status !== "running" && current.status !== "starting")) return false;
         turnId ??= current.activeTurnId;
         return !turnId || (current.activeTurnId === turnId && !hasProviderStopIntent(threadId, turnId));
@@ -115,7 +119,15 @@ export async function handleThemeToolRequest(request: ChildAgentRequest, context
       },
       checkAuthorization: () => isChildAgentRequestActive(request).catch(() => false),
     };
-  }
+  };
+  const previewAuthority = previewHost ? turnAuthority() : undefined;
+  // The fallback preview needs the same authority as an explicit capture.
+  // Keep the original mutation acknowledgement even if that preview is revoked.
+  const authority: ThemeToolContext = {
+    ...context,
+    stillAuthorized,
+    ...(previewAuthority ? (isCapture ? previewAuthority : { previewAuthority }) : {}),
+  };
   const result = await handleThemeTool({
     sessionId: request.sessionId,
     tool: request.tool,
@@ -123,8 +135,16 @@ export async function handleThemeToolRequest(request: ChildAgentRequest, context
     ...(request.provider ? { provider: request.provider } : {}),
   }, authority);
   if (authority.stillAuthorized?.() === false) throw new ThemeToolRefusal("The conversation changed while using theme tools. Send a new message from this device to use them again.");
-  if (previewHost && (themeHost() !== previewHost || !previewHost.toolsEnabled() || !previewHost.screenshotsEnabled())) {
-    throw new ThemeToolRefusal("The user turned off theme tools or app previews.");
+  const layoutFrom = result.layoutFrom as Record<string, unknown> | undefined;
+  if (previewHost && (isCapture || layoutFrom?.source === "hidden-preview")) {
+    const why = themeHost() !== previewHost || !previewHost.toolsEnabled() || !previewHost.screenshotsEnabled()
+      ? "Theme tools or app previews are no longer available."
+      : previewAuthority?.stillAuthorized?.() === false ? "The requesting turn ended before the preview could be returned." : null;
+    if (why) {
+      if (isCapture) throw new ThemeToolRefusal(why);
+      delete result.layout;
+      result.layoutFrom = { ...noLayoutSource(why), readabilityCheck: layoutFrom?.readabilityCheck };
+    }
   }
   return result;
 }

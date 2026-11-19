@@ -1,15 +1,18 @@
 //! The hidden theme preview behind the theme tool `capture_app_screenshot`.
 //!
 //! A model checking a theme gets a picture of a dedicated, never-shown
-//! webview that draws the app's real conversation, composer, sidebar and
-//! Tools views from bundled sample content (`src/themePreview`). The window
+//! webview that draws one of a fixed list of scenes (conversation, new
+//! thread, new chat, welcome, Tools tabs, Settings > Appearance, command
+//! palette) from the app's real components and bundled sample content
+//! (`src/themePreview`), optionally with one allowlisted control in a
+//! mirrored hover, focus or press state. The window
 //! the person uses is never captured, shown, hidden or resized, so a capture
 //! keeps working while they switch threads, projects or machines.
 //!
 //! One preview session exists at a time and lives for one request:
 //!
 //! 1. The main webview calls `theme_preview_capture` with a sanitized job
-//!    (theme revision, view, sizes; no user content).
+//!    (theme revision, scene, optional control state, sizes; no user content).
 //! 2. A hidden, focus-less, taskbar-less window with its own web storage
 //!    opens exactly `theme-preview.html` on the app's own origin under a
 //!    one-off label.
@@ -40,6 +43,20 @@ use uuid::Uuid;
 const MAIN_LABEL: &str = "main";
 const LABEL_PREFIX: &str = "theme-preview-";
 const PAGE: &str = "theme-preview.html";
+
+/// The preview's fixed scenes, interaction states and themeable controls.
+/// Same ids as src/lib/customThemes/previewScenes.ts (the registry the page
+/// draws from); keep both in step. The theme tool schema uses these too.
+pub(crate) const PREVIEW_SCENE_IDS: [&str; 16] = [
+    "conversation", "changes", "new-thread", "new-chat", "welcome", "tools-files", "tools-terminal", "tools-worktrees",
+    "tools-git", "tools-checkpoints", "tools-actions",
+    "tools-agents", "tools-usage", "tools-skills", "settings-appearance", "command-palette",
+];
+pub(crate) const PREVIEW_INTERACTIONS: [&str; 4] = ["rest", "hover", "focus", "press"];
+pub(crate) const PREVIEW_CONTROLS: [&str; 11] = [
+    "send", "attach", "new-thread", "sidebar-icon", "sidebar-settings", "tools-toggle", "tools-tab", "primary", "secondary",
+    "landing-action", "isolation-choice",
+];
 
 /// The only commands a preview webview may invoke.
 const PREVIEW_COMMANDS: [&str; 3] = ["theme_preview_job", "theme_preview_rendered", "theme_preview_failed"];
@@ -234,9 +251,25 @@ fn sanitize_job(request: &Value) -> Result<(Value, bool, f64, f64), String> {
         return Err("The theme preview request is too large.".into());
     }
     let object = request.as_object().ok_or_else(invalid)?;
+    if object.get("version").and_then(Value::as_u64) != Some(1) {
+        return Err(invalid());
+    }
     let view = match object.get("view").and_then(Value::as_str) {
-        Some(view @ ("conversation" | "changes")) => view,
+        Some(view) if PREVIEW_SCENE_IDS.contains(&view) => view,
         _ => return Err(invalid()),
+    };
+    // One allowlisted control and state, or none; never a selector or route.
+    let interaction = match object.get("interaction") {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::Object(interaction)) => {
+            let control = interaction.get("control").and_then(Value::as_str).filter(|id| PREVIEW_CONTROLS.contains(id));
+            let state = interaction.get("state").and_then(Value::as_str).filter(|id| PREVIEW_INTERACTIONS.contains(id));
+            match (control, state) {
+                (Some(control), Some(state)) => json!({ "control": control, "state": state }),
+                _ => return Err(invalid()),
+            }
+        }
+        Some(_) => return Err(invalid()),
     };
     let viewport = object.get("viewport").and_then(Value::as_object).ok_or_else(invalid)?;
     let width = number(viewport, "width", WIDTH, 1380.0).round();
@@ -278,6 +311,7 @@ fn sanitize_job(request: &Value) -> Result<(Value, bool, f64, f64), String> {
     let job = json!({
         "version": 1,
         "view": view,
+        "interaction": interaction,
         "capture": wants_image,
         "viewport": { "width": width, "height": height },
         "uiScale": number(object, "uiScale", UI_SCALE, 1.0),

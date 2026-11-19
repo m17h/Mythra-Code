@@ -12,6 +12,7 @@
 import { parseColor, relativeLuminance } from "./color";
 import { foldViewportMedia, replicaScope } from "./replicaCss";
 import { knownTokenVars } from "./spec";
+import { CONTROL_ATTRIBUTE } from "./previewScenes";
 
 // ---- Tokenizer ---------------------------------------------------------------------
 
@@ -460,6 +461,40 @@ const ALLOWED_PSEUDO_FUNCTIONS = new Set(["not", "is", "where", "nth-child", "nt
 const ALLOWED_PSEUDO_ELEMENTS = new Set(["before", "after", "placeholder", "selection", "marker", "-webkit-scrollbar", "-webkit-scrollbar-thumb", "-webkit-scrollbar-track", "-webkit-scrollbar-corner"]);
 const DECORATIVE_PSEUDO = new Set(["before", "after"]);
 
+/**
+ * Interaction motion on the app's opt-in buttons (CONTROL_ATTRIBUTE, set in
+ * their production markup; see CONTROL_TARGETS in previewScenes.ts). The one
+ * place customCss may transform a real element:
+ * - only `transform: scale(s)` with 1 < s ≤ hover.scale[1], in a rule whose
+ *   every selector has the element's own top-level :hover or
+ *   :focus-visible (no pseudo-element). A grow selector cannot depend on
+ *   :active, so pressing the button does not itself change its scale.
+ * - the scoped output appends CONTROL_GUARD to each selector, so it reaches
+ *   only elements that opted in and are enabled. Approval, destructive,
+ *   dialog, auth and Settings buttons never opt in.
+ * - the grow is an engine-owned 140ms ease-out animation of the individual
+ *   `scale` property (composing with the app's own transforms). Transitions
+ *   never apply to it, so no customCss transition can stretch, delay or
+ *   overshoot it, and legacy transition rules stay as they were.
+ * - it sits behind @media (prefers-reduced-motion: no-preference) and the
+ *   shell's [data-theme-motion="on"], so the OS setting, the app's pause
+ *   switch and the theme's own motion.enabled all switch it off. Forced
+ *   colours drop customCss entirely (compile.ts).
+ */
+export const CONTROL_MOTION_LIMITS = {
+  hover: { scale: [1, 1.04] },
+  focus: { scale: [1, 1.04] },
+  press: { scale: [1, 1] },
+  /** The engine's grow: duration and easing (no overshoot). */
+  grow: { durationMs: 140, easing: "cubic-bezier(0.2, 0, 0, 1)" },
+} as const;
+type ControlState = "hover" | "focus" | "press";
+/** Appended to every gated control rule: opted-in, enabled elements only. */
+export const CONTROL_GUARD = `:where(button[${CONTROL_ATTRIBUTE}]:not(:disabled, [aria-disabled="true"]))`;
+export const CONTROL_GROW_ANIMATION_PREFIX = "ct-control-grow-";
+/** Lets the generated grow keep the compiler's accent-flow animation on the same button. */
+export const ACCENT_FLOW_ANIMATION_VAR = "--mythra-theme-accent-flow-animation";
+
 export const CSS_LIMITS = { selectorChars: 300, compounds: 6, rules: 200, declsPerRule: 40, keyframes: 12, keyframeStops: 20, infiniteAnimations: 6 } as const;
 
 // ---- Selectors ----------------------------------------------------------------------------------
@@ -471,6 +506,8 @@ interface SelectorInfo {
   mergedShell: boolean;
   pseudoElement: string | null;
   protectedTarget: boolean;
+  /** The selector's last compound carries a real, top-level interaction state (no pseudo-element). */
+  controlState: ControlState | null;
 }
 
 function splitTopLevel(tokens: Tok[], sep: Tok["t"] = ","): Tok[][] {
@@ -495,10 +532,10 @@ function checkSelector(raw: Tok[], nestedInFunction = false): SelectorInfo | { d
   if (!tokens.length) return { drop: "empty selector" };
   const text = serializeTokens(tokens);
   if (text.length > CSS_LIMITS.selectorChars) return { drop: `selector longer than ${CSS_LIMITS.selectorChars} characters` };
-  const compounds: Array<{ classes: string[]; type: string | null; start: number }> = [{ classes: [], type: null, start: 0 }];
+  const compounds: Array<{ classes: string[]; type: string | null; start: number; states: string[] }> = [{ classes: [], type: null, start: 0, states: [] }];
   let pseudoElement: string | null = null;
   let i = 0;
-  const newCompound = (start: number) => { if (compounds[compounds.length - 1].start !== start) compounds.push({ classes: [], type: null, start }); };
+  const newCompound = (start: number) => { if (compounds[compounds.length - 1].start !== start) compounds.push({ classes: [], type: null, start, states: [] }); };
   while (i < tokens.length) {
     const tok = tokens[i];
     if (pseudoElement && tok.t !== "ws" && !(tok.t === ":" )) {
@@ -544,6 +581,8 @@ function checkSelector(raw: Tok[], nestedInFunction = false): SelectorInfo | { d
           else if (cur.t === "delim" && !["=", "~", "|", "^", "$", "*"].includes(cur.v)) return { drop: "unsupported attribute selector" };
         }
         if (depth !== 0) return { drop: "unclosed attribute selector" };
+        const attribute = tokens.slice(i + 1, j).find((cur) => cur.t === "ident");
+        if (attribute?.t === "ident" && attribute.v.toLowerCase().startsWith("data-preview")) return { drop: "preview state hooks are internal; use :hover, :focus-visible or :active" };
         i = j; continue;
       }
       case ":": {
@@ -563,6 +602,7 @@ function checkSelector(raw: Tok[], nestedInFunction = false): SelectorInfo | { d
             if (name === "root" || name === "host" || name === "scope") return { drop: `:${name} is outside the app window` };
             if (!ALLOWED_PSEUDO_CLASSES.has(name)) return { drop: `:${name} is not supported` };
             if (pseudoElement && !["hover", "focus", "active"].includes(name)) return { drop: "a pseudo-element must be last" };
+            if (!pseudoElement) compounds[compounds.length - 1].states.push(name);
           }
           i += isElement ? 3 : 2; continue;
         }
@@ -612,7 +652,14 @@ function checkSelector(raw: Tok[], nestedInFunction = false): SelectorInfo | { d
   }
   const right = compounds[compounds.length - 1];
   const protectedTarget = right.classes.some(isProtectedClass) || (right.type !== null && FORM_TYPES.has(right.type) && compounds.some((c) => c.classes.some(isProtectedClass)));
-  return { tokens: out, mergedShell, pseudoElement, protectedTarget };
+  // Also catch :not(:active) and :active on an ancestor. Neither may change
+  // whether a grow applies between pointer down and up.
+  const pressed = tokens.some((tok, index) => tok.t === "ident" && tok.v.toLowerCase() === "active" && tokens[index - 1]?.t === ":");
+  const controlState: ControlState | null = nestedInFunction || pseudoElement ? null
+    : pressed ? "press"
+      : right.states.includes("focus-visible") ? "focus"
+        : right.states.includes("hover") ? "hover" : null;
+  return { tokens: out, mergedShell, pseudoElement, protectedTarget, controlState };
 }
 
 // ---- Values ---------------------------------------------------------------------------------------
@@ -1118,7 +1165,11 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 // ---- Sanitized model ------------------------------------------------------------------------
 
-interface CleanDecl { name: string; value: Tok[]; animation: boolean }
+interface CleanDecl {
+  name: string; value: Tok[]; animation: boolean;
+  /** Control grow (`transform: scale(s)`): emitted as the engine's motion-gated animation to `scale: grow`. */
+  grow?: number;
+}
 interface CleanStyle { kind: "style"; selectors: SelectorInfo[]; decls: CleanDecl[] }
 interface CleanMedia { kind: "media"; query: string; rules: CleanRule[] }
 interface CleanSupports { kind: "supports"; condition: string; rules: CleanRule[] }
@@ -1157,6 +1208,29 @@ function checkMedia(prelude: Tok[]): string | null {
     }
   }
   return serializeTokens(trimWs(prelude));
+}
+
+/**
+ * The scale a control's transform asks for, or why it is out of bounds
+ * (see CONTROL_MOTION_LIMITS). Accepts `none` (no grow, returned as 1) or a
+ * single scale() with one number, or two equal ones.
+ */
+function controlScale(value: Tok[], states: ControlState[]): number | { problem: string } {
+  const flat = nonWs(value);
+  const advice = `button transforms take only scale(), from 1 up to scale(${CONTROL_MOTION_LIMITS.hover.scale[1]}), on the button's own :hover or :focus-visible`;
+  if (states.includes("press")) return { problem: "button scaling cannot depend on :active; use background, border or an inset box-shadow for press feedback" };
+  if (flat.length === 1 && flat[0].t === "ident" && flat[0].v.toLowerCase() === "none") return 1;
+  const fn = flat[0];
+  if (fn?.t !== "function" || fn.v.toLowerCase() !== "scale" || flat[flat.length - 1]?.t !== ")") return { problem: advice };
+  const amount = (tok: Tok | undefined) => tok?.t === "number" ? tok.v : tok?.t === "percentage" ? tok.v / 100 : NaN;
+  const scale = amount(flat[1]);
+  const uniform = flat.length === 3 || (flat.length === 5 && flat[2].t === "," && scale === amount(flat[3]));
+  if (!uniform || !Number.isFinite(scale)) return { problem: advice };
+  for (const state of states) {
+    const [min, max] = CONTROL_MOTION_LIMITS[state].scale;
+    if (scale < min || scale > max) return { problem: `${advice}; this asks for scale(${scale})` };
+  }
+  return scale;
 }
 
 class Sanitizer {
@@ -1304,6 +1378,7 @@ class Sanitizer {
       return null;
     }
     const isProtected = selectors.some((sel) => sel.protectedTarget);
+    const controlStates = selectors.every((sel) => sel.controlState) ? selectors.map((sel) => sel.controlState!) : null;
     let decls: CleanDecl[] = [];
     let hasContent = false;
     let brokenAnimation = false;
@@ -1311,7 +1386,7 @@ class Sanitizer {
     for (const decl of parsed.decls.slice(0, CSS_LIMITS.declsPerRule)) {
       const where = `\`${decl.name}\` in \`${selectorText}\``;
       if (decl.important) this.drop(where, "!important was removed");
-      const result = this.declaration(decl, { pseudo, isProtected, where, ctx });
+      const result = this.declaration(decl, { pseudo, isProtected, where, ctx, controlStates });
       if (result === null) { if (ANIMATION.has(decl.name)) brokenAnimation = true; continue; }
       if (decl.name === "content") hasContent = true;
       decls.push(...result);
@@ -1328,7 +1403,7 @@ class Sanitizer {
     return { kind: "style", selectors, decls };
   }
 
-  declaration(decl: RawDecl, opts: { pseudo: boolean; isProtected: boolean; where: string; ctx: ValueContext }): CleanDecl[] | null {
+  declaration(decl: RawDecl, opts: { pseudo: boolean; isProtected: boolean; where: string; ctx: ValueContext; controlStates?: ControlState[] | null }): CleanDecl[] | null {
     const { name } = decl;
     const value = decl.value;
     const { where, pseudo, isProtected, ctx } = opts;
@@ -1342,6 +1417,11 @@ class Sanitizer {
       return [{ name, value, animation: false }];
     }
     if (DENIED[name]) { this.error(`${where}: \`${name}\` is not allowed (${DENIED[name]}).`); return null; }
+    if (name === "transform" && !pseudo && opts.controlStates) {
+      const scale = controlScale(value, opts.controlStates);
+      if (typeof scale !== "number") { this.error(`${where}: ${scale.problem}.`); return null; }
+      return [{ name, value: trimWs(value), animation: false, grow: scale }];
+    }
     if (!pseudo && REAL_ONLY_DENIED[name]) { this.error(`${where}: \`${name}\` is not allowed on real elements (${REAL_ONLY_DENIED[name]}); use ::before/::after for decoration.`); return null; }
     if (isProtected && (name === "opacity" || name === "transform" || name === "filter" || name === "content" || ANIMATION.has(name))) {
       this.error(`${where}: this is a protected control (composer, send/stop, approvals, settings, dialogs, palette, toasts); only cosmetic properties are allowed there.`);
@@ -1642,31 +1722,70 @@ export function keyframeName(id: string, name: string): string {
   return `ct-${id}-${name}`;
 }
 
-function serializeScoped(rules: CleanRule[], id: string, preview: boolean): string {
+function lastControlGrow(decls: CleanDecl[]): number | undefined {
+  return decls.reduce<number | undefined>((previous, decl) => decl.grow ?? previous, undefined);
+}
+
+/** The engine's keyframes for one control grow (shared by every rule asking for that scale). */
+function growKeyframes(id: string, scale: number): { name: string; css: string } {
+  // Keep the ct- pause prefix, with a different namespace from authored keyframes.
+  const name = `${CONTROL_GROW_ANIMATION_PREFIX}${id}-${String(scale).replace(".", "_")}`;
+  return { name, css: `@keyframes ${name} { from { scale: 1; } to { scale: ${scale}; } }` };
+}
+
+function serializeScoped(rules: CleanRule[], id: string, preview: boolean, grows = new Map<string, string>(), top = true): string {
   const scope = preview ? replicaScope(id) : customCssScope(id);
   const motionScope = `${scope}[data-theme-motion="on"]`;
   const rename = (name: string) => keyframeName(id, name);
-  return rules.map((rule) => {
+  const body = rules.map((rule) => {
     switch (rule.kind) {
       case "style": {
-        const statics = rule.decls.filter((d) => !d.animation);
+        const statics = rule.decls.filter((d) => !d.animation && d.grow === undefined);
         const motion = rule.decls.filter((d) => d.animation);
         const parts: string[] = [];
         if (statics.length) parts.push(`${rule.selectors.map((sel) => selectorText(sel, scope)).join(", ")} { ${statics.map((d) => declText(d)).join(" ")} }`);
         if (motion.length) parts.push(`@media (prefers-reduced-motion: no-preference) { ${rule.selectors.map((sel) => selectorText(sel, motionScope)).join(", ")} { ${motion.map((d) => declText(d, rename)).join(" ")} } }`);
+        // The last grow in a rule wins, as a repeated transform would.
+        const grow = lastControlGrow(rule.decls);
+        if (grow !== undefined) {
+          const control = rule.selectors.map((sel) => selectorText(sel, motionScope) + CONTROL_GUARD).join(", ");
+          // An explicit reset must participate in the cascade too. Own the
+          // whole timing so a saved stylesheet's animation longhands can't
+          // change or reverse this grow.
+          const accentFlow = `var(${ACCENT_FLOW_ANIMATION_VAR}, none)`;
+          let animation = accentFlow;
+          if (grow > 1) {
+            const frames = growKeyframes(id, grow);
+            grows.set(frames.name, frames.css);
+            const { durationMs, easing } = CONTROL_MOTION_LIMITS.grow;
+            animation = `${frames.name} ${durationMs}ms ${easing} forwards, ${accentFlow}`;
+          }
+          parts.push(`@media (prefers-reduced-motion: no-preference) { ${control} { animation: ${animation} !important; } }`);
+        }
         return parts.join("\n");
       }
       case "media": {
         const query = preview ? foldViewportMedia(rule.query) : rule.query;
         if (query === false) return "";
-        const body = serializeScoped(rule.rules, id, preview);
+        const body = serializeScoped(rule.rules, id, preview, grows, false);
         if (!body.trim()) return "";
         return query === true ? body : `@media ${query} {\n${body}\n}`;
       }
-      case "supports": return `@supports ${rule.condition} {\n${serializeScoped(rule.rules, id, preview)}\n}`;
+      case "supports": return `@supports ${rule.condition} {\n${serializeScoped(rule.rules, id, preview, grows, false)}\n}`;
       case "keyframes": return `@keyframes ${escapeIdent(rename(rule.name))} { ${rule.stops.map((stop) => `${stop.at} { ${stop.decls.map((d) => declText(d)).join(" ")} }`).join(" ")} }`;
     }
   }).join("\n");
+  return top && grows.size ? `${body}\n${[...grows.values()].join("\n")}` : body;
+}
+
+/** Whether a stylesheet moves anything once sanitized: an animation, or a control grow. */
+export function customCssMoves(css: string): boolean {
+  if (!css.trim()) return false;
+  const moves = (rules: CleanRule[]): boolean => rules.some((rule) => rule.kind === "style"
+    ? (lastControlGrow(rule.decls) ?? 1) > 1 || rule.decls.some((decl) => decl.animation && decl.name === "animation-name"
+      && decl.value.some((tok) => tok.t === "ident" && tok.v.toLowerCase() !== "none"))
+    : rule.kind === "media" || rule.kind === "supports" ? moves(rule.rules) : false);
+  return moves(runPipeline(css).rules);
 }
 
 /** Canonical, unscoped CSS for storage in the spec. Idempotent. */
