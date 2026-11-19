@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { TriangleAlert } from "lucide-react";
 import { settleConfirm, useConfirmStore, type ConfirmRequest } from "../lib/confirmDialog";
@@ -29,21 +29,7 @@ function actionLabel(label: string, title: string): string {
 function ConfirmDialogContents({ request }: { request: ConfirmRequest }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const [linkError, setLinkError] = useState("");
-  useModalFocus(dialogRef, true);
-
-  useEffect(() => {
-    // Capture phase + stopPropagation: Escape answers this dialog and never
-    // reaches the app-level handler that stops the running turn.
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        settleConfirm(request.id, false);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [request]);
+  useModalFocus(dialogRef, true, { onEscape: () => settleConfirm(request.id, false) });
 
   const [title, ...body] = request.message.split("\n\n");
   const destructive = /delete|remove|revert|discard|archive/i.test(request.message);

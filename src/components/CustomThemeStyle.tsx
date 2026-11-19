@@ -5,6 +5,7 @@
 // Removed on unmount or when no custom theme is active. Renders nothing.
 
 import { useLayoutEffect, useMemo } from "react";
+import { useMediaQueryMatch } from "../hooks/useMediaQueryMatch";
 import { compileThemeCss } from "../lib/customThemes/compile";
 import { CUSTOM_CSS_STYLE_ID, CUSTOM_THEME_STYLE_ID } from "../lib/customThemes/probe";
 import type { CustomThemeId, ThemeSpec } from "../lib/customThemes/spec";
@@ -13,10 +14,6 @@ function platform(): "mac" | "windows" | "other" {
   if (typeof document === "undefined") return "other";
   const value = document.documentElement.getAttribute("data-platform");
   return value === "windows" || value === "mac" ? value : "other";
-}
-
-function forcedColors(): boolean {
-  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(forced-colors: active)").matches;
 }
 
 function upsert(id: string, css: string, attrs: Record<string, string>): void {
@@ -33,16 +30,17 @@ function upsert(id: string, css: string, attrs: Record<string, string>): void {
 
 export function CustomThemeStyle(props: { spec: ThemeSpec | null; id?: CustomThemeId; revision?: number; customCssEnabled?: boolean }): null {
   const { spec, id, revision, customCssEnabled } = props;
+  const forcedColors = useMediaQueryMatch("(forced-colors: active)");
   const compiled = useMemo(() => {
     if (!spec || !id) return null;
     try {
       // Forced colours (Windows high contrast): tokens only; no customCss.
-      return compileThemeCss(spec, { id, scope: "app", platform: platform(), customCssEnabled: customCssEnabled !== false && !forcedColors() });
+      return compileThemeCss(spec, { id, scope: "app", platform: platform(), customCssEnabled, forcedColors });
     } catch (error) {
       console.error("Custom theme failed to compile", error);
       return null;
     }
-  }, [spec, id, customCssEnabled]);
+  }, [spec, id, customCssEnabled, forcedColors]);
 
   useLayoutEffect(() => {
     if (typeof document === "undefined") return;

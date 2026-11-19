@@ -449,13 +449,28 @@ export function effectPaints(effects: ThemeEffects, palette: EffectPalette): Eff
   return out;
 }
 
-/**
- * Worst-case backdrops behind a translucent surface: the bare base and each
- * back-layer effect colour at full strength composited on it.
- */
-export function backdropExtremes(base: Rgba, paints: EffectPaint[]): Rgba[] {
-  const out = [base];
-  for (const paint of paints) if (paint.layer === "back") out.push(composite(withAlpha(paint.color, paint.opacity), base));
+/** Effect order within each area matches the back layer in ThemeEffectsLayer. */
+const BACKDROP_ORDER: readonly EffectType[] = ["vignette", "mesh", "aurora", "grid", "starfield", "particles"];
+
+/** Include where two backdrop effects overlap behind the same translucent pane. */
+export function backdropExtremes(base: Rgba, paints: EffectPaint[]): Array<{ color: Rgba; effects: string[] }> {
+  const out: Array<{ color: Rgba; effects: string[] }> = [{ color: base, effects: [] }];
+  // Window effects paint first, then the effects clipped to a pane. Each effect
+  // contributes at most one colour per sample because its opacity is shared.
+  for (const area of EFFECT_AREAS) {
+    for (const effect of BACKDROP_ORDER) {
+      const group = paints.filter((paint) => paint.layer === "back" && paint.area === area && paint.effect === effect);
+      if (!group.length) continue;
+      const below = out.slice();
+      for (const paint of group) {
+        const foreground = withAlpha(paint.color, paint.opacity);
+        const label = `${effect} (${formatColor(paint.color)})`;
+        for (const backdrop of below) {
+          out.push({ color: composite(foreground, backdrop.color), effects: [...backdrop.effects, label] });
+        }
+      }
+    }
+  }
   return out;
 }
 

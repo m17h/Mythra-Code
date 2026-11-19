@@ -982,8 +982,15 @@ export function StudioDock(props: {
   // A changed file named in the transcript opens here, on that exact file:
   // Changes switches to Diff (for this visit; the saved preference stays) and
   // the file's heading takes focus, or a clear "no diff" state says why not.
-  const [fileRequest, setFileRequest] = useState<{ path: string; nonce: number } | null>(null);
-  const [linkTarget, setLinkTarget] = useState<{ path: string; nonce: number } | null>(null);
+  const diffScope = `${props.projectPath ?? ""}\u0000${props.activeThreadId ?? ""}`;
+  const [fileRequest, setFileRequest] = useState<{ scope: string; path: string; nonce: number } | null>(null);
+  const [dismissedLink, setDismissedLink] = useState<number | null>(null);
+  if (fileRequest && fileRequest.scope !== diffScope) setFileRequest(null);
+  const projectRoot = props.gitWorkflow?.snapshot?.rootPath ?? props.projectPath;
+  const selectedFileRequest = useMemo(() => fileRequest && fileRequest.scope === diffScope
+    ? { path: projectRelativePath(fileRequest.path, [projectRoot]), nonce: fileRequest.nonce }
+    : null, [diffScope, fileRequest, projectRoot]);
+  const linkTarget = selectedFileRequest && selectedFileRequest.nonce !== dismissedLink ? selectedFileRequest : null;
   const fileRequestNonce = useRef(0);
   const linkFocusHandled = useRef(0);
   // Uncommitted can show the staged version alone: exactly what "Commit N
@@ -997,23 +1004,18 @@ export function StudioDock(props: {
   const setReviewWide = props.onReviewWideChange ?? setOwnReviewWide;
   useEffect(() => { if (!props.open) setOwnReviewWide(false); }, [props.open]);
   const diffWrap = useDiffWrap();
-  const projectRoots = [props.projectPath, props.gitWorkflow?.snapshot?.rootPath];
-  const projectRootsKey = projectRoots.join("\u0000");
   useEffect(() => {
-    const roots = projectRootsKey.split("\u0000");
     const onOpenChanges = (event: Event) => {
       const path = (event as CustomEvent<{ path?: unknown }>).detail?.path;
       if (typeof path !== "string" || !path.trim()) return;
       fileRequestNonce.current += 1;
-      const next = { path: projectRelativePath(path, roots), nonce: fileRequestNonce.current };
-      setFileRequest(next);
-      setLinkTarget(next);
+      setFileRequest({ scope: diffScope, path, nonce: fileRequestNonce.current });
       setStagedViewOn(false);
       setChangesModeState("diff");
     };
     window.addEventListener("mythra:open-changes", onOpenChanges);
     return () => window.removeEventListener("mythra:open-changes", onOpenChanges);
-  }, [projectRootsKey]);
+  }, [diffScope]);
   const handledGitRoute = useRef(0);
   useEffect(() => {
     const route = props.gitRoute;
@@ -1021,8 +1023,11 @@ export function StudioDock(props: {
     handledGitRoute.current = route.nonce;
     // "changes" is the Changes tab itself; the Git tab keeps its last view.
     if (route.view !== "changes") setGitView(route.view);
+    // The push comparison replaces the commit editor. Open the uncommitted
+    // file list for a Commit shortcut without changing the saved Diff preference.
+    if (route.focus === "commit" && props.changesScope === "pushed") setChangesModeState("list");
     setPendingGitFocus({ route, scope: props.projectPath ?? "" });
-  }, [props.gitRoute, props.projectPath]);
+  }, [props.gitRoute, props.projectPath, props.changesScope]);
   useEffect(() => {
     setPendingGitFocus((current) => current && current.scope !== (props.projectPath ?? "") ? null : current);
   }, [props.projectPath]);
@@ -1101,7 +1106,6 @@ export function StudioDock(props: {
   // A read that never answered: say so and offer Retry, rather than "No differences".
   const [diffStalled, setDiffStalled] = useState(false);
   const diffLoadingTimer = useRef<number | undefined>(undefined);
-  const diffScope = `${props.projectPath ?? ""}\u0000${props.activeThreadId ?? ""}`;
   const wantsDiff = props.open && props.tab === "changes" && props.gitRepositoryState !== "absent" && !props.reviewDiff.text;
   const onRefreshDiff = props.onRefreshDiff;
   const readDiff = useCallback(() => {
@@ -1215,7 +1219,7 @@ export function StudioDock(props: {
         {newFilePaths.length ? <span className="diff-summary-new">{` · ${newFilePaths.length} new`}</span> : null}
         {liveCount ? <span className="diff-summary-new">{` · ${liveCount} with current edits`}</span> : null}
       </>
-      : viewLoading ? "Reading…" : diffStalled && !stagedView ? "Not read yet"
+      : viewPartial ? "Partial diff" : viewLoading ? "Reading…" : diffStalled && !stagedView ? "Not read yet"
         : emptyCopy.action === "staged" ? `${stagedCount} staged` : emptyCopy.title;
   // A file linked from the conversation: is it in the diff being shown?
   const linkInDiff = linkTarget ? diffSections.some((section) => section.path === linkTarget.path) || newFilePaths.includes(linkTarget.path) : false;
@@ -1298,7 +1302,7 @@ export function StudioDock(props: {
               <strong>{scope === "pushed" ? `${name} isn't in this comparison` : `No uncommitted changes for ${name}`}</strong>
               {directory && <small>{directory}</small>}
             </div>
-            <button type="button" className="icon-button diff-link-dismiss" aria-label="Dismiss" data-tip="Dismiss" onClick={() => setLinkTarget(null)}><X size={13} aria-hidden="true" /></button>
+            <button type="button" className="icon-button diff-link-dismiss" aria-label="Dismiss" data-tip="Dismiss" onClick={() => setDismissedLink(linkTarget.nonce)}><X size={13} aria-hidden="true" /></button>
           </div>
           <p>The conversation linked this file, but it has no {scope === "pushed" ? "difference from the remote branch" : "uncommitted diff"} now. It may have been committed, undone or renamed since that turn.</p>
           <div className="diff-link-missing-actions">
@@ -1316,7 +1320,7 @@ export function StudioDock(props: {
       <div className="diff-link-note" role="status">
         <Info size={12} aria-hidden="true" />
         <span>Opened from the conversation. This is <strong>{splitChangePath(linkTarget.path).name}</strong>&rsquo;s current diff, not a snapshot of that turn.</span>
-        <button type="button" className="icon-button diff-link-dismiss" aria-label="Dismiss" data-tip="Dismiss" onClick={() => setLinkTarget(null)}><X size={12} aria-hidden="true" /></button>
+        <button type="button" className="icon-button diff-link-dismiss" aria-label="Dismiss" data-tip="Dismiss" onClick={() => setDismissedLink(linkTarget.nonce)}><X size={12} aria-hidden="true" /></button>
       </div>
     )}
     {viewError ? (
@@ -1359,7 +1363,7 @@ export function StudioDock(props: {
       <p className="git-changes-loading" role="status"><RefreshCw className="spin" size={12} aria-hidden="true" /> {stagedView ? "Reading the staged files…" : "Reading the diff…"}</p>
     ) : diffStalled && !stagedView ? (
       <Empty compact icon={FileDiff} title="The diff hasn't loaded" text="Mythra Code asked Git for the diff but got no answer yet. This doesn't mean nothing changed." action={{ label: "Try again", icon: RefreshCw, onClick: readDiff }} />
-    ) : linkMissing ? null : (
+    ) : linkMissing || viewPartial ? null : (
       <Empty
         compact
         icon={FileDiff}
@@ -1371,6 +1375,10 @@ export function StudioDock(props: {
       />
     )}
   </>;
+  // Since last push is a comparison: it has neither a commit editor nor a checks control.
+  const comparison = scope === "pushed" && props.onChangesScope
+    ? { onSwitch: () => props.onChangesScope?.("working") }
+    : undefined;
   const changesMenuItems: AppActionMenuItem[] = [
     {
       id: "ai-review",
@@ -1384,10 +1392,11 @@ export function StudioDock(props: {
       id: "wide",
       label: reviewWide ? "Exit wide review" : "Wide review",
       icon: reviewWide ? <Minimize2 size={13} aria-hidden="true" /> : <Maximize2 size={13} aria-hidden="true" />,
-      title: "Widen Tools for reading diffs",
+      disabled: Boolean(wideBlockedReason),
+      title: wideBlockedReason || "Widen Tools for reading diffs",
       onSelect: () => setReviewWide(!reviewWide),
     },
-    ...(props.checksControl ? [{
+    ...(props.checksControl && !(comparison && changesMode === "diff") ? [{
       id: "checks",
       label: "Check command…",
       icon: <ListChecks size={13} aria-hidden="true" />,
@@ -1414,12 +1423,6 @@ export function StudioDock(props: {
       <button type="button" className="github-secondary-button" onClick={props.onOpenFeedbackDraft} title="Return Tools to its usual width and move to the message. Nothing is sent until you press Send.">Open draft</button>
     </div>
   ) : null;
-  // Since last push is a comparison: the footer never offers a commit that
-  // would record a different set from the one listed above it.
-  const comparison = scope === "pushed" && props.onChangesScope
-    ? { onSwitch: () => props.onChangesScope?.("working") }
-    : undefined;
-
   const gitPanel = (surface: "changes" | "repository") => (
     <GitPanel
       key={props.projectPath ?? ""}
@@ -1428,7 +1431,7 @@ export function StudioDock(props: {
       diffCount={surface === "changes" ? viewCount : undefined}
       toolbarExtra={surface === "changes" ? props.checksControl : undefined}
       onChangesLoaded={surface === "changes" ? onChangesLoaded : undefined}
-      selectRequest={surface === "changes" ? fileRequest : undefined}
+      selectRequest={surface === "changes" ? selectedFileRequest : undefined}
       moreMenuHost={surface === "changes" ? changesMenuHost : undefined}
       extraMenuItems={surface === "changes" ? changesMenuItems : undefined}
       comparison={surface === "changes" ? comparison : undefined}

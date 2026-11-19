@@ -73,7 +73,7 @@ mod live_transcription;
 mod workspace_folder;
 mod window_capture;
 use agents::{
-    child_agent_bridge_config_allows_spawning, child_agent_bridge_config_registered,
+    child_agent_bridge_config_native_conflict, child_agent_bridge_config_registered,
     child_agent_bridge_mailbox_control_response, child_agent_bridge_theme_control_response,
     child_agent_claim_spawn, child_agent_finished, child_agent_reactivate, child_agent_request_active,
     child_agent_respond, child_agent_retire_unclaimed_spawns, child_agent_revoke_root_registration,
@@ -3206,6 +3206,7 @@ fn normalize_lmstudio_model_catalog(value: &Value) -> Option<Value> {
                 "owned_by": model.get("publisher").and_then(Value::as_str).unwrap_or("LM Studio"),
                 "context_length": model.get("max_context_length").and_then(Value::as_u64),
                 "trained_for_tool_use": model.pointer("/capabilities/trained_for_tool_use").and_then(Value::as_bool),
+                "vision": model.pointer("/capabilities/vision").and_then(Value::as_bool),
                 "reasoning": model.pointer("/capabilities/reasoning").cloned(),
             }))
         })
@@ -4214,8 +4215,8 @@ async fn validate_native_codex_bridges(
             "The native thread's Mythra Code project bridge has invalid arguments.".to_string()
         })?;
     let command = bridge["command"].as_str().unwrap_or_default();
-    if agents::child_agent_bridge_launch_allows_spawning(state, &args).await {
-        return Err("Native Codex sub-agents cannot run with a Mythra Code delegation bridge. Reconfigure this thread's sub-agent mode before starting.".into());
+    if let Some(reason) = agents::child_agent_bridge_launch_native_conflict(state, &args).await {
+        return Err(reason.into());
     }
     if !agents::child_agent_bridge_launch_registered(state, name, command, &args).await {
         return Err("The native thread's Mythra Code project bridge is no longer active.".into());
@@ -7367,10 +7368,10 @@ async fn claude_turn_start(
         if !child_agent_bridge_config_registered(&agent_state, bridge_config).await {
             return Err("The sub-agent bridge configuration is no longer active.".into());
         }
-        if options.native_subagents
-            && child_agent_bridge_config_allows_spawning(&agent_state, bridge_config).await
-        {
-            return Err("Native Claude sub-agents cannot run with a Mythra Code delegation bridge. Reconfigure this thread's sub-agent mode before starting.".into());
+        if options.native_subagents {
+            if let Some(reason) = child_agent_bridge_config_native_conflict(&agent_state, bridge_config).await {
+                return Err(reason.into());
+            }
         }
         // Claude merges this server with the user's normal MCP configuration.
         command.args(["--mcp-config", bridge_config]);
@@ -7538,9 +7539,7 @@ async fn claude_turn_start(
     } else {
         options.child_agent_bridge_config.clone()
     };
-    // Theme tools are app-appearance tools on root registrations, including
-    // threads that use native Claude sub-agents; the check below binds them
-    // to this turn's exact live bridge and ignores sub-agent requests.
+    // Bind appearance permissions to this turn's exact live root bridge.
     let stdout_bridge_config = options.child_agent_bridge_config.clone();
     let stdout_permission = options.permission;
     let stdout_cwd = options.cwd;

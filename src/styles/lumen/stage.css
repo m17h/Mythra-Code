@@ -713,6 +713,7 @@
    styles.css can't hide anything on their own. */
 .app-shell[data-theme][data-color-scheme] .topbar .runtime-status { display: inline-flex; max-width: none; flex: 0 0 auto; }
 .app-shell[data-theme][data-color-scheme] .topbar .runtime-status > span:not(.sr-only) { display: inline; overflow: visible; }
+.app-shell[data-theme][data-color-scheme] .topbar .runtime-status > span.runtime-status-word-short { display: none; }
 .app-shell[data-theme][data-color-scheme] .topbar .command-palette-trigger { display: flex; width: auto; padding: 0 6px 0 9px; justify-content: flex-start; }
 .app-shell[data-theme][data-color-scheme] .topbar .command-palette-trigger > span,
 .app-shell[data-theme][data-color-scheme] .topbar .command-palette-trigger kbd,
@@ -747,7 +748,9 @@
 .app-shell[data-theme][data-color-scheme] .topbar[data-shed~="8"] .isolation-chip,
 .app-shell[data-theme][data-color-scheme] .topbar[data-shed~="8"] .handoff-chip { width: 28px; padding: 0; justify-content: center; }
 .app-shell[data-theme][data-color-scheme] .topbar[data-shed~="9"] .thread-pr-prefix,
-.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="9"] .thread-pr-chip > em { display: none; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="9"] .thread-pr-chip > em,
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="9"] .runtime-status > .runtime-status-word-full { display: none; }
+.app-shell[data-theme][data-color-scheme] .topbar[data-shed~="9"] .runtime-status > .runtime-status-word-short { display: inline; }
 .app-shell[data-theme][data-color-scheme] .project-heading-path { color: var(--muted-2); }
 /* "Ready" is a state, so its dot is the status green, not the interaction accent (M07). */
 .app-shell[data-theme][data-color-scheme] div.runtime-status:not(.working) > svg { color: var(--success); }

@@ -154,7 +154,7 @@ export function McpServerSettings({ mcpServers = [], onMcpChanged, onSignIn, dra
           <div className="set-copy"><strong>{server.name}</strong><small>{server.tools} tool{server.tools === 1 ? "" : "s"}</small></div>
           <div className="set-control">
             <span className={`provider-status${mcpServerConnected(server.status) ? " on" : ""}`}>{mcpStatusLabel(server.status)}</span>
-            {server.status === "needsAuth" && onSignIn && <button type="button" className="secondary-button" onClick={onSignIn} title="Finish signing in from Tools → Skills & MCP">Sign in</button>}
+            {(server.status === "notLoggedIn" || server.status === "needsAuth") && onSignIn && <button type="button" className="secondary-button" onClick={onSignIn} title="Finish signing in from Tools → Skills & MCP">Sign in</button>}
             <button
               type="button"
               className="icon-button harness-delete"

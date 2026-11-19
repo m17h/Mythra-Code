@@ -5,7 +5,7 @@
 // it from one "Custom themes" button.
 
 import "./ThemeLibraryDialog.css";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronLeft, ChevronRight, RotateCcw, Search, Sparkles, Trash2, Undo2, X } from "lucide-react";
 import { AppSelectMenu } from "./AppSelectMenu";
@@ -18,6 +18,7 @@ import { THEMES } from "../lib/appConfig";
 import {
   canUndo,
   commitCustomThemeRevision,
+  getCustomTheme,
   headSpec,
   renameCustomTheme,
   revisionAuthor,
@@ -347,28 +348,28 @@ function ThemeDetails({ record, nameInputRef, inUse, animate, onBack, onUse, onA
   const [now, setNow] = useState(() => Date.now());
   const historyId = useId();
   const nameId = useId();
-  const editing = useRef(false);
-  useEffect(() => { if (!editing.current) setName(spec.name); }, [spec.name]);
+  const pendingName = useRef<string | null>(null);
+  useEffect(() => { if (pendingName.current === null) setName(spec.name); }, [spec.name]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
 
-  const commitName = () => {
-    editing.current = false;
-    const next = name.trim();
-    if (!next) { setName(spec.name); return; }
-    if (next !== spec.name) renameCustomTheme(record.id, next, USER);
-  };
+  const commitName = useCallback(() => {
+    if (pendingName.current === null) return;
+    const next = pendingName.current.trim();
+    pendingName.current = null;
+    const current = getCustomTheme(record.id);
+    if (!current) return;
+    const outcome = next ? renameCustomTheme(record.id, next, USER) : null;
+    setName(headSpec(outcome?.ok ? outcome.record : current).name);
+  }, [record.id]);
   // Typing autosaves after a pause, like the rest of Settings.
   useEffect(() => {
-    if (!editing.current) return;
-    const timer = window.setTimeout(() => {
-      const next = name.trim();
-      if (next && next !== headSpec(record).name) renameCustomTheme(record.id, next, USER);
-    }, 450);
+    if (!pendingName.current?.trim()) return;
+    const timer = window.setTimeout(commitName, 450);
     return () => window.clearTimeout(timer);
-  }, [name, record]);
+  }, [name, commitName]);
 
   const undo = canUndo(record);
   const baseTheme = THEMES.find((theme) => theme.id === spec.base);
@@ -394,11 +395,11 @@ function ThemeDetails({ record, nameInputRef, inUse, animate, onBack, onUse, onA
           value={name}
           maxLength={40}
           spellCheck={false}
-          onChange={(event) => { editing.current = true; setName(event.target.value); }}
+          onChange={(event) => { pendingName.current = event.target.value; setName(event.target.value); }}
           onBlur={commitName}
           onKeyDown={(event) => {
             if (event.key === "Enter") { event.preventDefault(); commitName(); event.currentTarget.blur(); }
-            if (event.key === "Escape" && name !== spec.name) { event.preventDefault(); event.stopPropagation(); editing.current = false; setName(spec.name); }
+            if (event.key === "Escape" && pendingName.current !== null && name !== spec.name) { event.preventDefault(); event.stopPropagation(); pendingName.current = null; setName(spec.name); }
           }}
         />
         {spec.description && <p className="ct-lib-description">{spec.description}</p>}

@@ -67,13 +67,17 @@ export interface PaneFitInput {
   sidebarWidth: number;
 }
 
+function toolsNeedOverlay(windowWidth: number, scale: number): boolean {
+  if (!Number.isFinite(windowWidth) || windowWidth <= 0) return false;
+  return windowWidth <= DOCK_OVERLAY_MAX || windowWidth / (scale > 0 ? scale : 1) < PANE_BOUNDS.dock.min + STAGE_MIN_WIDTH;
+}
+
 /** The widest the dock may be drawn so the chat keeps STAGE_MIN_WIDTH. */
 export function dockFitMax({ windowWidth, scale, sidebarWidth }: PaneFitInput): number {
   const { min, max } = PANE_BOUNDS.dock;
   if (!Number.isFinite(windowWidth) || windowWidth <= 0) return max;
-  // A floating sheet covers the chat by design; it keeps its own cap (92vw).
-  if (windowWidth <= DOCK_OVERLAY_MAX) return max;
   const shell = windowWidth / (scale > 0 ? scale : 1);
+  if (toolsNeedOverlay(windowWidth, scale)) return Math.max(min, Math.min(max, Math.floor(shell * 0.92)));
   return Math.max(min, Math.min(max, Math.floor(shell - sidebarWidth - STAGE_MIN_WIDTH)));
 }
 
@@ -160,6 +164,8 @@ export interface PaneResizeApi {
   dockWidth: number;
   /** The widest the dock may be dragged to right now. */
   dockMax: number;
+  /** The window cannot fit both Tools and the conversation side by side. */
+  dockOverlay: boolean;
   /** The sidebar must tuck away while the Tools panel is open, or the chat would be too narrow. */
   sidebarCrowded: boolean;
   /** Attach to each pane's root element: it owns that pane's width property. */
@@ -237,9 +243,7 @@ export function usePaneResize(uiScale: number, layout: PaneLayout = { sidebarOpe
 
   const commitPaneSize = useCallback((pane: PaneKey, size: number) => {
     const current = paneSizesRef.current;
-    // A press with no movement, or a drag that only pushed further past a
-    // clamp, has nothing to commit — and nothing to write to storage.
-    if (current[pane] === size) return;
+    if (current[pane] === size && (pane !== "dock" || !autoDockRef.current)) return;
     const next = { ...current, [pane]: size };
     if (pane === "dock") autoDockRef.current = false;
     paneSizesRef.current = next;
@@ -260,11 +264,10 @@ export function usePaneResize(uiScale: number, layout: PaneLayout = { sidebarOpe
       const root = paneRootsRef.current[pane];
       const pointerId = Number.isFinite(event.pointerId) ? event.pointerId : null;
       const startX = event.clientX;
-      if (pane === "dock" && autoDockRef.current) {
-        paneSizesRef.current = { ...paneSizesRef.current, dock: measuredPaneSize(root, pane, paneSizesRef.current.dock) };
-      }
+      const savedSize = paneSizesRef.current[pane];
+      const size = pane === "dock" && autoDockRef.current ? measuredPaneSize(root, pane, savedSize) : savedSize;
       // A saved width wider than the window allows starts from what is drawn.
-      const startSize = clampToFitRef.current(pane, paneSizesRef.current[pane]);
+      const startSize = clampToFitRef.current(pane, size);
       let latest = startSize;
       let captured = false;
 
@@ -276,6 +279,10 @@ export function usePaneResize(uiScale: number, layout: PaneLayout = { sidebarOpe
       const paint = (size: number) => {
         writePaneVariable(root, pane, size);
         handle?.setAttribute("aria-valuenow", String(Math.round(size)));
+      };
+      const restoreDock = () => {
+        writePaneVariable(root, pane, paneSizesRef.current.dock, autoDockRef.current, dockMaxRef.current);
+        handle?.setAttribute("aria-valuenow", String(measuredPaneSize(root, pane, startSize)));
       };
 
       let cancelGesture: () => void;
@@ -312,15 +319,14 @@ export function usePaneResize(uiScale: number, layout: PaneLayout = { sidebarOpe
       const onEnd = (endEvent: PointerEvent) => {
         if (!belongsToGesture(endEvent)) return;
         teardown();
-        commitPaneSize(pane, latest);
+        if (latest !== startSize) commitPaneSize(pane, latest);
+        else if (pane === "dock") restoreDock();
       };
 
       cancelGesture = () => {
         teardown();
-        if (latest !== startSize) {
-          if (pane === "dock") writePaneVariable(root, pane, paneSizesRef.current.dock, autoDockRef.current, dockMaxRef.current);
-          else paint(startSize);
-        }
+        if (pane === "dock") restoreDock();
+        else if (latest !== startSize) paint(startSize);
       };
 
       const onPointerCancel = (cancelEvent: PointerEvent) => {
@@ -359,10 +365,9 @@ export function usePaneResize(uiScale: number, layout: PaneLayout = { sidebarOpe
       if (cancelDragRef.current) return;
       const { min } = PANE_BOUNDS[pane];
       const max = pane === "dock" ? Math.min(PANE_BOUNDS.dock.max, dockMaxRef.current) : PANE_BOUNDS[pane].max;
-      if (pane === "dock" && autoDockRef.current) {
-        paneSizesRef.current = { ...paneSizesRef.current, dock: measuredPaneSize(paneRootsRef.current.dock, pane, paneSizesRef.current.dock) };
-      }
-      const current = clampToFitRef.current(pane, paneSizesRef.current[pane]);
+      const savedSize = paneSizesRef.current[pane];
+      const size = pane === "dock" && autoDockRef.current ? measuredPaneSize(paneRootsRef.current.dock, pane, savedSize) : savedSize;
+      const current = clampToFitRef.current(pane, size);
       // The sidebar grows rightwards and the dock leftwards, so each arrow
       // moves the edge the way the pointer would.
       const step = pane === "sidebar" ? KEYBOARD_STEP : -KEYBOARD_STEP;
@@ -384,11 +389,12 @@ export function usePaneResize(uiScale: number, layout: PaneLayout = { sidebarOpe
           return;
       }
       event.preventDefault();
-      commitPaneSize(pane, next);
+      if (next !== current) commitPaneSize(pane, next);
     },
     [commitPaneSize],
   );
 
-  const dockWidth = Math.min(paneSizes.dock, dockMax);
-  return { paneSizes, dockWidth, dockMax, sidebarCrowded, paneRefs, startPaneResize, resizePaneWithKeyboard };
+  const desiredDockWidth = autoDockRef.current ? Math.max(420, windowWidth * 0.3) : paneSizes.dock;
+  const dockWidth = Math.min(desiredDockWidth, dockMax);
+  return { paneSizes, dockWidth, dockMax, dockOverlay: toolsNeedOverlay(windowWidth, uiScale), sidebarCrowded, paneRefs, startPaneResize, resizePaneWithKeyboard };
 }

@@ -39,6 +39,10 @@ export interface ComposerHandle {
   focus: () => void;
 }
 
+interface EditingCopy {
+  previous: string;
+}
+
 /**
  * Per-thread draft persistence. Drafts live outside React state so switching
  * threads never loses a half-written message; writes are debounced and the
@@ -317,9 +321,9 @@ export const Composer = forwardRef<ComposerHandle, {
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const scheduleButtonRef = useRef<HTMLButtonElement>(null);
   const [draft, setDraftState] = useState(() => draftFor(props.threadKey));
-  // The draft holds a copy of an earlier message (message "Edit"). Cleared on
-  // send, when the box is emptied, and on thread switch.
-  const [editingCopy, setEditingCopy] = useState<{ key: string; previous: string } | null>(null);
+  // Keep the displaced draft recoverable while editing a copy of a message.
+  const [editingCopies, setEditingCopies] = useState<ReadonlyMap<string, EditingCopy>>(() => new Map());
+  const editingCopy = editingCopies.get(props.threadKey);
   const dependencyPreview = useSkillDependencyPreview(draft, props.onAnalyzeSkillDependencies, props.threadKey);
   const blockedNames = useMemo(() => blockedSkillNames(dependencyPreview.report), [dependencyPreview.report]);
   const submittingRef = useRef(new Set<string>());
@@ -352,6 +356,16 @@ export const Composer = forwardRef<ComposerHandle, {
     persistDraft(threadKeyRef.current, text);
   }, []);
 
+  const clearEditingCopy = useCallback((key: string, expected?: EditingCopy) => {
+    setEditingCopies((current) => {
+      const selected = current.get(key);
+      if (!selected || (expected && selected !== expected)) return current;
+      const remaining = new Map(current);
+      remaining.delete(key);
+      return remaining;
+    });
+  }, []);
+
   // Thread switch: save-on-change already persisted the old draft; load the
   // new one during render so the previous thread's draft never flashes.
   const [renderedThreadKey, setRenderedThreadKey] = useState(props.threadKey);
@@ -364,9 +378,7 @@ export const Composer = forwardRef<ComposerHandle, {
     setSelectedWorkflow(selectedWorkflowsRef.current.get(props.threadKey)?.workflow ?? null);
     // A schedule always belongs to the draft it was opened from.
     setScheduleOpen(false);
-    setEditingCopy(null);
   }
-  if (editingCopy && (editingCopy.key !== props.threadKey || !draft.trim())) setEditingCopy(null);
 
   // A transcript joins the end of the open draft and is never sent. Voice is
   // canceled on every thread switch and before the draft is sent, scheduled
@@ -433,21 +445,25 @@ export const Composer = forwardRef<ComposerHandle, {
   useImperativeHandle(ref, () => ({
     setDraft: (text: string) => {
       cancelVoice("Voice input canceled because the draft was replaced.");
+      clearEditingCopy(threadKeyRef.current);
       setDraft(text);
       requestAnimationFrame(() => textareaRef.current?.focus());
     },
     editMessage: (text: string) => {
       cancelVoice("Voice input canceled because the draft was replaced.");
-      setEditingCopy({ key: threadKeyRef.current, previous: draftFor(threadKeyRef.current) });
+      const key = threadKeyRef.current;
+      const previous = draftFor(key);
+      setEditingCopies((current) => new Map(current).set(key, { previous: current.get(key)?.previous ?? previous }));
       setDraft(text);
       requestAnimationFrame(() => {
+        if (threadKeyRef.current !== key) return;
         const textarea = textareaRef.current;
         textarea?.focus();
         textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
       });
     },
     focus: () => textareaRef.current?.focus(),
-  }), [cancelVoice, setDraft]);
+  }), [cancelVoice, clearEditingCopy, setDraft]);
 
   // Dismissing also abandons the file lookup already in flight. Without that,
   // the debounced search from the last keystroke resolves a moment later and
@@ -667,6 +683,7 @@ export const Composer = forwardRef<ComposerHandle, {
             if (threadKeyRef.current === sentFromKey) setSelectedWorkflow(null);
           }
           if (draftFor(sentFromKey) === submittedDraft) {
+            if (editingCopy) clearEditingCopy(sentFromKey, editingCopy);
             if (threadKeyRef.current === sentFromKey) setDraft("");
             else persistDraft(sentFromKey, "");
           }
@@ -700,7 +717,9 @@ export const Composer = forwardRef<ComposerHandle, {
     } finally {
       submittingRef.current.delete(sentFromKey);
       setSubmittingKeys(new Set(submittingRef.current));
-      if (!draftStaysSent(delivered) && text) {
+      if (draftStaysSent(delivered)) {
+        if (editingCopy) clearEditingCopy(sentFromKey, editingCopy);
+      } else if (text) {
         // Persist synchronously, just like typing and transcript admission.
         // A deferred React updater can otherwise overwrite a transcript that
         // arrived after this callback but before React processes the queue.
@@ -711,7 +730,7 @@ export const Composer = forwardRef<ComposerHandle, {
         }
       }
     }
-  }, [canLaunchWorkflow, cancelVoice, closeMentions, closeWorkflows, draft, props, selectedWorkflow, setDraft]);
+  }, [canLaunchWorkflow, cancelVoice, clearEditingCopy, closeMentions, closeWorkflows, draft, editingCopy, props, selectedWorkflow, setDraft]);
 
   const canSchedule = Boolean(props.onSchedule) && !selectedWorkflow && !submitting && !workflowSubmitting
     && Boolean(draft.trim() || props.hasFeedback);
@@ -735,7 +754,9 @@ export const Composer = forwardRef<ComposerHandle, {
     } finally {
       submittingRef.current.delete(sentFromKey);
       setSubmittingKeys(new Set(submittingRef.current));
-      if (!scheduled && text) {
+      if (scheduled) {
+        if (editingCopy) clearEditingCopy(sentFromKey, editingCopy);
+      } else if (text) {
         const existing = draftFor(sentFromKey);
         persistDraft(sentFromKey, existing && existing !== text ? `${text}\n\n${existing}` : text);
         if (threadKeyRef.current === sentFromKey) {
@@ -744,7 +765,7 @@ export const Composer = forwardRef<ComposerHandle, {
       }
     }
     return scheduled;
-  }, [cancelVoice, closeMentions, closeWorkflows, draft, props, setDraft]);
+  }, [cancelVoice, clearEditingCopy, closeMentions, closeWorkflows, draft, editingCopy, props, setDraft]);
 
   return (
     <div className={`composer ${props.queueing ? "queueing" : ""} ${props.dropActive ? "drop-target" : ""} ${voice.view ? "voice-active" : ""}`}>
@@ -832,10 +853,10 @@ export const Composer = forwardRef<ComposerHandle, {
           <span>Editing a copy of an earlier message. Sending adds it as a new message.</span>
           <button
             type="button"
+            disabled={submitting || workflowSubmitting}
             onClick={() => {
-              const previous = editingCopy.previous;
-              setEditingCopy(null);
-              setDraft(previous);
+              clearEditingCopy(props.threadKey, editingCopy);
+              setDraft(editingCopy.previous);
               textareaRef.current?.focus();
             }}
           >Cancel</button>
@@ -926,7 +947,7 @@ export const Composer = forwardRef<ComposerHandle, {
           spellCheck
           // Right-click (or the menu key / Shift+F10) opens Cut, Copy, Paste
           // and Select all; Paste goes through onPaste below (lib/editMenu.ts).
-          data-edit-menu=""
+          data-edit-menu={props.threadKey}
           // The @ menu is an inline listbox the textarea drives, so the active
           // option has to be announced from here — it never takes focus itself.
           aria-autocomplete="list"

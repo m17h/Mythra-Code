@@ -90,7 +90,7 @@ export function RemoteComposerControls({ device, workspaceId, revision, onOpenTh
       onEngineChange={(engine) => change({ engine })}
       onNativeMaxConcurrentChange={(maxConcurrent) => change({ maxConcurrent })}
       onNativeOptionsChange={(nativeOptions) => change({ nativeOptions: nativeOptions as WireSubagents["nativeOptions"] })}
-      onAutoCompactTokensChange={(autoCompactTokens) => change(autoCompactTokens === undefined ? {} : { autoCompactTokens })}
+      onAutoCompactTokensChange={(autoCompactTokens) => change({ autoCompactTokens })}
       onChange={(next) => {
         change({ enabled: next.enabled, maxConcurrent: next.maxConcurrent, crew: next.childAgents.targets as WireSubagents["crew"] });
       }} />

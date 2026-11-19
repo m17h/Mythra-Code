@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronRight, Eye, EyeOff, File, Folder, Home, LoaderCircle, Paperclip, Search, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { rpc } from "../lib/codex";
@@ -59,21 +59,20 @@ export function FileBrowser({ root, onAttach, source = LOCAL_FILES }: { root: st
   // One tab stop for the whole list (arrow keys move within it), and focus
   // that lands back on the right row after opening a folder or closing a preview.
   const listRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
-  const focusFirstAfterLoad = useRef(false);
-  const focusRow = (path: string | null | undefined) => {
-    if (!path) return;
-    window.requestAnimationFrame(() => {
-      const row = [...(listRef.current?.querySelectorAll<HTMLButtonElement>("[data-file-row]") ?? [])].find((node) => node.dataset.fileRow === path);
-      row?.focus();
-    });
-  };
+  const directoryFocus = useRef<{ path: string; preferredRow?: string } | null>(null);
+  const focusRow = useCallback((path: string | null | undefined) => {
+    const row = [...(listRef.current?.querySelectorAll<HTMLButtonElement>("[data-file-row]") ?? [])].find((node) => node.dataset.fileRow === path);
+    (row ?? searchRef.current)?.focus();
+  }, []);
   const rootIsCurrent = directoryRoot === normalizedRoot;
   const loading = query.trim() ? searchLoading : directoryLoading;
 
   useEffect(() => () => { previewRequestRef.current += 1; }, []);
 
   useEffect(() => {
+    directoryFocus.current = null;
     setCurrentDirectory(normalizedRoot);
     setDirectoryRoot(normalizedRoot);
     setDirectory(null);
@@ -151,11 +150,13 @@ export function FileBrowser({ root, onAttach, source = LOCAL_FILES }: { root: st
   const rovingPath = entries.some((entry) => entry.path === activePath) ? activePath
     : entries.some((entry) => entry.path === selected) ? selected : entries[0]?.path ?? null;
   useEffect(() => {
-    if (!focusFirstAfterLoad.current || !entries.length) return;
-    focusFirstAfterLoad.current = false;
-    setActivePath(entries[0].path);
-    focusRow(entries[0].path);
-  }, [entries]);
+    const pending = directoryFocus.current;
+    if (!pending || pending.path !== currentDirectory || !rootIsCurrent || (directory?.path !== currentDirectory && !directoryError)) return;
+    directoryFocus.current = null;
+    if (document.activeElement !== listRef.current) return;
+    const preferred = entries.find((entry) => entry.path === pending.preferredRow);
+    focusRow((preferred ?? entries[0])?.path);
+  }, [currentDirectory, directory, directoryError, entries, focusRow, rootIsCurrent]);
   const closePreview = () => {
     const path = selected;
     previewRequestRef.current += 1;
@@ -174,15 +175,10 @@ export function FileBrowser({ root, onAttach, source = LOCAL_FILES }: { root: st
     else if (event.key === "ArrowUp") next = Math.max(0, index - 1);
     else if (event.key === "Home") next = 0;
     else if (event.key === "End") next = rows.length - 1;
-    else if (event.key === "ArrowRight" && entry?.directory) { event.preventDefault(); focusFirstAfterLoad.current = true; navigate(entry.path); return; }
+    else if (event.key === "ArrowRight" && entry?.directory) { event.preventDefault(); navigate(entry.path, {}); return; }
     else if ((event.key === "ArrowLeft" || event.key === "Backspace") && !query.trim() && currentDirectory !== normalizedRoot) {
       event.preventDefault();
-      const from = currentDirectory;
-      goUp();
-      // Land on the folder just left, once its parent has listed.
-      setActivePath(from);
-      focusRow(from);
-      window.setTimeout(() => focusRow(from), 250);
+      navigate(parentPath(currentDirectory) ?? normalizedRoot, { preferredRow: currentDirectory });
       return;
     }
     if (next < 0) return;
@@ -193,12 +189,17 @@ export function FileBrowser({ root, onAttach, source = LOCAL_FILES }: { root: st
   const relativeDirectory = relativeDisplayPath(normalizedRoot, currentDirectory);
   const breadcrumbParts = rootIsCurrent ? pathSegments(relativeDirectory) : [];
 
-  const navigate = (path: string) => {
+  const navigate = (path: string, focus?: { preferredRow?: string }) => {
+    directoryFocus.current = focus ? { path, preferredRow: focus.preferredRow } : null;
+    if (focus) listRef.current?.focus({ preventScroll: true });
     // Entries belong to the folder that returned them. Clear them in the same
     // update as navigation so they cannot be remapped into the next folder.
     // The current breadcrumb also leaves search/preview mode. Reuse its
     // listing because setting the same path does not trigger another read.
-    if (path !== currentDirectory) setDirectory(null);
+    if (path !== currentDirectory) {
+      setDirectory(null);
+      setDirectoryError("");
+    }
     setCurrentDirectory(path);
     setSelected(null);
     setPreview("");
@@ -207,11 +208,7 @@ export function FileBrowser({ root, onAttach, source = LOCAL_FILES }: { root: st
     setPreviewLoading(false);
   };
 
-  const openEntry = async (path: string, directoryEntry: boolean) => {
-    if (directoryEntry) {
-      navigate(path);
-      return;
-    }
+  const openFile = async (path: string) => {
     const request = ++previewRequestRef.current;
     setSelected(path);
     setPreview("");
@@ -249,11 +246,11 @@ export function FileBrowser({ root, onAttach, source = LOCAL_FILES }: { root: st
         </nav>
         <button className={`file-nav-button ${showIgnored ? "active" : ""}`} onClick={() => setShowIgnored((show) => !show)} aria-pressed={showIgnored} aria-label={showIgnored ? "Hide generated and ignored folders" : "Show generated and ignored folders"} title={showIgnored ? "Hide generated folders" : "Show generated folders"}>{showIgnored ? <EyeOff size={13} /> : <Eye size={13} />}</button>
       </div>
-      <label className="file-search"><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the whole project…" />{loading || previewLoading ? <LoaderCircle className="spin" size={13} /> : query && <button onClick={() => setQuery("")} aria-label="Clear file search"><X size={12} /></button>}</label>
+      <label className="file-search"><Search size={13} /><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the whole project…" />{loading || previewLoading ? <LoaderCircle className="spin" size={13} /> : query && <button onClick={() => setQuery("")} aria-label="Clear file search"><X size={12} /></button>}</label>
       {/* The preview pane only takes room once there is a file to show. */}
       <div className={`file-browser-body${rootIsCurrent && selected ? " has-preview" : ""}`}>
-        <div className="file-results" ref={listRef} role="group" aria-label={query ? "Project search results" : "Folder contents"} onKeyDown={onListKeyDown}>
-          {entries.map((entry) => <button key={entry.path} data-file-row={entry.path} tabIndex={entry.path === rovingPath ? 0 : -1} aria-current={selected === entry.path ? "true" : undefined} className={selected === entry.path ? "selected" : ""} onFocus={() => setActivePath(entry.path)} onClick={(event) => { if (entry.directory && event.detail === 0) focusFirstAfterLoad.current = true; void openEntry(entry.path, entry.directory); }} title={entry.path}>{entry.directory ? <Folder size={13} /> : <File size={13} />}<span>{entry.name}</span>{entry.directory && <ChevronRight size={11} />}</button>)}
+        <div className="file-results" ref={listRef} tabIndex={-1} role="group" aria-label={query ? "Project search results" : "Folder contents"} onKeyDown={onListKeyDown}>
+          {entries.map((entry) => <button key={entry.path} data-file-row={entry.path} tabIndex={entry.path === rovingPath ? 0 : -1} aria-current={selected === entry.path ? "true" : undefined} className={selected === entry.path ? "selected" : ""} onFocus={() => setActivePath(entry.path)} onClick={(event) => { if (entry.directory) navigate(entry.path, event.detail === 0 ? {} : undefined); else void openFile(entry.path); }} title={entry.path}>{entry.directory ? <Folder size={13} /> : <File size={13} />}<span>{entry.name}</span>{entry.directory && <ChevronRight size={11} />}</button>)}
           {!entries.length && !loading && <span className="file-empty">{directoryError || (query ? "No matching files" : "This folder is empty")}</span>}
         </div>
         {rootIsCurrent && selected && (

@@ -56,6 +56,7 @@ export function CustomThemesSettings({
   onSelectTheme,
   settings,
   onSettingsChange,
+  onAccessChange,
   active,
   designer,
   onDesign,
@@ -66,7 +67,8 @@ export function CustomThemesSettings({
   selectedTheme: ThemeId;
   onSelectTheme: (theme: ThemeId) => void;
   settings: Pick<AppSettings, "themeMotion" | "themePauseInBackground" | "customThemeTools" | "customThemeScreenshots">;
-  onSettingsChange: (patch: Partial<AppSettings>) => void;
+  onSettingsChange: (patch: Partial<Pick<AppSettings, "themeMotion" | "themePauseInBackground">>) => void;
+  onAccessChange: (key: "customThemeTools" | "customThemeScreenshots", enabled: boolean) => void;
   /** Settings is open on Appearance: previews may animate. */
   active: boolean;
   designer: ThemeDesignerOptions;
@@ -246,31 +248,31 @@ export function CustomThemesSettings({
         <div className="set-row" data-settings-row="appearance-theme-tools">
           <div className="set-copy">
             <strong id="ct-tools-label">Theme tools in chats</strong>
-            <small>Models can create, adjust and undo themes in any conversation, without asking. Only you can delete a theme.</small>
+            <small>Models can create, adjust and undo themes without asking. Only you can delete a theme.</small>
           </div>
           <div className="set-control">
             <SettingInfo label="About theme tools">
-              <p>When this is on, every conversation can use a small set of theme tools. A model only uses them when you ask it to change how Mythra Code looks.</p>
-              <p>Every change is saved as a new version, so you can undo it here or from the notice that appears. Sub-agents, workflows and scheduled tasks never get theme tools.</p>
+              <p>Ask a model to change how Mythra Code looks from a chat or project conversation started on this device.</p>
+              <p>Theme tools are unavailable to sub-agents, workflows, scheduled prompts and conversations with provider-native sub-agents enabled. Theme edits are saved as new versions you can undo.</p>
             </SettingInfo>
             <Switch
               checked={settings.customThemeTools !== false}
               labelledBy="ct-tools-label"
-              onChange={(next) => onSettingsChange({ customThemeTools: next })}
+              onChange={(next) => onAccessChange("customThemeTools", next)}
             />
           </div>
         </div>
         <div className={`set-row${settings.customThemeTools === false ? " ct-row-off" : ""}`} data-settings-row="appearance-theme-screenshots">
           <div className="set-copy">
             <strong id="ct-see-label">Let models see the app</strong>
-            <small>When a model edits a theme it can take a picture of this window to check its work. The picture is sent to that model's provider.</small>
+            <small>A model can take a picture to check its work while its conversation is visible. The picture is sent to that model's provider and can include content shown in the app.</small>
           </div>
           <div className="set-control">
             <Switch
               checked={settings.customThemeScreenshots !== false}
               disabled={settings.customThemeTools === false}
               labelledBy="ct-see-label"
-              onChange={(next) => onSettingsChange({ customThemeScreenshots: next })}
+              onChange={(next) => onAccessChange("customThemeScreenshots", next)}
             />
           </div>
         </div>

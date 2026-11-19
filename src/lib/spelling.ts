@@ -18,7 +18,7 @@ interface SpellingMenu {
   viaKeyboard: boolean;
   /** Boxes with `data-edit-menu` also get Cut, Copy, Paste and Select all,
    * acting on the selection the menu was opened on. */
-  edit: { selectionStart: number; selectionEnd: number } | null;
+  edit: { selectionStart: number; selectionEnd: number; scope: string | null } | null;
 }
 
 export const useSpellingMenu = create<{ menu: SpellingMenu | null }>(() => ({ menu: null }));
@@ -143,9 +143,14 @@ export function requestSpellingMenu(event: Pick<MouseEvent, "target" | "clientX"
   const bounds = target.getBoundingClientRect();
   const x = keyboard ? bounds.left + 12 : event.clientX;
   const y = keyboard ? bounds.bottom : event.clientY;
-  const edit = editMenu ? { selectionStart: target.selectionStart ?? 0, selectionEnd: target.selectionEnd ?? 0 } : null;
+  const edit = editMenu ? {
+    selectionStart: target.selectionStart ?? 0,
+    selectionEnd: target.selectionEnd ?? 0,
+    scope: target.getAttribute("data-edit-menu"),
+  } : null;
   const open = (spelling: { word: string; start: number; end: number; suggestions: string[] } | null) => {
     if (id !== requestId || !target.isConnected || target.value !== originalValue) return;
+    if (edit && target.getAttribute("data-edit-menu") !== edit.scope) return;
     if (!spelling && !edit) return;
     useSpellingMenu.setState({ menu: {
       id, x, y, editor: target, originalValue, viaKeyboard: keyboard, edit,
@@ -206,6 +211,7 @@ export function applySpellingSuggestion(id: number, suggestion: string): void {
   if (!menu || menu.id !== id || !menu.suggestions.includes(suggestion)) return;
   const { editor, start, end, originalValue } = menu;
   if (!editable(editor) || !editor.isConnected || editor.value !== originalValue || originalValue.slice(start, end) !== menu.word
+    || (menu.edit && editor.getAttribute("data-edit-menu") !== menu.edit.scope)
     || (editor.maxLength >= 0 && originalValue.length - (end - start) + suggestion.length > editor.maxLength)) {
     dismissSpellingMenu();
     return;

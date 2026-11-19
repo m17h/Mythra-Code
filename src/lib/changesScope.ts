@@ -29,18 +29,20 @@ export function writeChangesScope(scope: ChangesScope): void {
   try { window.localStorage.setItem(CHANGES_SCOPE_KEY, scope); } catch { /* private mode: keep it for this session */ }
 }
 
-/** The repository-relative form of a path a provider reported, for matching Changes rows. */
+/** The repository-relative form of a provider path, leaving unrelated absolute paths intact. */
 export function projectRelativePath(path: string, roots: Array<string | null | undefined>): string {
-  let normalized = path.replace(/\\/g, "/").trim();
+  const normalize = (value: string) => value.replace(/\\/g, "/")
+    .replace(/^\/\/\?\/UNC\//i, "//").replace(/^\/\/\?\/(?=[a-z]:\/)/i, "");
+  const normalized = normalize(path);
   for (const root of roots) {
     if (!root) continue;
-    const base = root.replace(/\\/g, "/").replace(/\/+$/, "");
-    if (base && (normalized === base || normalized.startsWith(`${base}/`))) {
-      normalized = normalized.slice(base.length + 1);
-      break;
-    }
+    const base = normalize(root).replace(/\/+$/, "");
+    const windows = /^[a-z]:\/|^\/\//i.test(`${base}/`);
+    const comparablePath = windows ? normalized.toLowerCase() : normalized;
+    const comparableBase = windows ? base.toLowerCase() : base;
+    if (comparablePath.startsWith(`${comparableBase}/`)) return normalized.slice(base.length + 1);
   }
-  return normalized.replace(/^\.\//, "").replace(/^\/+/, "");
+  return normalized.replace(/^\.\//, "");
 }
 
 

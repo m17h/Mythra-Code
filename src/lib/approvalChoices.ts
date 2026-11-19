@@ -59,6 +59,7 @@ export interface ApprovalPlan {
 }
 
 const isObject = (value: unknown): value is JsonObject => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const isNonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const quoted = (value: string) => `“${value}”`;
 const shorten = (value: string, max = 60) => value.length > max ? `${value.slice(0, max - 1)}…` : value;
 
@@ -198,6 +199,15 @@ const commandText = (value: unknown) => Array.isArray(value) ? value.map(String)
 
 // ------------------------------------------------------------------- Codex ----
 
+function codexNetworkFacts(context: unknown): GrantScopeRow[] | null {
+  if (!isObject(context) || !isNonEmptyString(context.host)
+    || Object.keys(context).some((key) => key !== "host" && key !== "protocol")) return null;
+  const protocol = context.protocol === "http" ? "HTTP" : context.protocol === "https" ? "HTTPS"
+    : context.protocol === "socks5Tcp" ? "SOCKS5 TCP" : context.protocol === "socks5Udp" ? "SOCKS5 UDP" : null;
+  if (!protocol) return null;
+  return [{ label: "Host", value: context.host, mono: true }, { label: "Protocol", value: protocol }];
+}
+
 /**
  * Codex decision lists: the request's own `availableDecisions` when it sends
  * them, otherwise the fixed set its protocol documents for the method. Only
@@ -205,8 +215,14 @@ const commandText = (value: unknown) => Array.isArray(value) ? value.map(String)
  */
 function codexChoices(approval: PendingApproval, file: boolean, legacy: boolean): ApprovalPlan {
   const params = approval.params;
+  const network = !file && !legacy && params.networkApprovalContext != null;
+  const networkFacts = network ? codexNetworkFacts(params.networkApprovalContext) : undefined;
+  const permissions = !file && !legacy && params.additionalPermissions != null;
+  const permissionFacts = permissions ? describePermissions(params.additionalPermissions) : undefined;
   const offered: unknown[] = !legacy && Array.isArray(params.availableDecisions)
-    ? params.availableDecisions as unknown[]
+    ? params.availableDecisions
+    : network ? ["accept", "acceptForSession", "cancel"]
+    : permissions ? ["accept", "cancel"]
     : ["accept", "acceptForSession", "decline"];
   const wire = (value: string): JsonObject => legacy
     ? { decision: value === "accept" ? "approved" : value === "acceptForSession" ? "approved_for_session" : value === "cancel" ? "abort" : "denied" }
@@ -216,20 +232,38 @@ function codexChoices(approval: PendingApproval, file: boolean, legacy: boolean)
   const risk = command ? commandRisk(command) : undefined;
   const risky = Boolean(risk && (risk.compound || risk.destructive.length));
   const choices: ApprovalChoice[] = [];
+  const sessionScope: GrantScopeRow[] = [
+    { label: "Lasts", value: "Until this Codex CLI session ends" },
+    { label: "Saved", value: "Only in this session’s memory" },
+  ];
   let dropped = false;
+  let hiddenNetworkSession = false;
   for (const option of offered) {
     if (option === "decline") choices.push({ id: "decline", kind: "deny", label: "Deny", response: wire("decline") });
-    else if (option === "accept") choices.push({ id: "accept", kind: "once", label: "Allow once", response: wire("accept") });
-    else if (option === "acceptForSession") {
+    else if (option === "accept") {
+      if (networkFacts === null || permissionFacts === null) { dropped = true; continue; }
+      choices.push({ id: "accept", kind: "once", label: network ? "Allow connection once" : "Allow once", response: wire("accept") });
+    } else if (option === "acceptForSession") {
+      // This approval is keyed by environment, host, protocol and port, but
+      // the app-server context only includes host and protocol.
+      if (network) { hiddenNetworkSession = true; continue; }
       if (!file && !command) { dropped = true; continue; }
+      if (permissions) {
+        if (!permissionFacts?.length) { dropped = true; continue; }
+        const detail = "The Codex CLI remembers this approval for matching requests with the same command, folder and access until the session ends.";
+        choices.push({ id: "acceptForSession", kind: "broader", label: "Allow this command and access for the session", detail,
+          scope: [{ label: "Runs now", value: command, mono: true }, ...permissionFacts, ...sessionScope],
+          exact: JSON.stringify(params.additionalPermissions, null, 2),
+          ...(risky && risk ? { confirm: confirmText(risk, detail), confirmLabel: "Yes, allow for the session" } : {}),
+          response: wire("acceptForSession"),
+        });
+        continue;
+      }
       const scope: GrantScopeRow[] = file
         ? [{ label: "Covers", value: "Changes to the files in this request" },
           ...(grantRoot ? [{ label: "Also", value: `Writing anywhere in ${grantRoot}`, mono: false }] : []),
-          { label: "Lasts", value: "Until this Codex CLI session ends" },
-          { label: "Saved", value: "Not saved; the Codex CLI forgets it when the session ends" }]
-        : [{ label: "Covers", value: command, mono: true },
-          { label: "Lasts", value: "Until this Codex CLI session ends" },
-          { label: "Saved", value: "Not saved; the Codex CLI forgets it when the session ends" }];
+          ...sessionScope]
+        : [{ label: "Covers", value: command, mono: true }, ...sessionScope];
       choices.push({
         id: "acceptForSession",
         kind: "broader",
@@ -245,7 +279,7 @@ function codexChoices(approval: PendingApproval, file: boolean, legacy: boolean)
       const amendment = option.acceptWithExecpolicyAmendment.execpolicy_amendment;
       const prefixWords = Array.isArray(amendment) && amendment.length && amendment.every((part) => typeof part === "string" && part.length > 0) ? amendment as string[] : [];
       const extra = Object.keys(option.acceptWithExecpolicyAmendment).some((key) => key !== "execpolicy_amendment") || Object.keys(option).length !== 1;
-      if (!prefixWords.length || extra || !command) { dropped = true; continue; }
+      if (!prefixWords.length || extra || !command || network || permissions) { dropped = true; continue; }
       const prefix = prefixWords.join(" ");
       const uncovered = uncoveredSegments(prefixWords, command);
       const scope: GrantScopeRow[] = [
@@ -275,7 +309,9 @@ function codexChoices(approval: PendingApproval, file: boolean, legacy: boolean)
   if (!choices.some((choice) => choice.kind === "deny") && offered.includes("cancel")) {
     choices.unshift({ id: "cancel", kind: "deny", label: "Deny and stop", response: wire("cancel") });
   }
-  return { choices, risk: risky ? risk : undefined, note: dropped ? "This request offered a choice Mythra Code can’t describe exactly, so it isn’t shown." : undefined };
+  const note = hiddenNetworkSession ? "The Codex CLI also offered session access. It didn’t include every detail of that grant."
+    : dropped ? "This request offered a choice Mythra Code can’t describe exactly, so it isn’t shown." : undefined;
+  return { choices, risk: risky ? risk : undefined, note };
 }
 
 // ------------------------------------------------------------------ Claude ----
@@ -362,6 +398,25 @@ function cursorChoices(approval: PendingApproval): ApprovalPlan {
 
 // ---------------------------------------------------------- extra access ----
 
+function permissionPath(path: unknown): string | null {
+  if (!isObject(path)) return null;
+  if (path.type === "path" && isNonEmptyString(path.path) && Object.keys(path).length === 2) return path.path;
+  if (path.type === "glob_pattern" && isNonEmptyString(path.pattern) && Object.keys(path).length === 2) return `Glob ${path.pattern}`;
+  if (path.type !== "special" || Object.keys(path).length !== 2 || !isObject(path.value)) return null;
+  const value = path.value;
+  if (value.kind === "project_roots" && Object.keys(value).every((key) => key === "kind" || key === "subpath")) {
+    return value.subpath == null ? ":workspace_roots" : isNonEmptyString(value.subpath) ? `:workspace_roots/${value.subpath}` : null;
+  }
+  if (Object.keys(value).length !== 1) return null;
+  switch (value.kind) {
+    case "root": return ":root";
+    case "minimal": return ":minimal";
+    case "tmpdir": return ":tmpdir";
+    case "slash_tmp": return "/tmp";
+    default: return null;
+  }
+}
+
 /**
  * Every line of a Codex extra-access request, or null when any part of it
  * can't be described exactly (then it is only offered as a refusal).
@@ -372,25 +427,34 @@ export function describePermissions(permissions: unknown): GrantScopeRow[] | nul
   for (const key of Object.keys(permissions)) if (key !== "network" && key !== "fileSystem") return null;
   if (permissions.network !== undefined && permissions.network !== null) {
     const network = permissions.network;
-    if (!isObject(network) || Object.keys(network).some((key) => key !== "enabled") || (network.enabled !== undefined && typeof network.enabled !== "boolean")) return null;
+    if (!isObject(network) || Object.keys(network).some((key) => key !== "enabled") || (network.enabled != null && typeof network.enabled !== "boolean")) return null;
     if (network.enabled === true) rows.push({ label: "Network", value: "Internet access for commands" });
   }
   if (permissions.fileSystem !== undefined && permissions.fileSystem !== null) {
     const files = permissions.fileSystem;
-    if (!isObject(files) || Object.keys(files).some((key) => key !== "read" && key !== "write" && key !== "entries")) return null;
-    const list = (value: unknown): string[] | null => value === undefined || value === null ? [] : Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value as string[] : null;
-    const read = list(files.read);
-    const write = list(files.write);
-    if (!read || !write) return null;
-    for (const path of read) rows.push({ label: "Read", value: path, mono: true });
-    for (const path of write) rows.push({ label: "Write", value: path, mono: true });
-    if (files.entries !== undefined && files.entries !== null) {
+    if (!isObject(files) || Object.keys(files).some((key) => key !== "read" && key !== "write" && key !== "entries" && key !== "globScanMaxDepth")) return null;
+    // Current runtimes include legacy read/write arrays for compatibility, but
+    // their effective policy comes from entries whenever that field is set.
+    if (files.entries != null) {
       if (!Array.isArray(files.entries)) return null;
       for (const entry of files.entries) {
-        if (!isObject(entry) || typeof entry.path !== "string" || !entry.path || Object.keys(entry).some((key) => key !== "path" && key !== "access")) return null;
-        if (entry.access !== "read" && entry.access !== "write") return null;
-        rows.push({ label: entry.access === "read" ? "Read" : "Write", value: entry.path, mono: true });
+        if (!isObject(entry) || Object.keys(entry).some((key) => key !== "path" && key !== "access")) return null;
+        const path = permissionPath(entry.path);
+        const label = entry.access === "read" ? "Read" : entry.access === "write" ? "Write" : entry.access === "deny" ? "Deny read" : null;
+        if (!path || !label) return null;
+        rows.push({ label, value: path, mono: true });
       }
+    } else {
+      const { read, write } = files;
+      if (read != null && (!Array.isArray(read) || !read.every(isNonEmptyString))) return null;
+      if (write != null && (!Array.isArray(write) || !write.every(isNonEmptyString))) return null;
+      for (const path of read ?? []) rows.push({ label: "Read", value: path, mono: true });
+      for (const path of write ?? []) rows.push({ label: "Write", value: path, mono: true });
+    }
+    const depth = files.globScanMaxDepth;
+    if (depth != null) {
+      if (typeof depth !== "number" || !Number.isSafeInteger(depth) || depth < 1) return null;
+      rows.push({ label: "Maximum glob scan depth", value: String(depth) });
     }
   }
   return rows;
@@ -479,10 +543,17 @@ export function approvalFacts(approval: PendingApproval): Array<{ label: string;
   if (cwd) facts.push({ label: "Folder", value: cwd, mono: true });
   const grantRoot = text(params.grantRoot);
   if (grantRoot) facts.push({ label: "Write access", value: grantRoot, mono: true });
-  if (approval.method === "item/permissions/requestApproval") {
-    const rows = describePermissions(params.permissions);
+  if (approval.method === "item/commandExecution/requestApproval" && params.networkApprovalContext != null) {
+    const network = codexNetworkFacts(params.networkApprovalContext);
+    if (network) facts.push(...network);
+    else facts.push({ label: "Network request", value: JSON.stringify(params.networkApprovalContext, null, 2), mono: true });
+  }
+  const permissions = approval.method === "item/permissions/requestApproval" ? params.permissions ?? null
+    : approval.method === "item/commandExecution/requestApproval" ? params.additionalPermissions : undefined;
+  if (permissions !== undefined && (permissions !== null || approval.method === "item/permissions/requestApproval")) {
+    const rows = describePermissions(permissions);
     if (rows?.length) facts.push({ label: "Requests", value: rows.map((row) => row.label === "Network" ? "Network access" : `${row.label} ${row.value}`).join("\n") });
-    else if (!rows) facts.push({ label: "Requests", value: JSON.stringify(params.permissions ?? null, null, 2), mono: true });
+    else if (!rows) facts.push({ label: "Requests", value: JSON.stringify(permissions, null, 2), mono: true });
   }
   return facts;
 }

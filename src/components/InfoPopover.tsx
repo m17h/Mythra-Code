@@ -202,7 +202,7 @@ export function InfoPopover({ label, className, triggerClassName, children, trig
   useEffect(() => {
     if (!open) return;
     const dismiss = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented || rootRef.current?.closest("[inert]")) return;
       const owner = rootRef.current?.closest("dialog, [role='dialog'], [aria-modal='true']");
       const target = event.target;
       const fallen = target === document.body || target === document.documentElement || target === document;

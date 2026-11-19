@@ -12,6 +12,7 @@ import { codexCompactionStatus, compactionActivity, compactionState } from "./co
 import { recordOpenRouterCharge, reportThreadServiceTier } from "./usageLedger";
 import { boundedNativeText, type NativeAgentReadout } from "./nativeAgentLinks";
 import { noteProviderAuthChanged } from "./providerAuth";
+import { normalizedProjectPath } from "./paths";
 
 /**
  * Events that arrive without a threadId are routed to this bucket instead of
@@ -517,12 +518,17 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     return;
   }
   if (method === "turn/diff/updated") {
-    // The runtime's live turn diff, against whatever remote the thread tracks.
-    useTaskStore.getState().setDiff(eventThreadId, {
+    // A live turn diff is scoped to that turn's checkout. The tracked remote
+    // comparison comes from a separate Git read after the turn.
+    const store = useTaskStore.getState();
+    const task = store.tasks[eventThreadId];
+    if (!task?.workspacePath || !task.activeTurnId || (typeof params.turnId === "string" && params.turnId !== task.activeTurnId)) return;
+    store.setDiff(eventThreadId, {
       text: String(params.diff ?? ""),
       successfulText: String(params.diff ?? ""),
+      cwd: normalizedProjectPath(task.workspacePath),
       source: "runtime",
-      baseline: "the tracked remote branch",
+      baseline: "this turn",
       untrackedPaths: [],
     });
     return;

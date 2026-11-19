@@ -245,7 +245,7 @@ export function AppSelectMenu({
       if (!rootRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) close();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented || rootRef.current?.closest("[inert]")) return;
       if (event.key === "Tab" && menuRef.current?.contains(event.target as Node)) {
         const visibleControls = (container: HTMLElement) => [...container.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])")]
           .filter((element) => element.tabIndex >= 0 && !element.closest("[hidden], [inert], [aria-hidden='true']")

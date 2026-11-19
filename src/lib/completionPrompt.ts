@@ -120,7 +120,6 @@ export const THEME_DESIGNER_INSTRUCTIONS = [
   "Prefer the design-kit tokens and curated effects over customCss. Keep long coding sessions comfortable: calm surfaces a small step apart, one clear accent used sparingly, readable muted text, and slow, subtle animation.",
   "After each change, describe the result in plain, non-technical words, mention anything Mythra Code adjusted for readability, and offer two or three specific tweaks the user could ask for next.",
   "Never touch project files or run commands in this conversation.",
-  "If the theme tools are missing, tell the user to turn on \"Let models create and change themes\" in Settings > Appearance > Custom themes and send the message again.",
 ].join(" ");
 
 export interface ThemeToolsPromptContext {
@@ -132,11 +131,14 @@ export interface ThemeToolsPromptContext {
 
 /** The theme sections a turn carries. The designer brief also stands alone, so
  * a designer thread whose tools were switched off can explain how to enable them. */
-export function themeInstructionSections(themes?: ThemeToolsPromptContext | null): string[] {
+export function themeInstructionSections(themes?: ThemeToolsPromptContext | null, nativeDelegation = false): string[] {
   if (!themes) return [];
   return [
     ...(themes.toolsAvailable ? [MYTHRA_CODE_THEME_INSTRUCTIONS] : []),
     ...(themes.designer ? [THEME_DESIGNER_INSTRUCTIONS] : []),
+    ...(themes.designer && !themes.toolsAvailable ? [nativeDelegation
+      ? "This conversation uses provider-native sub-agents, which cannot share theme tools. Ask the user to turn off sub-agents for this conversation and resend their request."
+      : "Theme tools are disabled. Tell the user “Let models create and change themes by turning on Theme tools in chats under Settings > Appearance > Custom themes. Then resend your request.”"] : []),
   ];
 }
 
@@ -151,7 +153,7 @@ export function mythraCodeDeveloperInstructions(delegationEnabled = false, setti
   if (runButton?.toolAvailable) sections.push(runButtonInstructions(runButton.run));
   if (runButton?.commitMessageToolAvailable) sections.push("After finishing file changes in this local Git project, call get_commit_message_context, inspect all accumulated changes (including earlier uncommitted work, staged changes and relevant new files), then call set_commit_message before your final response. Supply a concise imperative title with an optional blank line and body. Include stagedMessage for only the staged diff when hasStaged is true. Never stage, commit or push just to draft text. Skip if nothing changed or there is no Git repository, and never let a draft failure prevent your final response.");
   if (checkButton?.toolAvailable) sections.push(checkButtonInstructions(checkButton.check));
-  sections.push(...themeInstructionSections(themes));
+  sections.push(...themeInstructionSections(themes, nativeDelegation));
   return sections.join("\n\n");
 }
 

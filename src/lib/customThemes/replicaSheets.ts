@@ -6,9 +6,9 @@
 //   themeSheet()  one theme compiled for a replica (compile.ts, scope
 //                 "preview"), cached per theme revision and shared by every
 //                 preview of it.
-// The live theme's own <style> tags are left out: whatever is on screen never
-// reaches a preview. Browsers without constructable stylesheets get the same
-// text in a <style> per shadow root.
+// The live theme and streaming text decoration styles stay in the live window.
+// Browsers without constructable stylesheets get the same text in a <style>
+// per shadow root.
 
 import { compileThemeCss } from "./compile";
 import { CUSTOM_CSS_STYLE_ID, CUSTOM_THEME_STYLE_ID } from "./probe";
@@ -50,7 +50,7 @@ function appSheets(): CSSStyleSheet[] {
   if (typeof document === "undefined") return [];
   return Array.from(document.styleSheets).filter((sheet) => {
     const owner = sheet.ownerNode;
-    if (owner instanceof Element && SKIPPED_STYLE_IDS.has(owner.id)) return false;
+    if (owner instanceof Element && (SKIPPED_STYLE_IDS.has(owner.id) || owner.hasAttribute("data-mythra-stream-fade"))) return false;
     return !sheet.disabled;
   });
 }
@@ -92,8 +92,9 @@ const themeCache = new Map<string, ReplicaSheet & { hasMotion: boolean }>();
 const THEME_CACHE_LIMIT = 64;
 
 /** One theme compiled for a replica. Cached per revision; specs are immutable per revision. */
-export function themeSheet(id: CustomThemeId, revision: number, spec: ThemeSpec, customCssEnabled: boolean): ReplicaSheet & { hasMotion: boolean } {
-  const key = `${id}:${revision}:${customCssEnabled ? 1 : 0}:${platform()}`;
+export function themeSheet(id: CustomThemeId, revision: number, spec: ThemeSpec, customCssEnabled: boolean, forcedColors: boolean): ReplicaSheet & { hasMotion: boolean } {
+  const targetPlatform = platform();
+  const key = `${id}:${revision}:${customCssEnabled ? 1 : 0}:${forcedColors ? 1 : 0}:${targetPlatform}`;
   const hit = themeCache.get(key);
   if (hit) {
     themeCache.delete(key);
@@ -103,7 +104,7 @@ export function themeSheet(id: CustomThemeId, revision: number, spec: ThemeSpec,
   let text = "";
   let hasMotion = false;
   try {
-    const compiled = compileThemeCss(spec, { id, scope: "preview", platform: platform(), customCssEnabled });
+    const compiled = compileThemeCss(spec, { id, scope: "preview", platform: targetPlatform, customCssEnabled, forcedColors });
     text = compiled.css;
     hasMotion = compiled.hasMotion;
   } catch {

@@ -45,7 +45,8 @@ import { latestSolModel } from "../lib/threadProvider";
 import { resolveThreadTitleModel } from "../lib/threadTitles";
 import { formatGitError, friendlyError } from "../lib/errors";
 import { resolveProviderSystemPrompt } from "../lib/systemPrompt";
-import { useModalFocus } from "../hooks/useModalFocus";
+import { isTopModalLayer, useModalFocus } from "../hooks/useModalFocus";
+import { rebasePersistedIntent } from "../hooks/usePersistedState";
 import { useSettingsSheetResize } from "../hooks/useSettingsSheetResize";
 import { SETTINGS_PANE_ICONS } from "./settingsPaneIcons";
 import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo, ProviderLogo } from "./BrandLogos";
@@ -562,6 +563,7 @@ export function SettingsModal({
   onChatFontPreview,
   onDesignTheme,
   onCustomThemeDeleted,
+  onCustomThemeAccessChange,
   onUiScalePreview = () => {},
   onSignIn,
   onSignOut = async () => {
@@ -697,6 +699,7 @@ export function SettingsModal({
   onDesignTheme?: (choice: ThemeDesignerChoice) => void;
   /** A custom theme was deleted here; App offers Undo. */
   onCustomThemeDeleted?: (deleted: DeletedCustomTheme & { projectIds: string[] }) => void;
+  onCustomThemeAccessChange: (key: "customThemeTools" | "customThemeScreenshots", enabled: boolean) => void;
   /** Interface size applies at once, like the other appearance choices. */
   onUiScalePreview?: (scale: number) => void;
   onSignIn: () => Promise<void>;
@@ -982,15 +985,14 @@ export function SettingsModal({
   const pendingChanges = open && (settingsDraftChanged || projectsDraftChanged || profilesDraftChanged || terminalTimeoutInvalid || followUpLimitInvalid);
   const activeProjectAppearance = localProjects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
   const activeProjectHasAppearanceOverride = Boolean(activeProjectAppearance?.theme || activeProjectAppearance?.chatFont || activeProjectAppearance?.effortSlider);
-  const projectDefaultsComplete = localProjects.every((project) => !project.overrides?.defaults || Boolean(project.overrides.defaults.model.trim()));
-  /** Where the first edit that can't be saved yet lives, with why. */
-  const heldBack: { pane: SettingsPane; reason: string } | null = terminalTimeoutInvalid
-    ? { pane: "system", reason: "The command time limit in Advanced isn’t a valid number of minutes." }
-    : followUpLimitInvalid
-      ? { pane: "agents", reason: "The automatic follow-up limit in Sub-agents isn’t a valid number." }
-      : !projectDefaultsComplete
-        ? { pane: "projects", reason: "A project override in Projects has no model selected." }
-        : null;
+  const incompleteProjects = localProjects.filter((project) => project.overrides?.defaults && !project.overrides.defaults.model.trim());
+  const heldEdits: { pane: SettingsPane; reason: string }[] = [];
+  if (terminalTimeoutInvalid) heldEdits.push({ pane: "system", reason: "The command time limit in Advanced isn’t a valid number of minutes." });
+  if (followUpLimitInvalid) heldEdits.push({ pane: "agents", reason: "The automatic follow-up limit in Sub-agents isn’t a valid number." });
+  if (incompleteProjects.length) {
+    const names = incompleteProjects.map((project) => `“${project.name}”`).join(", ");
+    heldEdits.push({ pane: "projects", reason: `Choose a model for the project overrides for ${names}.` });
+  }
   /** Saves what can be saved, then asks before anything is left behind.
    * Resolves false when the person chose to keep editing. */
   const settleBeforeLeaving = async (): Promise<boolean> => {
@@ -1003,15 +1005,17 @@ export function SettingsModal({
       }
     }
     if (pendingChanges) {
-      const { heldV2 } = commitDrafts();
-      if (heldV2 && !await confirmDialog(`Close without switching Sub-agents V2 ${local.managedSubagentV2 === true ? "on" : "off"}?\n\nIt can’t change right now${managedSubagentV2LockedReason ? `: ${managedSubagentV2LockedReason}` : "."} Everything else is saved.`, { confirmLabel: "Close without switching", cancelLabel: "Keep editing" })) {
+      const { heldV2 } = commitDraftsRef.current();
+      if (heldV2 && !await confirmDialog(`Close without switching Sub-agents V2 ${local.managedSubagentV2 === true ? "on" : "off"}?\n\nIt can’t change right now${managedSubagentV2LockedReason ? `: ${managedSubagentV2LockedReason}` : "."}`, { confirmLabel: "Close without switching", cancelLabel: "Keep editing" })) {
         setSettingsSection("agents");
         return false;
       }
     }
-    if (pendingChanges && heldBack) {
-      if (!await confirmDialog(`Close without this change?\n\n${heldBack.reason} Everything else is saved.`, { confirmLabel: "Discard change", cancelLabel: "Keep editing" })) {
-        setSettingsSection(heldBack.pane);
+    if (pendingChanges && heldEdits.length) {
+      const label = heldEdits.length === 1 ? "change" : "changes";
+      const details = heldEdits.map(({ reason }) => reason).join("\n");
+      if (!await confirmDialog(`Leave Settings without these edits?\n\n${details}`, { confirmLabel: `Discard ${label}`, cancelLabel: "Keep editing" })) {
+        setSettingsSection(heldEdits[0]!.pane);
         return false;
       }
     }
@@ -1021,6 +1025,12 @@ export function SettingsModal({
     if (!await settleBeforeLeaving()) return;
     onClose();
   };
+  const openWorkspaceTools = async () => {
+    if (await settleBeforeLeaving()) onWorkspaceTools();
+  };
+  const openRun = onOpenRun ? async (threadId: string) => {
+    if (await settleBeforeLeaving()) onOpenRun(threadId);
+  } : undefined;
   const requestOnboarding = async () => {
     if (!await settleBeforeLeaving()) return;
     onOpenOnboarding();
@@ -1095,11 +1105,8 @@ export function SettingsModal({
     }
     const baseline = draftBaselineRef.current;
     if (settings !== baseline.settings) {
-      // Adopt external settings changes only when the draft is untouched, so
-      // the dirty check keeps meaning "you have unsaved edits". Invalid number
-      // input is still an edit even though it does not reach the draft.
-      // A write of our own comes back here too: adopt it when nothing was
-      // edited since, keeping a Sub-agents V2 change that is still waiting.
+      // Accept the normalized result of our own save and keep any waiting
+      // Sub-agents V2 edit. External changes are merged into other drafts.
       const localJson = JSON.stringify(local);
       if (committedRef.current && localJson === committedRef.current.local) {
         setLocal((local.managedSubagentV2 === true) !== (settings.managedSubagentV2 === true) ? { ...settings, managedSubagentV2: local.managedSubagentV2 } : settings);
@@ -1107,12 +1114,15 @@ export function SettingsModal({
         setLocal(settings);
         setTerminalTimeoutText(null);
         setFollowUpLimitText(null);
+      } else {
+        // Keep pending edits without reverting newer app-wide settings, such
+        // as an emergency theme reset made while an autosave is queued.
+        setLocal((current) => rebasePersistedIntent(baseline.settings, current, settings) as AppSettings);
       }
     }
     if (projects !== baseline.projects) {
-      // Merge external project changes: new projects appear, removed ones
-      // disappear, and per-project drafts survive only where the user
-      // actually diverged from the snapshot they started editing.
+      // Preserve the specific fields edited in Settings when a project also
+      // changes outside this draft, such as restoring a deleted theme.
       const baselineById = new Map(baseline.projects.map((project) => [project.id, project]));
       if (committedRef.current && JSON.stringify(localProjects) === committedRef.current.projects) setLocalProjects(projects);
       else setLocalProjects((current) => {
@@ -1120,7 +1130,7 @@ export function SettingsModal({
         return projects.map((incoming) => {
           const draft = draftsById.get(incoming.id);
           const base = baselineById.get(incoming.id);
-          return draft && base && JSON.stringify(draft) !== JSON.stringify(base) ? draft : incoming;
+          return draft && base ? rebasePersistedIntent(base, draft, incoming) as Project : incoming;
         });
       });
     }
@@ -1225,20 +1235,6 @@ export function SettingsModal({
     if (mention) field.setSelectionRange(mention.start, mention.end);
     onPromptFocusHandled?.(promptFocusRequest.nonce);
   }, [onPromptFocusHandled, open, promptFocusRequest, promptLayer, settingsSection]);
-
-  const requestCloseRef = useRef(requestClose);
-  requestCloseRef.current = requestClose;
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      // An approval modal stacked above Settings owns Escape while present.
-      if (document.querySelector("[data-approval-modal], [data-skill-remove-modal]")) return;
-      requestCloseRef.current();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open]);
 
   const signIn = async () => {
     if (!runtimeStatus?.available) {
@@ -1663,6 +1659,8 @@ export function SettingsModal({
     const normalizedSubagents = projectSubagentSettingsFromApp(local);
     let next: AppSettings = {
       ...local,
+      customThemeTools: settings.customThemeTools,
+      customThemeScreenshots: settings.customThemeScreenshots,
       childAgents: normalizedSubagents.childAgents,
       childAgentPresets: sanitizeChildAgentPresets(local.childAgentPresets),
       subagentModelGuidance: sanitizeSubagentModelGuidance(local.subagentModelGuidance),
@@ -1676,7 +1674,20 @@ export function SettingsModal({
       next = { ...next, managedSubagentV2: settings.managedSubagentV2 };
     }
     if (heldV2 !== v2Held) setV2Held(heldV2);
-    const nextProjects = projectDefaultsComplete ? sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(localProjects)) : projects;
+    let projectsToSave = localProjects;
+    if (incompleteProjects.length) {
+      const incompleteIds = new Set(incompleteProjects.map((project) => project.id));
+      const savedById = new Map(projects.map((project) => [project.id, project]));
+      projectsToSave = localProjects.map((project) => {
+        if (!incompleteIds.has(project.id)) return project;
+        const defaults = savedById.get(project.id)?.overrides?.defaults;
+        const overrides = { ...project.overrides };
+        if (defaults) overrides.defaults = defaults;
+        else delete overrides.defaults;
+        return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
+      });
+    }
+    const nextProjects = sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(projectsToSave));
     const nextProfiles = mergePromptProfileDrafts(draftBaselineRef.current.profiles, localProfiles, profiles);
     const settingsJson = JSON.stringify(next);
     const projectsJson = JSON.stringify(nextProjects);
@@ -1684,7 +1695,7 @@ export function SettingsModal({
     const fingerprint = `${settingsJson}\u0000${projectsJson}\u0000${profilesJson}`;
     // Held-back projects aren't "committed", so a later external change can't
     // be mistaken for the echo of our own write and replace them.
-    committedRef.current = { local: JSON.stringify(local), projects: projectDefaultsComplete ? JSON.stringify(localProjects) : "", profiles: JSON.stringify(localProfiles) };
+    committedRef.current = { local: JSON.stringify(local), projects: incompleteProjects.length ? "" : JSON.stringify(localProjects), profiles: JSON.stringify(localProfiles) };
     if (fingerprint === lastWrittenRef.current) return { heldV2 };
     lastWrittenRef.current = fingerprint;
     let wrote = false;
@@ -1925,7 +1936,12 @@ export function SettingsModal({
 
   return (
     <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} data-backdrop-blur={isWindowsPlatform() ? "always" : undefined} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
-      <div ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
+        if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing || !isTopModalLayer(event.currentTarget)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void requestClose();
+      }}>
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings categories">
             <div className="settings-nav-head">
@@ -1978,7 +1994,7 @@ export function SettingsModal({
                   <span className="settings-nav-label" aria-hidden>{section.group}</span>
                   {section.items.map(({ id, label, icon: Icon }) => {
                     const current = settingsSection === id || (!navQuery.trim() && SETTINGS_PANES.get(settingsSection)?.parent === id);
-                    const heldHere = heldBack?.pane === id;
+                    const heldHere = heldEdits.some(({ pane }) => pane === id);
                     return <button
                       key={id}
                       className={current ? "active" : ""}
@@ -2178,8 +2194,17 @@ export function SettingsModal({
             <CustomThemesSettings
               selectedTheme={local.theme}
               onSelectTheme={previewTheme}
-              settings={local}
+              settings={{
+                themeMotion: local.themeMotion,
+                themePauseInBackground: local.themePauseInBackground,
+                customThemeTools: settings.customThemeTools,
+                customThemeScreenshots: settings.customThemeScreenshots,
+              }}
               onSettingsChange={(patch) => setLocal((current) => ({ ...current, ...patch }))}
+              onAccessChange={(key, enabled) => {
+                onCustomThemeAccessChange(key, enabled);
+                setLocal((current) => ({ ...current, [key]: enabled }));
+              }}
               active={open && settingsSection === "appearance"}
               designer={themeDesigner}
               onDesign={(choice) => void requestDesignTheme(choice)}
@@ -2352,9 +2377,9 @@ export function SettingsModal({
             skills={skills}
             settings={local}
             onWorkflows={onWorkflows}
-            onRun={onRunWorkflow}
+            onRun={async (...args) => { if (await settleBeforeLeaving()) await onRunWorkflow(...args); }}
             onStop={onStopWorkflow}
-            onOpenRun={onOpenRun}
+            onOpenRun={openRun}
           />
           <QuickActionsSettings actions={actions} onActions={onActions} drafts={harnessDrafts} onDrafts={setHarnessDrafts} />
           </>}
@@ -2370,7 +2395,7 @@ export function SettingsModal({
             onSchedules={onSchedules}
             onWorkflows={onWorkflows}
             onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
-            onOpenRun={onOpenRun}
+            onOpenRun={openRun}
           />}
 
           {settingsSection === "memory" && <section className="settings-section">
@@ -2384,7 +2409,7 @@ export function SettingsModal({
               reached directly. */}
           {settingsSection === "tools" && <SettingsJumpList label="MCP & language servers sections" items={TOOLS_SECTIONS} scrollRef={contentRef} />}
 
-          {settingsSection === "tools" && <McpServerSettings mcpServers={mcpServers} onMcpChanged={onMcpChanged} onSignIn={workspaceToolsAvailable ? onWorkspaceTools : undefined} drafts={harnessDrafts} onDrafts={setHarnessDrafts} />}
+          {settingsSection === "tools" && <McpServerSettings mcpServers={mcpServers} onMcpChanged={onMcpChanged} onSignIn={workspaceToolsAvailable ? openWorkspaceTools : undefined} drafts={harnessDrafts} onDrafts={setHarnessDrafts} />}
 
           {settingsSection === "tools" && <LanguageToolsSettings />}
 
@@ -2397,7 +2422,7 @@ export function SettingsModal({
                 <small>{workspaceToolsAvailable ? "Inspect live skills, finish MCP sign-in and connect servers for the open project." : "Open a project first to inspect its live skills and MCP servers."}</small>
               </div>
               <div className="set-control">
-                <button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open Skills &amp; MCP in Tools</button>
+                <button className="secondary-button" onClick={openWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open Skills &amp; MCP in Tools</button>
               </div>
             </div></div>
           </div>}
