@@ -16,7 +16,7 @@
 // pseudo-element.
 
 import type { ResolvedTokens } from "./baseTokens";
-import { contrastRatio, formatColor, mixColors, parseColor, shiftLightness, withAlpha, type Rgba } from "./color";
+import { formatColor, mixColors, parseColor, shiftLightness, withAlpha, type Rgba } from "./color";
 import { EFFECTS, effectSeconds, resolveEffectParams, type EffectPalette } from "./effects";
 import { replicaScope } from "./replicaCss";
 import { customCssScope, sanitizeCustomCss } from "./sanitizeCss";
@@ -28,6 +28,7 @@ export interface CompileOptions {
   scope: "app" | "preview";
   platform: "mac" | "windows" | "other";
   customCssEnabled?: boolean;
+  forcedColors?: boolean;
   /** Testing / host override for base values. */
   baseTokens?: ResolvedTokens;
 }
@@ -51,6 +52,7 @@ export const EFFECT_HOOKS = {
   composer: ".composer",
   send: ".send-button:not(:disabled)",
   primary: ".primary-button:not(:disabled)",
+  accentPrimary: ".primary-button:not(:disabled, .approval-allow, .confirm-danger, .thread-unavailable-actions > *)",
   selectionRow: ".thread-row-wrap.active > .thread-card",
   activeTab: ".studio-tabs button.active",
   landingTitle: ".thread-empty-state h1",
@@ -170,9 +172,8 @@ export function effectMoves(type: EffectType, params: Record<string, unknown>): 
   }
 }
 
-function accentEffectCss(spec: ThemeSpec, resolved: ResolvedTheme, id: CustomThemeId): { css: string; vars: Record<string, string> } {
-  const scope = customCssScope(id);
-  const motion = customCssScope(id, true);
+function accentEffectCss(spec: ThemeSpec, resolved: ResolvedTheme, id: CustomThemeId, scope: string): { css: string; vars: Record<string, string> } {
+  const motion = `${scope}[data-theme-motion="on"]`;
   const dark = resolved.scheme === "dark";
   const palette = effectPalette(resolved);
   const rules: string[] = [];
@@ -260,7 +261,8 @@ function accentEffectCss(spec: ThemeSpec, resolved: ResolvedTheme, id: CustomThe
     const gradient = `linear-gradient(110deg, ${[...colors, colors[0]].join(", ")})`;
     vars["--ct-fx-flow"] = gradient;
     const seconds = effectSeconds("accentFlow", flow.speed);
-    for (const hook of [H.send, H.primary, H.switchOn]) {
+    // Only these controls use the onAccent ink that was checked against the gradient.
+    for (const hook of [H.send, H.accentPrimary, H.switchOn]) {
       rules.push(`${scope} ${hook} { background-image: var(--ct-fx-flow); background-size: 300% 100%; background-position: 0% 50%; }`);
       if (seconds) animate(`${motion} ${hook}`, `ct-fx-flow ${seconds}s ease-in-out infinite alternate`);
     }
@@ -273,11 +275,11 @@ function accentEffectCss(spec: ThemeSpec, resolved: ResolvedTheme, id: CustomThe
 function windowsEasing(resolved: ResolvedTheme): Record<string, string> {
   if (resolved.scheme !== "dark") return {};
   const p = resolved.palette;
-  const surfaces = ["bg", "sidebar", "panel", "panel2", "menu", "field"].flatMap((name) => resolved.surfaces[name] ?? []);
   const out: Record<string, string> = {};
   const ease = (key: string, cssVar: string, delta: number) => {
-    const eased = shiftLightness(p[key], delta);
-    if (surfaces.every((surface) => contrastRatio(eased, surface) >= 4.5)) out[cssVar] = formatColor(eased);
+    const css = formatColor(shiftLightness(p[key], delta));
+    const eased = parseColor(css);
+    if (eased && resolved.inkPasses(key, eased)) out[cssVar] = css;
   };
   ease("text", "--text", -0.04);
   ease("ink2", "--ink-2", -0.04);
@@ -346,45 +348,33 @@ function decorationHostCss(scope: string): string {
 
 /** Compile a normalized spec into CSS for the app shell (or a preview's replica of it). */
 export function compileThemeCss(spec: ThemeSpec, opts: CompileOptions): CompiledTheme {
-  if (opts.scope === "preview") {
-    // The same stylesheet as the app, rescoped to a replica of the window (CustomThemePreview):
-    // every rule needs [data-ct-replica], which only the replica's shell carries, so a preview
-    // never restyles the real app, even for the theme on screen.
-    const app = compileThemeCss(spec, { ...opts, scope: "app" });
-    const from = customCssScope(opts.id);
-    const to = replicaScope(opts.id);
-    const rescope = (css: string) => css.split(from).join(to);
-    const tokenCss = rescope(app.tokenCss);
-    const customCss = rescope(app.customCss);
-    return { ...app, tokenCss, customCss, css: customCss ? `${tokenCss}\n/* customCss */\n${customCss}` : tokenCss };
-  }
-
+  const preview = opts.scope === "preview";
+  const scope = preview ? replicaScope(opts.id) : customCssScope(opts.id);
   const resolved = resolveTheme(spec, opts.baseTokens);
-  const vars = themeVariables(spec, resolved);
+  const vars = { ...themeVariables(spec, resolved), ...(opts.platform === "windows" ? windowsEasing(resolved) : {}) };
+  if (opts.forcedColors) {
+    const tokenCss = block(scope, vars);
+    return { css: tokenCss, tokenCss, customCss: "", effectTypes: [], hasMotion: false, scheme: resolved.scheme };
+  }
   const effectTypes = EFFECT_TYPES.filter((type) => spec.effects[type]);
   const palette = effectPalette(resolved);
   const effectsMove = spec.motion.enabled && effectTypes.some((type) => effectMoves(type, resolveEffectParams(type, spec.effects[type] as Record<string, unknown>, palette)));
 
-  const scope = customCssScope(opts.id);
-  const accent = accentEffectCss(spec, resolved, opts.id);
-  const tokenVars = { ...vars, ...accent.vars, ...(opts.platform === "windows" ? windowsEasing(resolved) : {}) };
+  const accent = accentEffectCss(spec, resolved, opts.id, scope);
+  const customCss = opts.customCssEnabled !== false && spec.customCss
+    ? sanitizeCustomCss(spec.customCss, { id: opts.id, preview }).css
+    : "";
   // The shell becomes a stacking context so the effects layer (z-index -1) paints above its background and below every pane.
   const shell = `${scope} { position: relative; isolation: isolate; }`;
-  const hasCustomCss = Boolean(spec.customCss && spec.customCss.trim());
+  const hasCustomCss = Boolean(customCss.trim());
   const showsBehindList = seeThroughAlpha(spec.surfaces.translucency) > 0 || hasCustomCss;
   const tokenCss = [
-    block(scope, tokenVars), shell, seeThroughCss(spec, resolved, scope),
+    block(scope, { ...vars, ...accent.vars }), shell, seeThroughCss(spec, resolved, scope),
     showsBehindList ? composerBandCss(scope) : "", hasCustomCss ? decorationHostCss(scope) : "",
     accent.css, typographyCss(spec, scope),
   ].filter(Boolean).join("\n");
 
-  let customCss = "";
-  let customMoves = false;
-  if (opts.customCssEnabled !== false && spec.customCss) {
-    const sanitized = sanitizeCustomCss(spec.customCss, { id: opts.id });
-    customCss = sanitized.css;
-    customMoves = /animation-name:/.test(customCss) && spec.motion.enabled;
-  }
+  const customMoves = /animation-name:/.test(customCss) && spec.motion.enabled;
   return {
     css: customCss ? `${tokenCss}\n/* customCss */\n${customCss}` : tokenCss,
     tokenCss,

@@ -15,6 +15,10 @@ export type ReviewDiffSource = "runtime" | "repository";
 export interface ReviewDiff {
   /** Unified diff text; empty when nothing has been loaded yet. */
   text: string;
+  /** Normalized checkout path used for a thread's comparison. */
+  cwd?: string;
+  /** Set for the explicit comparison against the tracked remote branch. */
+  comparison?: "pushed";
   /**
    * Only what this refresh actually produced as a diff, never diagnostics. `text`
    * can hold Git's error output for the local view; another device reads this
@@ -181,6 +185,7 @@ export function parseDiffSections(diff: string): DiffSection[] {
   let fromMarker: string | null = null;
   let toMarker: string | null = null;
   let renameTo: string | null = null;
+  let inHunk = false;
 
   const flush = () => {
     if (!header) return;
@@ -206,15 +211,18 @@ export function parseDiffSections(diff: string): DiffSection[] {
       fromMarker = null;
       toMarker = null;
       renameTo = null;
+      inHunk = false;
       continue;
     }
     if (!header) continue;
     lines.push(line);
-    if (line.startsWith("+++ ")) toMarker = pathFromMarker(line, "b");
+    if (line.startsWith("@@")) inHunk = true;
+    if (inHunk) {
+      if (line.startsWith("+")) additions += 1;
+      else if (line.startsWith("-")) deletions += 1;
+    } else if (line.startsWith("+++ ")) toMarker = pathFromMarker(line, "b");
     else if (line.startsWith("--- ")) fromMarker = pathFromMarker(line, "a");
     else if (line.startsWith("rename to ")) renameTo = decodePathField(line.slice("rename to ".length));
-    else if (line.startsWith("+")) additions += 1;
-    else if (line.startsWith("-")) deletions += 1;
   }
   flush();
   return sections;

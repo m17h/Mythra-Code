@@ -63,7 +63,7 @@ import { clearProviderStopIntent, markProviderStopIntent } from "../lib/provider
 import { sealStoppedTurn } from "../lib/stopTurnHistory";
 import { isClaudeThread, isCursorThread, modelForProvider } from "../lib/threadProvider";
 import { mythraCodeDeveloperInstructions, withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
-import { bindSessionToThread, themeDesignerPurpose } from "../lib/customThemes/store";
+import { bindSessionToThread, revokeThemeToolsForThread, setPendingThemeDesigner, setThemeDesignerForThread, themeDesignerPurpose, type ThemeDesignerPurpose } from "../lib/customThemes/store";
 import { RUN_COMMAND_TOOL } from "../lib/projectRun";
 import { CHECK_COMMAND_TOOL } from "../lib/projectChecks";
 import {
@@ -236,6 +236,7 @@ function newThreadDeliveryContext(context: TurnRunnerContext, prompt: NewThreadT
     ...base,
     activeThread: null,
     activeThreadIsChild: false,
+    scheduledDelivery: true,
     draftThreadIsolated: prompt.snapshot.isolated,
     effectiveSettings: {
       ...applyNewThreadSnapshot(context.effectiveSettings, prompt.snapshot),
@@ -261,6 +262,7 @@ function withLiveDeliveryReadiness(captured: TurnRunnerContext, live: TurnRunner
       ...captured.effectiveSettings,
       managedSubagentV2: live.effectiveSettings.managedSubagentV2 === true,
       automaticGitInitialization: live.effectiveSettings.automaticGitInitialization === true,
+      customThemeTools: live.effectiveSettings.customThemeTools !== false,
     },
     // A queued turn is not admitted yet. Current ownership decides whether
     // an existing V2 crew still needs its review tools after the default flips.
@@ -354,8 +356,12 @@ export interface TurnRunnerContext {
    * window on a modal prompt.
    */
   deferredDelivery?: boolean;
+  /** A timed composer prompt, whether it was released on schedule or by the user. */
+  scheduledDelivery?: boolean;
   /** Renderer acknowledgement owned by this foreground first-send attempt. */
   firstPromptAttemptId?: string;
+  /** Theme design belongs to the captured composer draft, across navigation. */
+  draftThemeDesigner?: { key: string; purpose: ThemeDesignerPurpose };
   /** View-only attempt identity; never sent to or persisted by a provider. */
   activeFirstPromptIdRef?: MutableRefObject<string | null>;
   onFirstPromptStarted?: (prompt: PendingFirstPrompt) => void;
@@ -673,6 +679,9 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       setStartingDraftTurn: setContextStartingDraftTurn, setError, setStatus, setTransientStatus,
       setRuntimeSetupOpen, setAuthRequiredOpen, openSettings,
     } = ctx;
+    const designerDraft = ctx.firstPromptAttemptId && !activeThread && !deferredDelivery
+      ? ctx.draftThemeDesigner
+      : undefined;
     const ownsVisibleDraft = () => !(ctx.firstPromptAttemptId && ctx.activeFirstPromptIdRef
         && ctx.activeFirstPromptIdRef.current !== ctx.firstPromptAttemptId
         && useTaskStore.getState().activeThreadId !== createdFirstPromptThreadsRef.current.get(ctx.firstPromptAttemptId));
@@ -779,11 +788,13 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       setError("Choose an LM Studio model before starting this thread.");
       return false;
     }
-    const modelContextWindow = effectiveSettings.provider === "openrouter"
-      ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length
-      : effectiveSettings.provider === "lmstudio"
-        ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength
-        : undefined;
+    const openRouterModel = effectiveSettings.provider === "openrouter"
+      ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)
+      : undefined;
+    const lmStudioModel = effectiveSettings.provider === "lmstudio"
+      ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)
+      : undefined;
+    const modelContextWindow = openRouterModel?.context_length ?? lmStudioModel?.maxContextLength;
     let providerText: string;
     let resolvedSystemPrompt = effectiveSettings.systemPrompt;
     let userSkillMetadata: Pick<ChatMessage, "skillReferences" | "skillsFolder" | "skillDependencies"> = {};
@@ -843,7 +854,12 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       try {
         if (ctx.remoteDelivery) await ctx.remoteDelivery.beforeDispatch({ threadId: activeThread.id, messageId: steerMessageId,
           provider: effectiveSettings.provider, turnId: expectedSteerTurnId, permission: effectiveSettings.permission });
-        if (ctx.remoteDelivery) ctx.remoteDelivery.assertAllowed();
+        if (ctx.remoteDelivery) {
+          ctx.remoteDelivery.assertAllowed();
+          // Steering reuses the existing provider turn and its MCP descriptor.
+          // Remove only its appearance authority before handing off remote input.
+          revokeThemeToolsForThread(activeThread.id);
+        }
         if (isClaudeThread(activeThread)) {
           const steerRuntimeId = ctx.remoteDelivery
             ? await ctx.remoteDelivery.invokeSteer<string>("claude_turn_steer", { threadId: activeThread.id, prompt: providerText,
@@ -1076,9 +1092,15 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     const rememberChildAgentPolicy = (threadId: string) => {
       if (!childBridge) return;
       const { policy, captured, policyUpdated } = childBridge;
-      // Theme tool calls name their conversation by bridge session; bind it
-      // as soon as the thread exists (the policy cache below also does).
-      if (childBridge.launch.toolNames.includes("create_custom_theme")) bindSessionToThread(policy.sessionId, threadId);
+      // Bind the dispatched model with the thread. Editing the model picker
+      // while this turn runs changes the settings for the next turn only.
+      if (childBridge.launch.toolNames.includes("create_custom_theme")) {
+        bindSessionToThread(policy.sessionId, threadId, {
+          model: effectiveSettings.model.trim() || undefined,
+          supportsImageInput: openRouterModel?.supportsImageInput === true
+            || Boolean(lmStudioModel?.imageInputEndpoint && lmStudioModel.imageInputEndpoint === effectiveSettings.lmStudioBaseUrl.trim()),
+        });
+      }
       if (!captured && !policyUpdated && policy.rootThreadId === threadId) return;
       const next = { ...policy, rootThreadId: threadId };
       childBridge = { ...childBridge, policy: next, captured: false, policyUpdated: false };
@@ -1176,6 +1198,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         }
         rememberThread(thread);
         contextRef.current.onThreadTitlePending?.(thread.id, text);
+        if (designerDraft) setThemeDesignerForThread(thread.id, designerDraft.purpose);
         onThreadCreated(thread.id, { deferred: Boolean(deferredDelivery), subagentsEnabled: effectiveSettings.subagentsEnabled, subagentEngine: effectiveSettings.subagentEngine, nativeSubagentMax: effectiveSettings.nativeSubagentMax, nativeSubagentOptions: effectiveSettings.nativeSubagentOptions, autoCompactTokens: effectiveSettings.autoCompactTokens });
         persistThreadModel(thread.id, effectiveSettings.model);
         persistThreadReasoning(thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
@@ -1435,8 +1458,12 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         settingsProposalsEnabled: Boolean(activeProject) && effectiveSettings.subagentEngine !== "native",
         // Custom-theme tools for every root conversation, including plain
         // chats, unless switched off. Stable per thread (a flip would rotate
-        // the bridge); children and workflow-owned threads never get them.
+        // the bridge). Native workers inherit the root MCP registration, so
+        // give it theme tools only when native delegation is off.
         themeToolsEnabled: effectiveSettings.customThemeTools !== false
+          && !ctx.scheduledDelivery
+          && !ctx.remoteDelivery
+          && !nativeDelegation
           && !(activeThread && childThread)
           && !(activeThread && useTaskStore.getState().workflowOwners[activeThread.id]),
         // Thread selection may attach a bridge, but only sending a prompt is
@@ -1471,7 +1498,9 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       // Theme guidance follows the tools this turn's bridge really carries.
       // "Design a theme with AI" threads (or the draft that button opened)
       // carry the designer brief every turn; Settings records the purpose.
-      const themeDesigner = !childThread && themeDesignerPurpose(activeThread?.id) !== null;
+      const themeDesigner = !childThread && !ctx.scheduledDelivery && !ctx.remoteDelivery && Boolean(
+        activeThread ? themeDesignerPurpose(activeThread.id) : designerDraft,
+      );
       const themePrompt = {
         toolsAvailable: Boolean(childBridge?.launch.toolNames.includes("create_custom_theme")),
         designer: themeDesigner,
@@ -1619,6 +1648,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         }
         rememberThread(startedThread);
         contextRef.current.onThreadTitlePending?.(startedThread.id, text);
+        if (designerDraft) setThemeDesignerForThread(startedThread.id, designerDraft.purpose);
         onThreadCreated(startedThread.id, { deferred: Boolean(deferredDelivery), subagentsEnabled: effectiveSettings.subagentsEnabled, subagentEngine: effectiveSettings.subagentEngine, nativeSubagentMax: effectiveSettings.nativeSubagentMax, nativeSubagentOptions: effectiveSettings.nativeSubagentOptions, autoCompactTokens: effectiveSettings.autoCompactTokens });
         persistThreadModel(startedThread.id, effectiveSettings.model.trim() || (typeof runtimeTurnModel === "string" ? runtimeTurnModel.trim() : ""));
         persistThreadReasoning(startedThread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
@@ -1953,7 +1983,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         if (!delivery.remoteDelivery || delivery.activeThread?.id !== threadId) throw new HostReadError("stale_target", "The remote queue target changed.");
         useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
         await flushPendingStateWrites();
-        const sent = await deliverMessage(delivery, queuedTurn.text, "turn");
+        const sent = await deliverMessage({ ...delivery, scheduledDelivery: queuedTurn.deliverAt !== undefined }, queuedTurn.text, "turn");
         if (!sent) await delivery.remoteDelivery.rejected("internal");
         const result = delivery.remoteDelivery.result();
         if (result.state === "accepted" || result.state === "rejected") {
@@ -1989,6 +2019,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       delivered = await deliverMessage(
         {
           ...withLiveDeliveryReadiness(queuedContext, contextRef.current),
+          scheduledDelivery: queuedTurn.deliverAt !== undefined,
           skillInvocationText: queuedTurn.skillInvocationText,
           setError: (error) => { deliveryError = error; queuedContext.setError(error); },
         },
@@ -2530,6 +2561,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     let delivered = false;
     try {
       delivered = await deliverMessage({ ...ctx, firstPromptAttemptId: id }, text, "turn");
+      if (delivered && ctx.draftThemeDesigner) setPendingThemeDesigner(ctx.draftThemeDesigner.key, null);
       return delivered;
     } finally {
       const createdThreadId = createdFirstPromptThreadsRef.current.get(id);

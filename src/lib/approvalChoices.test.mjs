@@ -129,8 +129,8 @@ test("amendments with unknown fields or no visible command are not offered", () 
 });
 
 test("extra-access requests list every path exactly and fail closed on anything unknown", () => {
-  const permissions = { network: { enabled: true }, fileSystem: { read: ["/a"], write: ["/b"], entries: [{ path: "/c", access: "write" }] } };
-  assert.deepEqual(describePermissions(permissions).map((row) => `${row.label} ${row.value}`), ["Network Internet access for commands", "Read /a", "Write /b", "Write /c"]);
+  const permissions = { network: { enabled: true }, fileSystem: { read: ["/a"], write: ["/b"], entries: [{ path: { type: "path", path: "/c" }, access: "write" }] } };
+  assert.deepEqual(describePermissions(permissions).map((row) => `${row.label} ${row.value}`), ["Network Internet access for commands", "Write /c"]);
   const plan = approvalChoices(approval("item/permissions/requestApproval", { permissions }));
   const session = byKind(plan, "broader")[0];
   assert.ok(session.scope.some((row) => row.value === "/c"));

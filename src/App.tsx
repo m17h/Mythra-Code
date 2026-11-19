@@ -29,7 +29,7 @@ import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { loadStored, readStoredRaw, storeValue, subscribeRemoteStateAdoption } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeParentFollowUpLimit, sanitizeTerminalTimeoutMinutes, sanitizeThemeId, customThemeIdOf, themeColorScheme } from "./lib/appConfig";
-import { checkBootGuard, claimPendingThemeDesigner, themeDesignerPurpose, resolveThemeSetting, setPendingThemeDesigner, useCustomThemes, armBootGuard, getCustomTheme } from "./lib/customThemes/store";
+import { armBootGuard, checkBootGuard, getCustomTheme, pendingThemeDesigner, resolveThemeSetting, setPendingThemeDesigner, settleBootGuard, themeDesignerPurpose, useCustomThemes } from "./lib/customThemes/store";
 import { useCustomThemeHost, type ThemeToastAction } from "./hooks/useCustomThemeHost";
 import "./components/AppToastActions.css";
 import { CustomThemeStyle } from "./components/CustomThemeStyle";
@@ -75,7 +75,7 @@ import { AppActionMenu } from "./components/AppActionMenu";
 import { ProjectRunControl } from "./components/ProjectRunControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { TimelineProjectRoot } from "./components/TimelineProjectRoot";
-import { Composer, discardDraft, draftFor, type ComposerHandle } from "./components/Composer";
+import { Composer, discardDraft, draftFor, seedComposerDraft, type ComposerHandle } from "./components/Composer";
 import { ParentRunLine, ParentRunTurnLabel } from "./components/ParentRunLine";
 import { sanitizeTranscriptionSettings, transcriptionModelFor } from "./lib/transcription";
 import type { VoiceInputConfig } from "./hooks/useVoiceInput";
@@ -177,7 +177,8 @@ import { useCheckpointGitNotice } from "./hooks/useCheckpointGitNotice";
 import { useAppShortcuts, workspaceShortcutLabel } from "./hooks/useAppShortcuts";
 import { useMediaQueryMatch } from "./hooks/useMediaQueryMatch";
 import { EmptyState } from "./components/EmptyState";
-import { FOCUS_APPROVAL_EVENT, FOCUS_COMPOSER_EVENT, OPEN_MODEL_PICKER_EVENT, formatShortcut, withShortcut } from "./lib/shortcuts";
+import { FOCUS_APPROVAL_EVENT, OPEN_MODEL_PICKER_EVENT, formatShortcut, withShortcut } from "./lib/shortcuts";
+import { visibleModelTrigger } from "./hooks/useMenuKeyboard";
 import { missingProviderRuntime } from "./lib/statusLabels";
 import { STUDIO_TAB_IDS } from "./lib/studioTabs";
 import { STUDIO_TAB_META } from "./components/studioTabMeta";
@@ -270,7 +271,7 @@ import { nativeRuntimeRestartBlocker } from "./lib/runtimeRestartActivity";
 import { collectSubAgentWorkers, createClaudeCommandWorkerReconciler, isActiveAgentRecord, isSubAgentWorkerActive, workerStatusFromAgentRecord, workerStatusFromLifecycle, type SubAgentWorker } from "./lib/subAgentActivity";
 import { childReviewToken, ensureManagedChildTranscriptHydrated, managedChildCursorSessionId, useChildAgents, type ProjectRunOutcome } from "./hooks/useChildAgents";
 import { reorderProjects, sortProjectsByPin, toggleProjectPinned, type ProjectDropPosition } from "./lib/projectOrdering";
-import { containTab, reachableFocusables } from "./hooks/useModalFocus";
+import { containTab, hasModalLayer, reachableFocusables } from "./hooks/useModalFocus";
 import { useTopbarFit } from "./hooks/useTopbarFit";
 import { attentionIdsFromKey, attentionThreadKey, countAttentionByWorkspace, projectIndicator } from "./lib/sidebarAttention";
 import { PixelWorkingMark } from "./components/PixelWorkingMark";
@@ -618,9 +619,13 @@ const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, p
 // before the first render, so a crash while drawing it is caught next time.
 const bootSafeModeThemeId = checkBootGuard();
 {
-  const initialCustomTheme = customThemeIdOf(initialSettings.theme);
-  const record = initialCustomTheme ? getCustomTheme(initialCustomTheme) : undefined;
-  if (record && !record.disabledReason) armBootGuard(record.id, record.head);
+  const projectTheme = !initialOnboardingOpen && initialWorkspaceMode === "project"
+    ? initialProjects[0]?.overrides?.defaults?.theme
+    : undefined;
+  const projectCustomId = customThemeIdOf(projectTheme);
+  const theme = projectTheme && (!projectCustomId || getCustomTheme(projectCustomId)) ? projectTheme : initialSettings.theme;
+  const { custom } = resolveThemeSetting(theme);
+  if (custom) armBootGuard(custom.id, custom.head);
 }
 
 /**
@@ -945,6 +950,11 @@ export default function App() {
   const [worktreeStatus, setWorktreeStatus] = useState<WorktreeStatus | null>(null);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [previewTheme, setPreviewTheme] = useState<ThemeId | null>(null);
+  const settingsThemePreviewRevision = useRef(0);
+  const previewSettingsTheme = useCallback((theme: ThemeId) => {
+    settingsThemePreviewRevision.current += 1;
+    setPreviewTheme(theme);
+  }, []);
   // Filled once the theme host below is set up; the keyboard layer and view
   // boundaries are declared earlier in this component.
   const resetThemeRef = useRef<(reason?: "shortcut" | "palette" | "tray") => void>(() => {});
@@ -1303,8 +1313,8 @@ export default function App() {
   // Sol R5 B02: pane widths are fitted to the window and UI scale (a saved
   // Tools width never squeezes the chat below its minimum), and the
   // sidebar also tucks away when even the narrowest Tools wouldn't fit.
-  const dockBesideChat = studioOpen && Boolean(activeProject) && !remoteActive;
-  const { paneSizes, dockWidth, dockMax, sidebarCrowded, paneRefs, startPaneResize, resizePaneWithKeyboard } = usePaneResize(((previewUiScale ?? settings.uiScale) || 100) / 100, { sidebarOpen, sidebarTucked: narrowWindow && dockBesideChat, dockOpen: dockBesideChat });
+  const dockBesideChat = shownRemote ? remoteStudioOpen : studioOpen && Boolean(activeProject);
+  const { paneSizes, dockWidth, dockMax, dockOverlay, sidebarCrowded, paneRefs, startPaneResize, resizePaneWithKeyboard } = usePaneResize(((previewUiScale ?? settings.uiScale) || 100) / 100, { sidebarOpen, sidebarTucked: narrowWindow && dockBesideChat, dockOpen: dockBesideChat });
   const sidebarTucked = (narrowWindow || sidebarCrowded) && dockBesideChat;
   // B05: asking for the sidebar while it is tucked no longer closes the
   // Tools. It floats over the chat until Escape, a click outside, or
@@ -1319,17 +1329,22 @@ export default function App() {
         const sidebar = document.querySelector<HTMLElement>(".sidebar.peek");
         // In priority order (a selector list would pick whichever comes first
         // in the DOM): the open thread, the open project, then New thread.
+        const reachable = sidebar ? reachableFocusables(sidebar) : [];
         const target = [".thread-card[aria-current='page']", ".thread-row-wrap.active > .thread-card", ".workspace-row[aria-current='page']", ".new-thread-button"]
-          .map((selector) => sidebar?.querySelector<HTMLElement>(selector))
+          .map((selector) => reachable.find((item) => item.matches(selector)))
           .find(Boolean);
-        (target ?? (sidebar ? reachableFocusables(sidebar)[0] : null))?.focus();
+        (target ?? reachable[0])?.focus();
       });
     }
     setSidebarOpen(true);
   };
   const closeSidebarPeek = (returnFocus = false) => {
     setSidebarPeek(false);
-    if (returnFocus) requestAnimationFrame(() => document.querySelector<HTMLElement>(".topbar .sidebar-show-button")?.focus());
+    if (returnFocus) requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(isRemoteMachineActive()
+        ? ".remote-stage:not([inert]) .sidebar-show-button"
+        : ".local-machine-surface:not([inert]) .sidebar-show-button")?.focus();
+    });
   };
   const toggleSidebar = () => {
     if (sidebarPeeking) closeSidebarPeek(true);
@@ -1351,7 +1366,7 @@ export default function App() {
     if (!sidebarPeeking) return;
     const onKeyDown = (event: KeyboardEvent) => {
       const sidebar = document.querySelector<HTMLElement>(".sidebar.peek");
-      if (!sidebar || event.defaultPrevented) return;
+      if (!sidebar || event.defaultPrevented || hasModalLayer()) return;
       if (event.target !== document.body && event.target !== document.documentElement) return;
       if (event.key === "Escape") {
         event.preventDefault();
@@ -1706,6 +1721,7 @@ export default function App() {
     return !task || (task.messages.length === 0 && task.activities.length === 0 && !task.history.hasMore);
   });
   const threadReviewDiff = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.diff ?? EMPTY_REVIEW_DIFF) : EMPTY_REVIEW_DIFF));
+  const threadReviewRequests = useRef(new Map<string, symbol>());
   const [projectReview, setProjectReview] = useState<{ scope: string; diff: ReviewDiff } | null>(null);
   const projectReviewSequence = useRef(0);
   // Changes compares the uncommitted working tree by default (the same set as
@@ -1714,7 +1730,8 @@ export default function App() {
   const [changesScope, setChangesScopeState] = useState<ChangesScope>(readChangesScope);
   const setChangesScope = useCallback((scope: ChangesScope) => { setChangesScopeState(scope); writeChangesScope(scope); }, []);
   const workingReviewDiff = projectReview?.scope === gitWorkspaceScope ? projectReview.diff : EMPTY_WORKING_REVIEW_DIFF;
-  const pushedReviewDiff = activeThreadId && threadReviewDiff.source === "runtime" && threadReviewDiff.successfulText !== undefined ? threadReviewDiff : null;
+  const pushedReviewDiff = activeThreadId && threadReviewDiff.cwd === normalizedProjectPath(activeExecutionPath)
+    && threadReviewDiff.comparison === "pushed" && threadReviewDiff.successfulText !== undefined ? threadReviewDiff : null;
   const reviewDiff = changesScope === "pushed" && pushedReviewDiff ? pushedReviewDiff : workingReviewDiff;
   const addCheckFeedback = (result: ProjectCheckResult): boolean => {
     if (result.projectId !== activeProject?.id || result.cwd !== activeExecutionPath || result.id !== checks.latest?.id) return false;
@@ -2852,14 +2869,18 @@ export default function App() {
     if (activeThread) registerRuntimePerformanceProvider(activeThread.id, providerFromThread(activeThread, projectDefaultProvider));
   }, [activeThread, projectDefaultProvider]);
 
-  const forgetThread = useCallback((threadId: string, keepQuestions = false) => {
-    forgetRuntimePerformanceProvider(threadId);
-    forgetTurnContext(threadId);
-    if (!keepQuestions) forgetQuestionRecords(threadId);
+  const forgetThreadSidebarEntry = useCallback((threadId: string) => {
     const next = forgetSidebarThread(knownThreadsRef.current ?? {}, threadId);
     knownThreadsRef.current = next;
     storeValue("kiwi.knownThreads", next);
   }, []);
+
+  const forgetThread = useCallback((threadId: string, keepQuestions = false) => {
+    forgetRuntimePerformanceProvider(threadId);
+    forgetTurnContext(threadId);
+    if (!keepQuestions) forgetQuestionRecords(threadId);
+    forgetThreadSidebarEntry(threadId);
+  }, [forgetThreadSidebarEntry]);
 
   // Repair old poisoned root records while ownership proof still exists. The
   // corrected record is written back, so removing the root's final child later
@@ -2915,7 +2936,10 @@ export default function App() {
   const scheduleCursorThreadSave = localTranscriptSaves.schedule;
   const flushBeforeExit = useCallback((allowNewTranscriptRevisions = false) => flushBeforeClose(
     [() => localTranscriptSaves.flushAll({ allowNewRevisions: allowNewTranscriptRevisions }), flushPendingGlobalInstructionFileEdits],
-    flushUsageBeforeExit,
+    () => {
+      settleBootGuard();
+      return flushUsageBeforeExit();
+    },
   ), [localTranscriptSaves]);
   const flushBeforeUpdate = useCallback(() => flushBeforeExit(true), [flushBeforeExit]);
   const appUpdater = useAppUpdater(flushBeforeUpdate);
@@ -4169,21 +4193,30 @@ export default function App() {
    */
   const refreshDiffFor = useCallback(
     async (threadId: string, projectPath: string) => {
+      const request = Symbol();
+      threadReviewRequests.current.set(threadId, request);
+      const publish = (diff: ReviewDiff) => {
+        if (threadReviewRequests.current.get(threadId) !== request) return;
+        threadReviewRequests.current.delete(threadId);
+        const store = useTaskStore.getState();
+        if (store.tasks[threadId]) store.setDiff(threadId, { ...diff, cwd: normalizedProjectPath(projectPath) });
+      };
       // Review refresh is optional post-turn work. Check repository
       // availability through the native helper first: on Windows without Git,
       // asking app-server to run `git` produces the alarming but unrelated
       // "failed to spawn command: program not found" after Claude completes.
       const gitInfo = await readWorkspaceGitInfo(projectPath).catch(() => null);
       if (gitInfo && !gitInfo.isRepo) {
-        useTaskStore.getState().setDiff(threadId, EMPTY_REVIEW_DIFF);
+        publish(EMPTY_REVIEW_DIFF);
         return;
       }
       try {
         const result = await rpc<{ diff: string }>("gitDiffToRemote", { cwd: projectPath });
-        useTaskStore.getState().setDiff(threadId, {
+        publish({
           text: result.diff ?? "",
           successfulText: result.diff ?? "",
           source: "runtime",
+          comparison: "pushed",
           baseline: "the tracked remote branch",
           untrackedPaths: [],
         });
@@ -4217,7 +4250,7 @@ export default function App() {
         const untrackedPaths = untracked && untracked.exitCode === 0
           ? untracked.stdout.split(/\r?\n/).filter(Boolean)
           : [];
-        useTaskStore.getState().setDiff(threadId, {
+        publish({
           text: `${tracked.stdout}${tracked.stderr}`,
           ...(tracked.exitCode === 0 ? { successfulText: tracked.stdout } : {}),
           source: "repository",
@@ -4229,7 +4262,7 @@ export default function App() {
         // A missing Git installation or optional diff capability must not turn
         // a successfully completed model run into an app-level failure.
         recordError(`Review diff refresh skipped: ${friendlyError(reason)}`);
-        useTaskStore.getState().setDiff(threadId, EMPTY_REVIEW_DIFF);
+        publish(EMPTY_REVIEW_DIFF);
       }
     },
     [executeCommand],
@@ -4887,6 +4920,7 @@ export default function App() {
     // from the previous workspace must not re-install its thread here.
     selectThreadRequestRef.current += 1;
     clearFirstPromptSelection();
+    setThreadLoadFailure(null);
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
     setDraftSubagentSettings(DEFAULT_THREAD_SUBAGENT_SETTINGS);
@@ -5652,6 +5686,7 @@ export default function App() {
       setError("That thread belongs to a different chat or project and cannot be opened here.");
       return;
     }
+    setThreadLoadFailure((current) => current?.id === thread.id ? current : null);
     clearFirstPromptSelection();
     // Clicking two threads quickly must open the one clicked last, not the
     // one whose resume RPC happened to finish last.
@@ -5659,6 +5694,7 @@ export default function App() {
     pendingThreadSelectionRef.current = { threadId: thread.id, requestId };
     const ownsSelection = () => !localInputBlocked()
       && voiceGeneration === localInputGeneration()
+      && activeWorkspacePathRef.current === projectPath
       && selectThreadRequestRef.current === requestId && threadAvailable();
     const selectedProvider = providerFromThread(thread, projectDefaultProvider);
     const existingTask = useTaskStore.getState().tasks[thread.id];
@@ -5861,7 +5897,9 @@ export default function App() {
       // avoid a transient unhandled rejection while history wins the race.
       const historyReadBoundary = captureHistoryReadBoundary(useTaskStore.getState().tasks[thread.id]);
       // Plain chats get a bridge too while theme tools are on (they need no project).
-      const themeToolsEnabled = settingsRef.current.customThemeTools !== false && !threadIsChild && !useTaskStore.getState().workflowOwners[thread.id];
+      const themeToolsEnabled = settingsRef.current.customThemeTools !== false
+        && !threadIsChild && !useTaskStore.getState().workflowOwners[thread.id]
+        && !(threadProviderSettings.provider === "openai" && threadProviderSettings.subagentsEnabled && threadProviderSettings.subagentEngine === "native");
       const childBridgePromise = activeProject || childAgentLinksRef.current[thread.id] || themeToolsEnabled ? ensureChildAgentBridge({
         provider: threadProviderSettings.provider,
         themeToolsEnabled,
@@ -6159,15 +6197,18 @@ export default function App() {
     else composer?.setDraft(text);
   }, []);
 
-  const newThread = () => {
+  const openNewThread = (nextDraftKey?: string) => {
     if (localInputBlocked()) return;
     selectThreadRequestRef.current += 1;
-    // A still-submitting first send owns its original composer and attachment
-    // draft. New must have another key so failure recovery cannot write into it.
-    if (activeWorkspace && [...firstPromptDraftKeysRef.current.values()].includes(workspaceDraftKey)) {
+    setThreadLoadFailure(null);
+    // Keep in-flight prompts and designer drafts under their original keys.
+    // Starting a designer also gives any ordinary draft its own saved entry.
+    const sendingDraftKeys = new Set(firstPromptDraftKeysRef.current.values());
+    if (activeWorkspace && (nextDraftKey || sendingDraftKeys.has(workspaceDraftKey) || pendingThemeDesigner(workspaceDraftKey))) {
       const workspacePath = normalizedProjectPath(activeWorkspace.path);
-      setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, new Set(firstPromptDraftKeysRef.current.values()), { workspacePath, key: workspaceDraftKey }));
-      setWorkspaceDraftKeys((current) => ({ ...current, [normalizedProjectPath(activeWorkspace.path)]: createWorkspaceDraftKey(activeWorkspace.path) }));
+      setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, sendingDraftKeys, { workspacePath, key: workspaceDraftKey }));
+      const key = nextDraftKey ?? createWorkspaceDraftKey(activeWorkspace.path);
+      setWorkspaceDraftKeys((current) => ({ ...current, [workspacePath]: key }));
     }
     clearFirstPromptSelection();
     setActiveThread(null);
@@ -6176,13 +6217,12 @@ export default function App() {
     setDraftThreadProvider(null);
     setDraftThreadModel(null);
     setDraftThreadIsolated(false);
-    // An ordinary new thread is not a theme-designer draft.
-    setPendingThemeDesigner(null);
-    if (pendingHandoff) composerRef.current?.setDraft("");
+    if (pendingHandoff && !nextDraftKey) composerRef.current?.setDraft("");
     setPendingHandoff(null);
     setError(null);
     requestAnimationFrame(() => composerRef.current?.focus());
   };
+  const newThread = () => openNewThread();
 
   const startNewThreadWithProvider = async (provider: Provider) => {
     if (localInputBlocked()) return;
@@ -6258,10 +6298,6 @@ export default function App() {
   };
 
   const handleThreadCreated = useCallback((threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean; subagentEngine?: SubagentEngine; nativeSubagentMax?: number; nativeSubagentOptions?: import("./types").NativeSubagentOptions; autoCompactTokens?: number }) => {
-    // This callback is captured with the sending draft, even if the user
-    // navigates while provider preparation is in flight.
-    // A draft opened from "Design a theme with AI" stays a designer thread.
-    if (!options?.deferred) claimPendingThemeDesigner(threadId);
     persistThreadSubagentSettings((current) => ({ ...current, [threadId]: {
       enabled: options?.subagentsEnabled ?? effectiveSettings.subagentsEnabled,
       engine: sanitizeSubagentEngine(options?.subagentEngine ?? effectiveSettings.subagentEngine),
@@ -6399,6 +6435,7 @@ export default function App() {
     return runner;
   };
   const parentExecutionCurrent = (run: ParentRun): string | null => parentExecutionDifference(run.execution, parentExecutionFor(run));
+  const draftThemeDesigner = !activeThread && activeWorkspace ? pendingThemeDesigner(attachmentKey) : undefined;
 
   const {
     pendingFirstPrompts, pendingThreadPrompts, beginFirstPrompt, finishFirstPrompt, getSubagentPreparationLockedReason,
@@ -6412,6 +6449,7 @@ export default function App() {
     activeThread,
     activeWorkspace,
     activeProject,
+    ...(draftThemeDesigner ? { draftThemeDesigner: { key: attachmentKey, purpose: draftThemeDesigner } } : {}),
     running,
     attachments,
     effectiveSettings,
@@ -9363,17 +9401,16 @@ export default function App() {
     focusComposerField();
   };
   const focusComposerField = () => {
-    const field = document.querySelector<HTMLTextAreaElement>(".composer-zone .composer textarea:not([disabled])")
-      ?? document.querySelector<HTMLTextAreaElement>(".composer textarea:not([disabled])");
-    field?.focus();
-    window.dispatchEvent(new CustomEvent(FOCUS_COMPOSER_EVENT));
+    const surface = isRemoteMachineActive() ? ".remote-stage" : ".local-machine-surface";
+    const field = document.querySelector<HTMLTextAreaElement>(`${surface} .composer textarea:not([disabled])`);
+    if (field && !field.closest("[inert]")) field.focus();
   };
   /** ⌘⇧M: the composer's model control opens itself when it listens for the
    * event; otherwise the keyboard layer opens the trigger the same way ↓ does. */
   const openModelPicker = () => {
     const request = new CustomEvent(OPEN_MODEL_PICKER_EVENT, { cancelable: true });
     if (!window.dispatchEvent(request)) return;
-    const trigger = document.querySelector<HTMLElement>(".composer-zone [aria-haspopup][aria-label*=\"model:\"]");
+    const trigger = visibleModelTrigger();
     if (!trigger) return;
     trigger.focus();
     trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
@@ -9399,7 +9436,7 @@ export default function App() {
   /** The only path that drops an unavailable row: an explicit request. Only
    * the rebuildable sidebar entry goes; no conversation data is deleted. */
   const removeUnavailableThread = (threadId: string) => {
-    forgetThread(threadId);
+    forgetThreadSidebarEntry(threadId);
     setThreads((current) => current.filter((entry) => entry.id !== threadId));
     setUnavailableThreads((current) => {
       const next = { ...current };
@@ -10171,6 +10208,8 @@ export default function App() {
     pauseInBackground: settings.themePauseInBackground !== false,
   }).motion;
   const activeThemeEffects = activeCustomSpec ? Object.keys(activeCustomSpec.effects ?? {}).filter((key) => (activeCustomSpec.effects as Record<string, unknown>)[key]).join(" ") : "";
+  const screenshotThreadInWorkspace = activeThread
+    && normalizedProjectPath(threadProjectBindingsRef.current?.[activeThread.id] || activeThread.cwd) === activeWorkspacePathRef.current;
   const { resetTheme, reportRenderError: reportThemeRenderError } = useCustomThemeHost({
     settingsRef,
     persistSettings: (update) => persistSettings((current) => update(current)),
@@ -10178,8 +10217,12 @@ export default function App() {
     setProjects: (update) => setProjects((current) => update(current)),
     projectForThread,
     activeProjectId: workspaceMode === "project" ? activeProjectId : null,
-    effectiveTheme,
-    appliedCustom: previewTheme === null ? activeCustomTheme : null,
+    paintedTheme: activeCustomTheme ? activeTheme : activeBaseTheme,
+    appliedCustom: activeCustomTheme,
+    screenshotWorkspacePath: activeExecutionPath,
+    screenshotThreadId: screenshotThreadInWorkspace && !remoteActive && !shownRemote && !settingsOpen && !onboardingOpen
+      && !reviewWideShown && !threadLoadFailure && !pendingApproval && !commandPaletteOpen && !shortcutsOpen
+      && !workflowLaunch && !runtimeSetupOpen && !authRequiredOpen ? activeThreadId ?? undefined : undefined,
     setPreviewTheme,
     threadForSession: (sessionId) => childAgentPolicyForSession(childAgentPoliciesRef.current, sessionId)?.rootThreadId || undefined,
     threadModel: (threadId) => {
@@ -10195,23 +10238,21 @@ export default function App() {
   // "Design a theme with AI": once Chats is on screen, open a fresh draft on
   // the chosen model with the designer purpose and a prefilled message.
   useEffect(() => {
-    if (!themeDesignerRequest || workspaceMode !== "chat" || settingsOpen) return;
+    if (!themeDesignerRequest || workspaceMode !== "chat" || settingsOpen || !activeWorkspace || localInputBlocked()) return;
     const choice = themeDesignerRequest;
+    const key = createWorkspaceDraftKey(activeWorkspace.path);
     setThemeDesignerRequest(null);
-    newThread();
-    setDraftThreadProvider(choice.provider === projectDefaultProvider ? null : choice.provider);
-    setDraftThreadModel(choice.model);
-    setPendingThemeDesigner(choice.targetThemeId ? { targetThemeId: choice.targetThemeId } : {});
     const target = choice.targetThemeId ? getCustomTheme(choice.targetThemeId) : undefined;
     const targetName = target?.revisions.find((revision) => revision.n === target.head)?.spec.name;
     const prompt = targetName ? `Adjust my “${targetName}” theme: ` : "Design a Mythra Code theme: ";
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      composerRef.current?.setDraft(prompt);
-      composerRef.current?.focus();
-    }));
-    // newThread and the draft setters are render-scope functions.
+    setPendingThemeDesigner(key, target ? { targetThemeId: target.id } : {});
+    seedComposerDraft(key, prompt);
+    openNewThread(key);
+    setDraftThreadProvider(choice.provider === projectDefaultProvider ? null : choice.provider);
+    setDraftThreadModel(choice.model);
+    // openNewThread and the draft setters are render-scope functions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [themeDesignerRequest, workspaceMode, settingsOpen]);
+  }, [themeDesignerRequest, workspaceMode, settingsOpen, activeWorkspace]);
   const activeEffortSlider = previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider;
   // Let the tour's local preview be the only styled slider ancestor. The
   // obscured app restores its style when the tour closes or hands off to Settings.
@@ -10385,11 +10426,12 @@ export default function App() {
   }), [settings.warnOnMaxReasoning, attachmentKey, activeWorkspace?.path, effectiveSettings.provider, effectiveSettings.model, settingsOpen]);
 
   return (
-    <div className="app-shell" data-machine-phase={machinePhase === "idle" ? undefined : machinePhase} onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeBaseTheme} data-color-scheme={themeColorScheme(activeBaseTheme)} data-custom-theme={activeCustomTheme?.id} data-theme-motion={activeCustomTheme ? themeMotion : undefined} data-ct-fx={activeThemeEffects || undefined} data-model-provider={effectiveSettings.provider} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100, ...(activeChatFont.startsWith("custom:") ? { "--chat-font": chatFontCss(activeChatFont, customFonts) } : {}) } as CSSProperties}>
+    <div className="app-shell" data-tools-overlay={dockOverlay || undefined} data-machine-phase={machinePhase === "idle" ? undefined : machinePhase} onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeBaseTheme} data-color-scheme={themeColorScheme(activeBaseTheme)} data-custom-theme={activeCustomTheme?.id} data-theme-motion={activeCustomTheme ? themeMotion : undefined} data-ct-fx={activeThemeEffects || undefined} data-model-provider={effectiveSettings.provider} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100, ...(activeChatFont.startsWith("custom:") ? { "--chat-font": chatFontCss(activeChatFont, customFonts) } : {}) } as CSSProperties}>
       {/* A custom theme's styles and its effects layer (first child of the
           shell, behind every pane). Its own boundary: a failure here switches
           the theme off instead of taking the window down. */}
-      <ErrorBoundary label="theme effects" showError={false} onError={() => reportThemeRenderErrorRef.current()}>
+      <ErrorBoundary label="theme effects" key={`${activeTheme}:${activeCustomTheme?.head ?? ""}:${previewTheme !== null}`} showError={false}
+        onError={() => { if (activeCustomTheme && previewTheme === null) reportThemeRenderError(activeCustomTheme); }}>
         <CustomThemeStyle spec={activeCustomSpec} id={activeCustomTheme?.id} revision={activeCustomTheme?.head} />
         <ThemeEffectsLayer spec={activeCustomSpec} id={activeCustomTheme?.id} motion={themeMotion} />
       </ErrorBoundary>
@@ -10451,7 +10493,10 @@ export default function App() {
           </button>
         </div>
 
-        <button className="new-thread-button" onClick={remoteActive ? () => machineActions()?.newThread() : newThread} disabled={!remoteActive && !activeWorkspace} title={activeWorkspace?.isChat ? "Start a chat without a project folder" : activeProject ? `Start a thread in ${activeProject.name}` : "Select a workspace first"}>
+        <button className="new-thread-button" onClick={remoteActive ? () => {
+          machineActions()?.newThread();
+          if (sidebarPeeking) closeSidebarPeek(true);
+        } : newThread} disabled={!remoteActive && !activeWorkspace} title={activeWorkspace?.isChat ? "Start a chat without a project folder" : activeProject ? `Start a thread in ${activeProject.name}` : "Select a workspace first"}>
           <Plus size={16} />
           <span>New thread</span>
           <kbd>{formatShortcut("newThread")}</kbd>
@@ -10631,7 +10676,8 @@ export default function App() {
         />
         </div>
         {shownRemote && remoteUi && <ErrorBoundary label="remote device" key={shownMachine}>
-          <remoteUi.RemoteSidebar device={shownMachine} splitter={sidebarSplitter} scale={(settings.uiScale || 100) / 100} active={sidebarShown && !settingsOpen && !onboardingOpen} />
+          <remoteUi.RemoteSidebar device={shownMachine} splitter={sidebarSplitter} scale={(settings.uiScale || 100) / 100}
+            active={sidebarShown && !settingsOpen && !onboardingOpen} onNavigate={() => { if (sidebarPeeking) closeSidebarPeek(true); }} />
         </ErrorBoundary>}
         </div>
 
@@ -10707,7 +10753,10 @@ export default function App() {
               const statusKind = awaitingApproval ? "approval" : setupNeeded ? "setup" : parentRunStatus || openFailed ? "other" : running || childrenWorking ? "working" : childrenStatusUnknown ? "unknown" : "ready";
               // B06: the word is never shed. Only at the bar's last shedding
               // step does a long word take its short form ("Set up").
-              const word = topbarStatusLabel(statusKind, fullWord, topbarShed >= TOPBAR_SHED_SHORT_STATUS);
+              const words = <>
+                <span className="runtime-status-word-full" aria-hidden="true">{fullWord}</span>
+                <span className="runtime-status-word-short" aria-hidden="true">{topbarStatusLabel(statusKind, fullWord, true)}</span>
+              </>;
               const detail = awaitingApproval ? "This thread is waiting for you to allow or deny a request." : openFailed ? `“${threadLoadFailure?.title}” couldn’t be opened. Retry from the message in the conversation.` : setupNeeded ? `${providerLabel(activeProvider)} needs ${setupNeeded}, which isn’t installed on this computer.` : parentRunStatus ? parentRunStatus.title : childrenStatusUnknown && !running && !childrenWorking ? "A sub-agent's current status has not been confirmed." : status;
               // Approval and setup are both amber actions, so each has its own
               // shape as well as its own word: a raised hand vs. a wrench.
@@ -10729,13 +10778,13 @@ export default function App() {
                   onClick={awaitingApproval ? focusApprovalRequest : openRuntimeSetup}
                 >
                   {icon}
-                  <span aria-hidden="true">{word}</span>
+                  {words}
                 </button>
               </span>;
               return <div className={`runtime-status ${running || childrenWorking ? "working" : openFailed ? "unavailable" : ""}`} data-status={statusKind} title={detail}>
                 {announced}
                 {icon}
-                <span aria-hidden="true">{word}</span>
+                {words}
               </div>;
             })()}
             {activeProject && !activeWorkspace?.isChat && (
@@ -11171,7 +11220,7 @@ export default function App() {
                       nativeReasoningEfforts={nativeReasoningEfforts}
                       nativeDefaultModel={effectiveSettings.model}
                       autoCompactTokens={effectiveSettings.autoCompactTokens}
-                      onAutoCompactTokensChange={persistComposerAutoCompactTokens}
+                      onAutoCompactTokensChange={!activeThread || activeWorkspace.isChat ? persistComposerAutoCompactTokens : undefined}
                       onNativeOptionsChange={persistComposerNativeOptions}
                       onEngineChange={persistComposerSubagentEngine}
                       onNativeMaxConcurrentChange={persistComposerNativeSubagentMax}
@@ -11233,8 +11282,8 @@ export default function App() {
       </main>
 
       {shownRemote && remoteUi && <ErrorBoundary label="remote Tools" key={`remote-tools:${shownMachine}`}>
-        <remoteUi.RemoteStudio device={shownMachine} open={remoteStudioOpen} covered={Boolean(settingsOpen || onboardingOpen || voiceSession)} rootRef={paneRefs.dock} onResizeStart={startPaneResize("dock")} onResizeKeyDown={resizePaneWithKeyboard("dock")}
-          resizeValue={dockWidth} tab={studioTab} gitRoute={gitRoute} onTab={setStudioTab} onClose={() => setRemoteStudioOpen(false)} onFork={() => machineActions()?.forkThread()} />
+        <remoteUi.RemoteStudio device={shownMachine} open={remoteStudioOpen} covered={Boolean(settingsOpen || onboardingOpen || voiceSession || sidebarPeeking)} rootRef={paneRefs.dock} onResizeStart={startPaneResize("dock")} onResizeKeyDown={resizePaneWithKeyboard("dock")}
+          resizeValue={dockWidth} resizeMax={dockMax} tab={studioTab} gitRoute={gitRoute} onTab={setStudioTab} onClose={() => setRemoteStudioOpen(false)} onFork={() => machineActions()?.forkThread()} />
       </ErrorBoundary>}
       <ErrorBoundary label="Tools" key={`workspace-tools:${studioView.attempt}`} resetKey={JSON.stringify([activeProject?.id, activeThreadId, studioTab])} showError={studioOpen} onDismiss={() => setStudioOpen(false)} onRetry={() => setStudioView((current) => ({ View: lazy(loadStudioDock), attempt: current.attempt + 1 }))}>
         <Suspense fallback={null}>
@@ -11260,10 +11309,11 @@ export default function App() {
             reviewWide={reviewWide}
             onReviewWideChange={setReviewWide}
             onRefreshWorkingDiff={refreshWorkingDiff}
-            threadCompaction={activeThread && !activeWorkspace?.isChat ? {
+            threadCompaction={activeThread && activeProject && !activeThreadIsChild ? {
               value: effectiveSettings.autoCompactTokens,
               provider: effectiveSettings.provider,
               model: effectiveSettings.model,
+              resolvedModel: subAgentModelCatalogs[effectiveSettings.provider]?.find((entry) => entry.id === effectiveSettings.model)?.resolvedModel,
               // The same lock the Sub-agents popover used: a run (or its workers) is active.
               locked: running || hasQueuedWork || subAgentWorkers.some((worker) => worker.status === "unknown" || isSubAgentWorkerActive(worker.status)),
               onChange: persistComposerAutoCompactTokens,
@@ -11516,33 +11566,57 @@ export default function App() {
             : target.layer === "codex" ? next.codexSystemPrompt !== settings.codexSystemPrompt
               : target.layer === "claude" ? next.claudeSystemPrompt !== settings.claudeSystemPrompt : false);
           // Settings autosaves while it stays open; closing is its own action.
-          persistSettings({ ...next, managedSubagentV2: next.managedSubagentV2 === true });
+          persistSettings((current) => ({
+            ...next,
+            managedSubagentV2: next.managedSubagentV2 === true,
+            customThemeTools: current.customThemeTools,
+            customThemeScreenshots: current.customThemeScreenshots,
+          }));
           if (repairedLayerChanged && skillPromptRepair?.message === error) {
             setError(null);
             setSkillPromptRepair(null);
           }
         }}
-        onThemePreview={setPreviewTheme}
+        onThemePreview={previewSettingsTheme}
         onDesignTheme={(choice) => {
+          if (noticeLocalOnly()) return;
           persistSettings((current) => ({ ...current, themeDesignerProvider: choice.provider, themeDesignerModel: choice.model }));
           closeSettings();
           setWorkspaceMode("chat");
           setThemeDesignerRequest(choice);
         }}
+        onCustomThemeAccessChange={(key, enabled) => {
+          persistSettings((current) => ({ ...current, [key]: enabled }));
+        }}
         onCustomThemeDeleted={(deleted) => {
-          const name = deleted.record.revisions.find((revision) => revision.n === deleted.record.head)?.spec.name ?? "the theme";
+          const spec = deleted.record.revisions.find((revision) => revision.n === deleted.record.head)?.spec;
+          const name = spec?.name ?? "the theme";
+          const fallback = spec?.base ?? DEFAULT_SETTINGS.theme;
           const setting: ThemeId = `custom:${deleted.record.id}`;
+          const previousAppTheme = settingsRef.current.theme;
+          const clearAppTheme = previousAppTheme === setting || (deleted.wasSelected && previousAppTheme === settings.theme);
+          const previewRevision = settingsThemePreviewRevision.current;
+          const clearedProjectIds = new Set(projectsRef.current.filter((project) => project.overrides?.defaults?.theme === setting).map((project) => project.id));
+          if (clearAppTheme) {
+            persistSettings((current) => current.theme === previousAppTheme ? { ...current, theme: fallback } : current);
+          }
+          if (clearedProjectIds.size) setProjects((current) => current.map((project) => {
+            const defaults = project.overrides?.defaults;
+            if (!defaults || defaults.theme !== setting) return project;
+            const { theme: _deleted, ...rest } = defaults;
+            return { ...project, overrides: { ...project.overrides, defaults: rest } };
+          }));
           showToast(`Deleted “${name}”`, "info", { durationMs: 10_000, actions: [{ label: "Undo", run: () => {
             if (!deleted.restore()) { showToast(`“${name}” couldn't be restored: the theme limit is reached.`, "info"); return; }
-            if (deleted.wasSelected) {
-              persistSettings((current) => ({ ...current, theme: setting }));
-              // Settings may still be previewing the base it fell back to.
-              setPreviewTheme((preview) => preview === null ? null : setting);
+            if (clearAppTheme && deleted.wasSelected && settingsThemePreviewRevision.current === previewRevision
+              && settingsRef.current.theme === fallback) {
+              persistSettings((current) => current.theme === fallback ? { ...current, theme: setting } : current);
+              setPreviewTheme((preview) => preview === fallback ? setting : preview);
             }
-            if (deleted.projectIds.length) setProjects((current) => current.map((project) => {
+            if (clearedProjectIds.size) setProjects((current) => current.map((project) => {
               const defaults = project.overrides?.defaults;
-              if (!deleted.projectIds.includes(project.id) || !defaults) return project;
-              return { ...project, overrides: { ...(project.overrides ?? {}), defaults: { ...defaults, theme: setting } } };
+              if (!clearedProjectIds.has(project.id) || !defaults || defaults.theme) return project;
+              return { ...project, overrides: { ...project.overrides, defaults: { ...defaults, theme: setting } } };
             }));
           } }] });
         }}

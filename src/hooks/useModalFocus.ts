@@ -47,27 +47,24 @@ export function containTab(
   return true;
 }
 
-/* ---- The overlay layer ----------------------------------------------------
-   Every modal surface (dialogs, sheets, the palette, approvals, the sidebar
-   peek) shares one contract: the app it covers is inert, Tab stays inside,
-   keys that land on the page body still reach the top-most surface, and focus
-   returns to the opener. `inert` is reference-counted so stacked surfaces
-   (a confirmation over Settings, an approval over the palette) never undo
-   each other, and attributes React also manages are left in React's hands. */
+/* The top dialog owns the inert boundary. A lower dialog may already have
+   covered a mounted sibling, so holding both boundaries would block that
+   sibling's controls as soon as it opens. */
 
-type InertHold = { count: number; /** Someone else (React, a closed backdrop) also wants it inert. */ external: boolean };
-const holds = new Map<HTMLElement, InertHold>();
+const layers: { surface: HTMLElement; focusInitial: () => void }[] = [];
+const holds = new Map<HTMLElement, boolean>();
 const selfWrites = new WeakMap<Element, number>();
 let watcher: MutationObserver | null = null;
 
 function writeInert(element: HTMLElement, on: boolean): void {
   if (element.hasAttribute("inert") === on) return;
-  selfWrites.set(element, (selfWrites.get(element) ?? 0) + 1);
+  if (watcher && document.body.contains(element)) selfWrites.set(element, (selfWrites.get(element) ?? 0) + 1);
   if (on) element.setAttribute("inert", "");
   else element.removeAttribute("inert");
 }
 
 function processInertRecords(records: MutationRecord[]): void {
+  const changed = new Set<HTMLElement>();
   for (const record of records) {
     const element = record.target as HTMLElement;
     const pending = selfWrites.get(element) ?? 0;
@@ -75,87 +72,68 @@ function processInertRecords(records: MutationRecord[]): void {
       selfWrites.set(element, pending - 1);
       continue;
     }
-    const hold = holds.get(element);
-    if (!hold) continue;
-    if (element.hasAttribute("inert")) {
-      // Another owner (usually React) set it too: leave it to them on release.
-      hold.external = true;
-    } else {
-      // Another owner let go while a surface still covers this: keep it inert.
-      hold.external = false;
-      writeInert(element, true);
-    }
+    if (holds.has(element)) changed.add(element);
+  }
+  for (const element of changed) {
+    // Keep changes from React (e.g. an inactive backdrop becoming active)
+    // even while this boundary holds the same element inert.
+    holds.set(element, element.hasAttribute("inert"));
+    writeInert(element, true);
   }
 }
 
-function ensureWatcher(): void {
-  if (watcher || typeof MutationObserver !== "function") return;
-  watcher = new MutationObserver(processInertRecords);
-  watcher.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["inert"] });
-}
-
-/**
- * Marks everything outside `keep` inert (siblings of it and of each ancestor up
- * to <body>) and returns a function that releases only this surface's share.
- */
-export function holdInertOutside(keep: HTMLElement): () => void {
-  if (typeof document === "undefined") return () => undefined;
-  ensureWatcher();
+function syncModalBoundary(): void {
+  const top = layers.at(-1)?.surface;
+  if (top && !watcher && typeof MutationObserver === "function") {
+    watcher = new MutationObserver(processInertRecords);
+    watcher.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["inert"] });
+  }
   if (watcher) processInertRecords(watcher.takeRecords());
-  const held: HTMLElement[] = [];
-  let node: HTMLElement | null = keep;
-  while (node && node !== document.body && node.parentElement) {
-    for (const sibling of Array.from(node.parentElement.children)) {
+
+  const outside = new Set<HTMLElement>();
+  for (let node = top; node && node !== document.body && node.parentElement; node = node.parentElement) {
+    for (const sibling of node.parentElement.children) {
       if (sibling === node || !(sibling instanceof HTMLElement)) continue;
       if (sibling.tagName === "SCRIPT" || sibling.tagName === "STYLE") continue;
-      // App notifications (the toast) float above every surface and keep their
-      // actions, such as Undo, usable while a dialog is open.
-      if (sibling.hasAttribute("data-overlay-exempt")) continue;
-      const hold = holds.get(sibling);
-      if (hold) hold.count += 1;
-      else {
-        holds.set(sibling, { count: 1, external: sibling.hasAttribute("inert") });
-        writeInert(sibling, true);
-      }
-      held.push(sibling);
+      // Notifications keep actions such as Undo usable over dialogs.
+      if (!sibling.hasAttribute("data-overlay-exempt")) outside.add(sibling);
     }
-    node = node.parentElement;
   }
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    if (watcher) processInertRecords(watcher.takeRecords());
-    for (const element of held) {
-      const hold = holds.get(element);
-      if (!hold) continue;
-      hold.count -= 1;
-      if (hold.count > 0) continue;
-      holds.delete(element);
-      if (!hold.external) writeInert(element, false);
-    }
-    if (!holds.size && watcher) {
-      processInertRecords(watcher.takeRecords());
-      watcher.disconnect();
-      watcher = null;
-    }
-  };
+  for (const [element, externallyInert] of holds) {
+    if (outside.has(element)) continue;
+    holds.delete(element);
+    if (!externallyInert) writeInert(element, false);
+  }
+  for (const element of outside) {
+    if (holds.has(element)) continue;
+    holds.set(element, element.hasAttribute("inert"));
+    writeInert(element, true);
+  }
+
+  if (!top && watcher) {
+    processInertRecords(watcher.takeRecords());
+    watcher.disconnect();
+    watcher = null;
+  }
 }
 
-/** Open modal surfaces, bottom first. Only the last one answers page-level keys. */
-const layers: HTMLElement[] = [];
+export function hasModalLayer(): boolean {
+  return layers.length > 0;
+}
 
-/** True when `surface` is the top-most open modal surface. */
 export function isTopModalLayer(surface: HTMLElement): boolean {
-  return layers[layers.length - 1] === surface;
+  return layers.at(-1)?.surface === surface;
 }
 
-/** Registers a modal surface; returns its removal. Used by surfaces that don't use the hook (approvals, the peek). */
-export function pushModalLayer(surface: HTMLElement): () => void {
-  layers.push(surface);
+function pushModalLayer(surface: HTMLElement, focusInitial: () => void): () => void {
+  const layer = { surface, focusInitial };
+  layers.push(layer);
+  syncModalBoundary();
   return () => {
-    const index = layers.lastIndexOf(surface);
-    if (index >= 0) layers.splice(index, 1);
+    const index = layers.lastIndexOf(layer);
+    if (index < 0) return;
+    layers.splice(index, 1);
+    syncModalBoundary();
   };
 }
 
@@ -186,7 +164,7 @@ export type ModalFocusOptions = {
  * keeps Tab cycling inside the dialog (hidden, disabled, inert and collapsed
  * controls are skipped; a focused heading counts as a position, not an exit).
  * Keys whose target is the page itself (after a click on blank space) still
- * reach the top-most dialog. On close: releases its share of `inert` and
+ * reach the top-most dialog. On close: restores the previous modal boundary and
  * restores focus to `returnFocus()` or the element focused before opening.
  */
 export function useModalFocus(
@@ -206,19 +184,21 @@ export function useModalFocus(
     restoreRef.current =
       opener instanceof HTMLElement && opener !== document.body && !dialog.contains(opener) ? opener : null;
     const modal = optionsRef.current?.inertOutside ?? dialog.getAttribute("aria-modal") === "true";
-    const releaseInert = modal ? holdInertOutside(dialog) : () => undefined;
-    const removeLayer = modal ? pushModalLayer(dialog) : () => undefined;
-    if (!dialog.contains(document.activeElement)) {
+    const focusInitial = () => {
       const initial =
         optionsRef.current?.initialFocus?.() ??
         dialog.querySelector<HTMLElement>("[data-autofocus]") ??
-        reachableFocusables(dialog)[0];
-      initial?.focus();
-    }
+        reachableFocusables(dialog)[0] ??
+        dialog;
+      initial.focus({ preventScroll: true });
+    };
+    const removeLayer = modal ? pushModalLayer(dialog, focusInitial) : () => undefined;
+    if (!dialog.contains(document.activeElement)) focusInitial();
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (modal && !isTopModalLayer(dialog)) return;
       if (event.key === "Tab") containTab(dialog, event);
-      else if (event.key === "Escape" && optionsRef.current?.onEscape && !event.defaultPrevented) {
+      else if (event.key === "Escape" && optionsRef.current?.onEscape && !event.defaultPrevented && !event.isComposing) {
         event.preventDefault();
         event.stopPropagation();
         optionsRef.current.onEscape();
@@ -229,7 +209,7 @@ export function useModalFocus(
     // A click on blank space leaves focus on <body>. Tab and Escape from
     // there belong to the top-most dialog, not to the inert app behind it.
     const onPageKeyDown = (event: KeyboardEvent) => {
-      if (!modal || !isTopModalLayer(dialog) || event.defaultPrevented || !targetsPage(event.target)) return;
+      if (!modal || !isTopModalLayer(dialog) || event.defaultPrevented || event.isComposing || !targetsPage(event.target)) return;
       if (event.key === "Tab") {
         containTab(dialog, event);
       } else if (event.key === "Escape") {
@@ -246,8 +226,6 @@ export function useModalFocus(
       dialog.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("keydown", onPageKeyDown, true);
       removeLayer();
-      // Release before restoring: an inert opener can't take focus.
-      releaseInert();
       const requested = optionsRef.current?.returnFocus?.() ?? restoreRef.current;
       restoreRef.current = null;
       // Restore only if focus is still inside the (now closing) dialog or was
@@ -259,7 +237,7 @@ export function useModalFocus(
         Boolean(element && document.contains(element) && !element.closest("[inert]"));
       if (usable(requested)) {
         requested.focus({ preventScroll: true });
-        return;
+        if (document.activeElement === requested) return;
       }
       // A dialog opened at launch (or whose opener has gone, like a menu item)
       // hands focus to the draft rather than leaving it on <body>. Wait a
@@ -268,8 +246,12 @@ export function useModalFocus(
         const current = document.activeElement;
         // Someone else already placed focus (and not inside this closed, still-mounted dialog).
         if (current instanceof HTMLElement && current !== document.body && !dialog.contains(current) && usable(current)) return;
-        const draft = document.querySelector<HTMLElement>(".composer textarea:not([disabled])");
-        if (usable(draft)) draft.focus({ preventScroll: true });
+        const top = layers.at(-1);
+        if (top) top.focusInitial();
+        else {
+          const draft = document.querySelector<HTMLElement>(".composer textarea:not([disabled])");
+          if (usable(draft)) draft.focus({ preventScroll: true });
+        }
       });
     };
   }, [dialogRef, open]);

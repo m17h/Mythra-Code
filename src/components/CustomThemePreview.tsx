@@ -23,16 +23,13 @@ import { ArrowUp, CalendarClock, ChevronDown, Circle, Folder, Gauge, GitPullRequ
 import { ProviderLogo } from "./BrandLogos";
 import { MythraMark } from "./MythraMark";
 import { ThemeEffectsLayer } from "./ThemeEffectsLayer";
+import { useMediaQueryMatch } from "../hooks/useMediaQueryMatch";
 import { isThemeMotionTransientlyPaused, subscribeThemeMotion } from "../lib/customThemes/motion";
 import { REPLICA_SIZE } from "../lib/customThemes/replicaCss";
 import { adoptReplicaSheets, appSheet, themeSheet } from "../lib/customThemes/replicaSheets";
 import { builtInScheme, type CustomThemeId, type ThemeSpec } from "../lib/customThemes/spec";
 import { resolveTheme } from "../lib/customThemes/validate";
 import { formatColor } from "../lib/customThemes/color";
-
-function forcedColors(): boolean {
-  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(forced-colors: active)").matches;
-}
 
 /** seen: has come near the screen once (build it); onScreen: visible right now (may animate). */
 function useVisibility(ref: RefObject<HTMLElement | null>): { seen: boolean; onScreen: boolean } {
@@ -112,8 +109,10 @@ export function CustomThemePreview({ id, spec, revision = 0, animate, customCssE
       return { scheme: builtInScheme(spec.base), bg: "" };
     }
   }, [spec]);
-  const css = customCssEnabled && !forcedColors();
-  const sheet = useMemo(() => (granted ? themeSheet(id, revision, spec, css) : null), [granted, id, revision, spec, css]);
+  const forcedColors = useMediaQueryMatch("(forced-colors: active)");
+  const sheet = useMemo(() => (
+    granted ? themeSheet(id, revision, spec, customCssEnabled, forcedColors) : null
+  ), [granted, id, revision, spec, customCssEnabled, forcedColors]);
   const moving = Boolean(animate && onScreen && !paused && spec.motion?.enabled !== false && sheet?.hasMotion);
 
   // Build the shadow root the first time the card comes near the screen, when its turn comes.

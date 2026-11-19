@@ -95,6 +95,7 @@ export interface EditTarget {
   selectionStart: number;
   selectionEnd: number;
   originalValue: string;
+  scope: string | null;
 }
 
 function isPermissionError(reason: unknown): boolean {
@@ -129,10 +130,19 @@ export async function probeClipboard(): Promise<ClipboardContents> {
   }
 }
 
+/** A composer can reuse the same textarea for a different draft while the
+ * system clipboard prompt is open. Check both the draft identity and text. */
+function ownsEditTarget({ editor, originalValue, scope }: EditTarget): boolean {
+  return editor.isConnected && !editor.matches(":disabled") && !editor.closest('[inert], [aria-hidden="true"]')
+    && editor.getAttribute("data-edit-menu") === scope && editor.value === originalValue;
+}
+
 /** Focus the box and put back the selection the menu was opened on. */
-function focusTarget({ editor, selectionStart, selectionEnd, originalValue }: EditTarget): void {
+function focusTarget({ editor, selectionStart, selectionEnd }: EditTarget): boolean {
   editor.focus({ preventScroll: true });
-  if (editor.value === originalValue) editor.setSelectionRange(selectionStart, selectionEnd);
+  if (editor.ownerDocument.activeElement !== editor) return false;
+  editor.setSelectionRange(selectionStart, selectionEnd);
+  return true;
 }
 
 /** insertText keeps native undo (⌘Z) and fires the real input event React's
@@ -180,7 +190,7 @@ export type PasteOutcome = "pasted" | "empty" | "refused";
  */
 export async function pasteIntoEditor(target: EditTarget): Promise<PasteOutcome> {
   const { editor } = target;
-  focusTarget(target);
+  if (!ownsEditTarget(target) || editor.readOnly || !focusTarget(target)) return "refused";
   if (!navigator.clipboard?.read && !navigator.clipboard?.readText) {
     // No async clipboard (an insecure page): the legacy command is the only way.
     return document.execCommand("paste") ? "pasted" : "refused";
@@ -191,9 +201,9 @@ export async function pasteIntoEditor(target: EditTarget): Promise<PasteOutcome>
   } catch {
     return "refused";
   }
-  if (!editor.isConnected || editor.disabled || editor.readOnly) return "refused";
-  // A prompt (WebKit's Paste button, WebView2's permission) moves focus.
-  if (editor.ownerDocument.activeElement !== editor) focusTarget(target);
+  // The permission prompt can move focus. Restore the original selection
+  // only if it still belongs to the same draft.
+  if (!ownsEditTarget(target) || editor.readOnly || !focusTarget(target)) return "refused";
   const text = normalizePastedText(contents.text);
   if (typeof DataTransfer === "function") {
     const transfer = new DataTransfer();
@@ -219,7 +229,7 @@ export async function pasteIntoEditor(target: EditTarget): Promise<PasteOutcome>
  * the async API is the fallback. */
 export async function copyFromEditor(target: EditTarget, cut: boolean): Promise<boolean> {
   const { editor } = target;
-  focusTarget(target);
+  if (!ownsEditTarget(target) || (cut && editor.readOnly) || !focusTarget(target)) return false;
   const start = editor.selectionStart ?? 0;
   const end = editor.selectionEnd ?? start;
   if (end <= start) return false;
@@ -230,9 +240,8 @@ export async function copyFromEditor(target: EditTarget, cut: boolean): Promise<
   } catch {
     return false;
   }
-  if (cut && editor.isConnected && !editor.readOnly && !editor.disabled) {
-    editor.focus({ preventScroll: true });
-    editor.setSelectionRange(start, end);
+  if (cut) {
+    if (!ownsEditTarget(target) || editor.readOnly || !focusTarget(target)) return false;
     if (!document.execCommand("delete")) {
       editor.setRangeText("", start, end, "end");
       editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteByCut" }));
@@ -242,8 +251,7 @@ export async function copyFromEditor(target: EditTarget, cut: boolean): Promise<
 }
 
 export function selectAllInEditor(target: EditTarget): void {
-  target.editor.focus({ preventScroll: true });
-  target.editor.select();
+  if (ownsEditTarget(target) && focusTarget(target)) target.editor.select();
 }
 
 export function runEditCommand(command: EditCommand, target: EditTarget): void {

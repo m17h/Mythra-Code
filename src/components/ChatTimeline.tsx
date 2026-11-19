@@ -1530,19 +1530,21 @@ function WorkDigest({ id, digest, onFullActivity }: { id: string; digest: { late
     {digest.files.length > 0 && <section className="work-digest-section">
       {/* The destination is said once, at rest (Sol M13): a file opens its
           diff as it is now, which can include edits made after this run. */}
-      <h4>Changed files <span>{digest.files.length}</span><small className="work-digest-files-hint">Opens the current diff</small></h4>
+      <h4>Changed files <span>{digest.files.length}</span>{root && <small className="work-digest-files-hint">Opens the current diff</small>}</h4>
       <ul className="work-digest-files">
         {digest.files.map((path) => {
           // Project-relative, like the Tools panel dock; the absolute path stays in the tooltip.
           const { name, directory } = splitChangePath(projectRelativePath(path, root));
-          return <li key={path}>
-            <button type="button" onClick={() => openChangedFile(path)} title={`View current diff of ${path}`} aria-label={`View current diff of ${path}`}>
-              <FileCode2 size={12} aria-hidden="true" />
-              <span className="work-digest-file-name">{name}</span>
-              {directory && <span className="work-digest-file-dir"><bdi dir="ltr">{directory}</bdi></span>}
-              <span className="work-digest-file-action" aria-hidden="true">View current diff</span>
+          const label = <>
+            <FileCode2 size={12} aria-hidden="true" />
+            <span className="work-digest-file-name">{name}</span>
+            {directory && <span className="work-digest-file-dir"><bdi dir="ltr">{directory}</bdi></span>}
+          </>;
+          return <li key={path}>{root ? (
+            <button type="button" className="work-digest-file-row" onClick={() => openChangedFile(path)} title={`View current diff of ${path}`} aria-label={`View current diff of ${path}`}>
+              {label}<span className="work-digest-file-action" aria-hidden="true">View current diff</span>
             </button>
-          </li>;
+          ) : <div className="work-digest-file-row" title={path}>{label}</div>}</li>;
         })}
       </ul>
     </section>}

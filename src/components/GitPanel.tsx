@@ -402,11 +402,13 @@ function GitPanelInner(props: GitPanelProps) {
     changesSelect(row ? { path: row.path, area: row.area } : null);
   }, [changeRows, changesSelect]);
   const [requestedPath, setRequestedPath] = useState<string | null>(null);
-  const handledSelectNonce = useRef(0);
+  const handledSelectRequest = useRef<{ path: string; nonce: number } | null>(null);
   const selectRequest = props.selectRequest;
   useEffect(() => {
-    if (!selectRequest || selectRequest.nonce <= handledSelectNonce.current || !changeRows) return;
-    handledSelectNonce.current = selectRequest.nonce;
+    if (!selectRequest || !changeRows) return;
+    const handled = handledSelectRequest.current;
+    if (handled && (selectRequest.nonce < handled.nonce || (selectRequest.nonce === handled.nonce && selectRequest.path === handled.path))) return;
+    handledSelectRequest.current = selectRequest;
     // A path the list doesn't hold (only in the push comparison, or no longer
     // changed) can still open in Diff. The explicit request always wins over
     // whatever was selected before, so Diff never falls back to an older file.

@@ -61,6 +61,8 @@ export interface ResolvedTheme {
   paints: EffectPaint[];
   /** Effective surfaces after translucency + effects + textures (several per surface). */
   surfaces: Record<string, Rgba[]>;
+  /** Reuse the token's full surface and texture requirements for render-time ink adjustments. */
+  inkPasses: (key: string, color: Rgba) => boolean;
 }
 
 /** Lightness-step offsets for derived surfaces (dark / light). */
@@ -246,7 +248,10 @@ export function resolveTheme(spec: ThemeSpec, baseTokens?: ResolvedTokens): Reso
   const seeThrough = (surface: Rgba, name: string, region: "chat" | "sidebar") => {
     if (t <= 0) return [named(surface, name)];
     const behind = paints.filter((paint) => paint.layer === "back" && areaCovers(paint.area, region));
-    return backdropExtremes(bg, behind).map((backdrop, index) => named(composite(withAlpha(surface, 1 - t), backdrop), index === 0 ? name : `${name} seen over the ${behind[index - 1].effect} (${formatColor(behind[index - 1].color)})`));
+    return backdropExtremes(bg, behind).map((backdrop) => named(
+      composite(withAlpha(surface, 1 - t), backdrop.color),
+      backdrop.effects.length ? `${name} seen over the ${backdrop.effects.join(" and ")}` : name,
+    ));
   };
   const surfaces: Record<string, Rgba[]> = {
     bg: seeThrough(bg, "bg", "chat"),
@@ -321,7 +326,8 @@ export function resolveTheme(spec: ThemeSpec, baseTokens?: ResolvedTokens): Reso
   if (Math.abs(oklchLightness(p.panel) - oklchLightness(bg)) < 0.012 && !(scheme === "light" && formatColor(p.panel) === formatColor(bg))) warnings.push("tokens.panel: cards sit too close to bg to read as a separate surface (lightness step < 0.012).");
   if (Math.abs(oklchLightness(p.menu) - oklchLightness(bg)) < 0.02 && scheme === "dark") warnings.push("tokens.menu: menus sit too close to bg to read as raised (lightness step < 0.02).");
 
-  return { scheme, palette: p, adjustments, failures, warnings, paints, surfaces };
+  const inkPasses = (key: string, color: Rgba) => Boolean(rules[key] && passes(color, rules[key], fronts));
+  return { scheme, palette: p, adjustments, failures, warnings, paints, surfaces, inkPasses };
 }
 
 // ---- Shape checks -------------------------------------------------------------------

@@ -98,7 +98,7 @@ export function SpellingMenu({ scope }: { scope: string }) {
   const choose = (command: EditCommand) => {
     if (!active || !edit) return;
     dismissSpellingMenu();
-    runEditCommand(command, { editor, selectionStart: edit.selectionStart, selectionEnd: edit.selectionEnd, originalValue: renderedMenu.originalValue });
+    runEditCommand(command, { editor, ...edit, originalValue: renderedMenu.originalValue });
   };
   const label = renderedMenu.misspelled
     ? edit ? `Edit, with spelling suggestions for ${renderedMenu.word}` : `Spelling suggestions for ${renderedMenu.word}`

@@ -1,5 +1,5 @@
 import "./WorkflowManager.css";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { EmptyState, SettingInfo, Switch } from "./SettingsBits";
 import {
   ArrowDown,
@@ -144,20 +144,7 @@ export function WorkflowManager({
   }, [runs]);
   const selectedRun = selectedRunId ? runs.find((run) => run.id === selectedRunId) ?? null : null;
 
-  useModalFocus(runInspectorRef, Boolean(selectedRun));
-
-  // Escape closes the topmost workflow surface without reaching the Settings
-  // modal's own document-level Escape handler underneath.
-  useEffect(() => {
-    if (!selectedRun) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      setSelectedRunId(null);
-    };
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [selectedRun]);
+  useModalFocus(runInspectorRef, Boolean(selectedRun), { onEscape: () => setSelectedRunId(null) });
 
   const prepareRun = (workflow: WorkflowDefinition) => setPendingRun(workflow);
 

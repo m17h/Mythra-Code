@@ -8,10 +8,9 @@ import { subscribeUsage } from "../lib/usageLedger";
 import type { Provider } from "../types";
 
 /**
- * This conversation's automatic compaction window. It used to sit at the
- * bottom of the composer's Sub-agents popover; it is a context setting, so it
- * now lives in Tools → Usage beside the manual Compact context action.
- * Same value, same setter and same lock as before: only the place changed.
+ * This conversation's automatic compaction window. Tools → Usage shows it
+ * beside manual compaction when available; the composer covers other drafts
+ * and conversations.
  */
 
 function describeTokenWindow(tokens: number): string {
@@ -68,12 +67,13 @@ export interface ThreadCompactionSetting {
   provider?: Provider;
   /** The thread's model, for the published price boundary. */
   model?: string;
+  resolvedModel?: string;
   /** Running sub-agents were admitted with the current window, so it holds still. */
   locked?: boolean;
   onChange: (tokens?: number) => void;
 }
 
-export function ThreadCompactionControl({ value, provider, model, locked, onChange, action }: ThreadCompactionSetting & {
+export function ThreadCompactionControl({ value, provider, model, resolvedModel, locked, onChange, action }: ThreadCompactionSetting & {
   /** The manual Compact context button, shown beside the heading. */
   action?: ReactNode;
 }) {
@@ -85,7 +85,7 @@ export function ThreadCompactionControl({ value, provider, model, locked, onChan
     return unsubscribe;
   }, []);
   const unsupportedBy = compactionUnsupportedBy(provider);
-  const entry = compactionPricingEntry(provider, model?.trim() ?? "", pricing);
+  const entry = compactionPricingEntry(provider, model, pricing, resolvedModel);
   const choices = useMemo(
     () => compactionChoices(value, entry, unsupportedBy && `Not available for ${unsupportedBy}`),
     [entry, unsupportedBy, value],

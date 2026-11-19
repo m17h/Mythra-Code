@@ -2,6 +2,7 @@ import { workflowRecipeDigest } from "./workflowDigest";
 import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
 import { childReviewToken } from "../../../hooks/useChildAgents";
 import { loadStored } from "../../storage";
+import { normalizedProjectPath } from "../../paths";
 import { getChildMailboxes, type ChildMailbox } from "../../childAgentMailbox";
 import { refreshModelPricingCatalog, pricingRefreshStatus } from "../../usageLedger";
 import { publicCrew } from "./executionPreferences";
@@ -159,7 +160,8 @@ export class HostResources {
       const diff = rootId ? useTaskStore.getState().tasks[rootId]?.diff : undefined;
       // Local text deliberately includes diagnostics. Only the producer's
       // explicit current-success cache may cross the remote read boundary.
-      const success = diff && "successfulText" in diff && typeof diff.successfulText === "string" ? diff.successfulText : undefined;
+      const path = rootId && normalizedProjectPath(this.sources.executionPathFor(rootId, workspace.path));
+      const success = diff?.cwd === path && typeof diff?.successfulText === "string" ? diff.successfulText : undefined;
       const body = success ?? "Review changes are unavailable. Refresh them on the host.";
       result.reviewDiff = { text: text(body, REMOTE_ACTIVITY_BYTES), source: success !== undefined && diff?.source === "runtime" ? "runtime" : "repository",
         baseline: success !== undefined ? text(diff?.baseline, 256) || "HEAD" : "HEAD",

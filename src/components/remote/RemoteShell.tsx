@@ -22,6 +22,7 @@ import type { AttachmentRecord, StudioTab } from "../StudioDock";
 import { ThreadInboxCard, type ThreadCardPresence } from "../ThreadInboxCard";
 import type { TimelineEnvironment } from "../TimelineEnvironment";
 import type { VoiceInputConfig } from "../../hooks/useVoiceInput";
+import { useTopbarFit } from "../../hooks/useTopbarFit";
 import { providerDisplayName } from "../../lib/childAgents";
 import { confirmDialog } from "../../lib/confirmDialog";
 import { exportTextFile } from "../../lib/codex";
@@ -380,7 +381,7 @@ function RemoteThreadRow({ device, name, thread, workspaceName, timeline, select
 }
 
 /** The sidebar's lists, filled with this machine's projects and threads. */
-export function RemoteSidebar({ device, splitter, scale, active }: { device: string; splitter: ReactNode; scale: number; active: boolean }) {
+export function RemoteSidebar({ device, splitter, scale, active, onNavigate }: { device: string; splitter: ReactNode; scale: number; active: boolean; onNavigate?: () => void }) {
   const remote = useRemoteStore((state) => state.devices[device]);
   const name = useMachineName(device);
   const composing = useRemoteOutbox((state) => Boolean(state.compose[device]));
@@ -483,6 +484,16 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
       if (failure) setError(failure); else refreshRemoteDevice(device);
     });
   };
+  const openWorkspace = (id: string) => {
+    setNewThreadTarget(device, undefined);
+    selectRemoteWorkspace(device, id);
+    onNavigate?.();
+  };
+  const openThread = (id: string) => {
+    setNewThreadTarget(device, undefined);
+    selectRemoteThread(device, id);
+    onNavigate?.();
+  };
   const projectRow = (project: WireWorkspace) => <WorkspaceRow key={project.id} counts={<ScheduledCountBadge {...project.scheduled} />} name={project.name} title={`${project.name} on ${name}`} label={project.name} pinned={project.pinned} scale={scale}
     className={[remote?.workspaceId === project.id ? "active" : "", dragged === project.id ? "dragging" : "", dropTarget?.id === project.id ? `drop-${dropTarget.position}` : ""].filter(Boolean).join(" ")}
     wrapProps={{
@@ -504,8 +515,7 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
     }}
     onOpen={(event) => {
       if (suppressClick.current) { event.preventDefault(); return; }
-      setNewThreadTarget(device, undefined);
-      selectRemoteWorkspace(device, project.id);
+      openWorkspace(project.id);
     }}
     menu={[
       { label: project.pinned ? "Unpin project" : "Pin project", icon: project.pinned ? <PinOff size={13} /> : <Pin size={13} />, disabledReason: canWork ? undefined : remoteWorkAccessHint(name), onSelect: () => pinProject(project.id, !project.pinned) },
@@ -527,11 +537,11 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
   const threadRow = (thread: WireThread) => <RemoteThreadRow key={thread.id} device={device} name={name} thread={thread} workspaceName={workspace?.name ?? name}
     timeline={remote?.timelines.get(thread.id)} selected={!composing && remote?.threadId === thread.id} active={active} scale={scale} canWork={canWork}
     onError={setError} onCopyPath={() => { if (remote?.workspaceId) copyProjectPath(remote.workspaceId); }}
-    onOpen={() => { setNewThreadTarget(device, undefined); selectRemoteThread(device, thread.id); }} />;
+    onOpen={() => openThread(thread.id)} />;
   return <div className="sidebar-machine-lists" inert={leaving || undefined} aria-label={`Workspaces and threads on ${name}`} role="group">
     <WorkspacesSection onAdd={() => setBrowsing(true)} addDisabled={!addAllowed}
       addTitle={addAllowed ? `Add a project on ${name}` : `On ${name}, turn on Work with all projects and Manage projects for this device in Settings → Connections → Devices.`}>
-      {chats && <ChatsRow scheduled={chats.scheduled} active={remote?.workspaceId === chats.id} onOpen={() => { setNewThreadTarget(device, undefined); selectRemoteWorkspace(device, chats.id); }} label="Chats" />}
+      {chats && <ChatsRow scheduled={chats.scheduled} active={remote?.workspaceId === chats.id} onOpen={() => openWorkspace(chats.id)} label="Chats" />}
       {pinnedProjects.length > 0 && <PinnedWorkspaceGroup count={pinnedProjects.length} containsActiveWorkspace={pinnedProjects.some((project) => project.id === remote?.workspaceId)}>
         {pinnedProjects.map(projectRow)}
       </PinnedWorkspaceGroup>}
@@ -559,18 +569,18 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
           return <SubAgentParentGroup key={parentId || "parent-unknown"} title={parent?.title || "Unavailable parent"} provider={parent?.provider}
             providerName={parent ? providerDisplayName(parent.provider) : undefined} state={parent ? parentState(parent) : "unavailable"} reported={Boolean(parentId)} shortId={parentId.slice(0, 8)}
             count={children.length} threadIds={children.map((thread) => thread.id)} nativeAgents={NO_AGENTS}
-            onOpenParent={parent ? () => selectRemoteThread(device, parent.id) : undefined}>{children.map(threadRow)}</SubAgentParentGroup>;
+            onOpenParent={parent ? () => openThread(parent.id) : undefined}>{children.map(threadRow)}</SubAgentParentGroup>;
         })}
         {contentMatches.filter((match) => !shown.some((thread) => thread.id === match.id)).map((match) => <div key={match.id} className="thread-row-wrap">
-          <button className="thread-card" onClick={() => { setNewThreadTarget(device, undefined); selectRemoteThread(device, match.id); }} aria-label={`Open ${match.name ?? "conversation"}`}>
+          <button className="thread-card" onClick={() => openThread(match.id)} aria-label={`Open ${match.name ?? "conversation"}`}>
             <span className="thread-card-context"><span className="thread-card-workspace"><MessageSquare size={14} /><span>Match in conversation</span></span></span>
             <span className="thread-card-title">{match.name ?? "Untitled thread"}</span>
           </button>
         </div>)}
-        {savedDraft && <>
+        {workspace && savedDraft && <>
           <span className="section-label">Saved drafts</span>
           <div className="thread-row-wrap">
-            <button className="thread-card" onClick={() => setNewThreadTarget(device, newThreadTargetFor(workspace!.id))} aria-label={`Open saved draft: ${savedDraft}`}>
+            <button className="thread-card" onClick={() => { setNewThreadTarget(device, newThreadTargetFor(workspace.id)); onNavigate?.(); }} aria-label={`Open saved draft: ${savedDraft}`}>
               <span className="thread-card-context"><span className="thread-card-workspace"><MessageSquare size={14} /><span>Draft</span></span></span>
               <ThreadTitle className="thread-card-title" title={savedDraft} pending={false} />
             </button>
@@ -764,6 +774,8 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   const [editingProject, setEditingProject] = useState(false);
   const [promptOpenRequest, setPromptOpenRequest] = useState<{ name: string; nonce: number } | null>(null);
   const threadMenuRef = useRef<HTMLDivElement>(null);
+  const topbarRef = useRef<HTMLElement>(null);
+  useTopbarFit(topbarRef);
   const canRun = Boolean(context?.capabilities.terminal);
   const blockedIsolation = context?.execution?.isolationBlocked;
   const isolationReason = blockedIsolation === "repository" ? `Needs a Git repository on ${name}` : blockedIsolation === "root" ? "Open the repository root folder" : blockedIsolation === "commit" ? "Requires at least one Git commit"
@@ -1241,9 +1253,9 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   const guideCard = guide && <RemoteGuideCard guide={guide} onAddProject={() => useActiveMachine.setState((current) => ({ remoteAddProject: current.remoteAddProject + 1 }))}
     onOpenChats={() => { const chats = remote?.workspaces.find((entry) => entry.isChat); if (chats) { selectRemoteWorkspace(device, chats.id); setNewThreadTarget(device, newThreadTargetFor(chats.id)); } }} onCheckAgain={checkAgain} />;
   return <section className="remote-stage" data-remote-device={device} inert={leaving || undefined} aria-label={`Conversation on ${name}`}>
-    <header className="topbar">
+    <header className="topbar" ref={topbarRef}>
       <div className="topbar-left">
-        {!sidebarOpen && <button className="icon-button" onClick={onShowSidebar} title="Show sidebar" aria-label="Show sidebar"><PanelLeftOpen size={18} /></button>}
+        {!sidebarOpen && <button className="icon-button sidebar-show-button" onClick={onShowSidebar} title="Show sidebar" aria-label="Show sidebar"><PanelLeftOpen size={18} /></button>}
         <div className="project-heading">
           <span>{workspace?.isChat ? "Chats" : workspace?.name ?? name}</span>
           {/* As here: an isolated thread names its branch and folder, a project with no thread its folder. Always on that machine. */}

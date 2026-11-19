@@ -1,4 +1,5 @@
 import { useLayoutEffect, useState, type RefObject } from "react";
+import { effectiveZoom } from "../lib/floatingLayer";
 import { topbarShedTarget, TOPBAR_SHED_MAX } from "../lib/topbarFit";
 
 /**
@@ -16,12 +17,12 @@ import { topbarShedTarget, TOPBAR_SHED_MAX } from "../lib/topbarFit";
  * their clipped width as scrollWidth when the text sits in a nested span, so
  * measure the laid-out text with a Range instead.
  */
-function naturalWidth(heading: HTMLElement): number {
+function naturalWidth(heading: HTMLElement, zoom: number): number {
   let widest = 0;
   for (const child of Array.from(heading.children)) {
     const range = document.createRange();
     range.selectNodeContents(child);
-    widest = Math.max(widest, range.getBoundingClientRect().width, (child as HTMLElement).scrollWidth);
+    widest = Math.max(widest, range.getBoundingClientRect().width / zoom, (child as HTMLElement).scrollWidth);
   }
   return Math.ceil(widest);
 }
@@ -33,9 +34,11 @@ export function useTopbarFit(topbarRef: RefObject<HTMLElement | null>): number {
     const bar = topbarRef.current;
     if (!bar) return;
     let frame = 0;
+    let active = true;
     const measure = () => {
       frame = 0;
       const heading = bar.querySelector<HTMLElement>(".project-heading");
+      const zoom = effectiveZoom(bar);
       let next = 0;
       // Cumulative: level 3 writes "1 2 3", so CSS reads `[data-shed~="3"]`
       // as "at least level 3".
@@ -45,7 +48,7 @@ export function useTopbarFit(topbarRef: RefObject<HTMLElement | null>): number {
           barClient: bar.clientWidth,
           barScroll: bar.scrollWidth,
           headingClient: heading?.clientWidth ?? 0,
-          headingNatural: heading ? naturalWidth(heading) : 0,
+          headingNatural: heading ? naturalWidth(heading, zoom) : 0,
         });
         if (fits) break;
         next += 1;
@@ -54,7 +57,7 @@ export function useTopbarFit(topbarRef: RefObject<HTMLElement | null>): number {
       setLevel(next);
     };
     const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(measure);
+      if (active && !frame) frame = requestAnimationFrame(measure);
     };
     measure();
     const resize = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
@@ -66,6 +69,7 @@ export function useTopbarFit(topbarRef: RefObject<HTMLElement | null>): number {
     // Font loading changes text widths after first paint.
     void (document as Document & { fonts?: { ready?: Promise<unknown> } }).fonts?.ready?.then(schedule);
     return () => {
+      active = false;
       if (frame) cancelAnimationFrame(frame);
       resize?.disconnect();
       mutation?.disconnect();

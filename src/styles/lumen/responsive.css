@@ -36,7 +36,7 @@
    while the dock is open at these widths, so the chat keeps ~590px at 1024.
    Below 901px the overlay sheet above remains, with a dimmed backdrop. */
 @media (min-width: 901px) and (max-width: 1250px) {
-  .app-shell[data-theme][data-color-scheme] .studio-dock {
+  .app-shell[data-theme][data-color-scheme]:not([data-tools-overlay]) .studio-dock:not(.review-wide) {
     position: relative;
     top: auto;
     right: auto;
@@ -44,21 +44,21 @@
     z-index: auto;
     flex: 0 0 var(--dock-width, 430px);
     width: var(--dock-width, 430px);
-    max-width: min(var(--dock-width, 430px), calc(100vw - 520px));
+    max-width: var(--dock-width, 430px);
     box-shadow: none;
     transform: none;
   }
-  .app-shell[data-theme][data-color-scheme] .studio-dock.closed {
+  .app-shell[data-theme][data-color-scheme]:not([data-tools-overlay]) .studio-dock.closed {
     flex-basis: 0;
     width: 0;
     border-left-color: transparent;
     opacity: 0;
     transform: translateX(28px);
   }
-  .app-shell[data-theme][data-color-scheme] .topbar { z-index: auto; }
+  .app-shell[data-theme][data-color-scheme]:not([data-tools-overlay]) .topbar { z-index: auto; }
 }
-@media (max-width: 900px) {
-  .app-shell[data-theme][data-color-scheme] .studio-dock:not(.closed) { box-shadow: var(--lm-drawer-shadow), 0 0 0 100vmax var(--scrim); }
+.app-shell[data-theme][data-color-scheme][data-tools-overlay] .studio-dock:not(.closed, .review-wide) {
+  box-shadow: var(--lm-drawer-shadow), 0 0 0 100vmax var(--scrim);
 }
 
 /* ---- Reading measure and composer gutters (legacy 1180 / 1000 / 700) ---- */

@@ -10,6 +10,7 @@
 //                                  animations split behind the motion gates
 
 import { parseColor, relativeLuminance } from "./color";
+import { foldViewportMedia, replicaScope } from "./replicaCss";
 import { knownTokenVars } from "./spec";
 
 // ---- Tokenizer ---------------------------------------------------------------------
@@ -1163,6 +1164,7 @@ class Sanitizer {
   errors: string[] = [];
   ruleCount = 0;
   keyframes = new Map<string, Keyframes>();
+  ambiguousKeyframes = new Set<string>();
   declaredVars = new Set<string>();
   known = knownTokenVars();
   infinite = 0;
@@ -1171,13 +1173,22 @@ class Sanitizer {
   error(message: string) { if (!this.errors.includes(message) && this.errors.length < 40) this.errors.push(message); }
 
   /** First pass: keyframe names and --ct-* declarations, so later rules can reference them. */
-  collect(items: RawItem[]): void {
+  collect(items: RawItem[], depth = 0): void {
     for (const item of items) {
       if (item.kind === "at") {
-        if ((item.name === "media" || item.name === "supports") && item.block) this.collect(parseRules(item.block));
+        if (item.block && depth <= 2 && (item.name === "supports" || (item.name === "media" && checkMedia(item.prelude)))) {
+          this.collect(parseRules(item.block), depth + 1);
+        }
         if ((item.name === "keyframes" || item.name === "-webkit-keyframes") && item.block) {
-          const name = nonWs(item.prelude)[0];
-          if (name?.t !== "ident") continue;
+          const prelude = nonWs(item.prelude);
+          const name = prelude[0];
+          if (prelude.length !== 1 || name?.t !== "ident" || this.ambiguousKeyframes.has(name.v)) continue;
+          if (this.keyframes.has(name.v)) {
+            this.keyframes.delete(name.v);
+            this.ambiguousKeyframes.add(name.v);
+            this.error(`@keyframes \`${name.v}\` is defined more than once. Use different names in each rule so the animation can be checked wherever it runs.`);
+            continue;
+          }
           const stops: Keyframes["stops"] = [];
           for (const frame of parseRules(item.block)) {
             if (frame.kind !== "qualified") continue;
@@ -1239,6 +1250,7 @@ class Sanitizer {
   keyframesRule(item: RawRule): CleanKeyframes | null {
     const nameTok = nonWs(item.prelude)[0];
     if (!item.block || nameTok?.t !== "ident" || nonWs(item.prelude).length !== 1) { this.drop("@keyframes", "needs a plain name"); return null; }
+    if (this.ambiguousKeyframes.has(nameTok.v)) return null;
     const count = Array.from(this.keyframesSeen ??= new Set<string>()).length;
     if (count >= CSS_LIMITS.keyframes) { this.drop(`@keyframes ${nameTok.v}`, `more than ${CSS_LIMITS.keyframes} keyframes rules`); return null; }
     this.keyframesSeen.add(nameTok.v);
@@ -1627,12 +1639,12 @@ export function customCssScope(id: string, motion = false): string {
 }
 
 export function keyframeName(id: string, name: string): string {
-  return `ct-${id}-${name}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+  return `ct-${id}-${name}`;
 }
 
-function serializeScoped(rules: CleanRule[], id: string): string {
-  const scope = customCssScope(id);
-  const motionScope = customCssScope(id, true);
+function serializeScoped(rules: CleanRule[], id: string, preview: boolean): string {
+  const scope = preview ? replicaScope(id) : customCssScope(id);
+  const motionScope = `${scope}[data-theme-motion="on"]`;
   const rename = (name: string) => keyframeName(id, name);
   return rules.map((rule) => {
     switch (rule.kind) {
@@ -1644,9 +1656,15 @@ function serializeScoped(rules: CleanRule[], id: string): string {
         if (motion.length) parts.push(`@media (prefers-reduced-motion: no-preference) { ${rule.selectors.map((sel) => selectorText(sel, motionScope)).join(", ")} { ${motion.map((d) => declText(d, rename)).join(" ")} } }`);
         return parts.join("\n");
       }
-      case "media": return `@media ${rule.query} {\n${serializeScoped(rule.rules, id)}\n}`;
-      case "supports": return `@supports ${rule.condition} {\n${serializeScoped(rule.rules, id)}\n}`;
-      case "keyframes": return `@keyframes ${rename(rule.name)} { ${rule.stops.map((stop) => `${stop.at} { ${stop.decls.map((d) => declText(d)).join(" ")} }`).join(" ")} }`;
+      case "media": {
+        const query = preview ? foldViewportMedia(rule.query) : rule.query;
+        if (query === false) return "";
+        const body = serializeScoped(rule.rules, id, preview);
+        if (!body.trim()) return "";
+        return query === true ? body : `@media ${query} {\n${body}\n}`;
+      }
+      case "supports": return `@supports ${rule.condition} {\n${serializeScoped(rule.rules, id, preview)}\n}`;
+      case "keyframes": return `@keyframes ${escapeIdent(rename(rule.name))} { ${rule.stops.map((stop) => `${stop.at} { ${stop.decls.map((d) => declText(d)).join(" ")} }`).join(" ")} }`;
     }
   }).join("\n");
 }
@@ -1661,9 +1679,9 @@ export function cleanCustomCss(css: string): SanitizeOutput {
 }
 
 /** Scoped CSS ready to inject for theme `id`. */
-export function sanitizeCustomCss(css: string, opts: { id: string }): SanitizeOutput {
+export function sanitizeCustomCss(css: string, opts: { id: string; preview?: boolean }): SanitizeOutput {
   if (!/^ct_[a-z0-9]{10}$/.test(opts.id)) return { css: "", dropped: [], errors: ["invalid theme id"] };
   if (!css.trim()) return { css: "", dropped: [], errors: [] };
   const { rules, dropped, errors } = runPipeline(css);
-  return { css: serializeScoped(rules, opts.id), dropped, errors };
+  return { css: serializeScoped(rules, opts.id, opts.preview === true), dropped, errors };
 }

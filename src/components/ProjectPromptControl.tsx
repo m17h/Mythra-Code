@@ -75,20 +75,28 @@ export function ProjectPromptControl({
   const analyzeDraft = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveSystemPrompt(appPrompt, text, mode)), [appPrompt, mode, onAnalyzeSkillDependencies]);
 
   useLayoutEffect(() => {
-    if (!open || profiles === undefined || !rootRef.current) return;
+    if (!open || !rootRef.current) return;
     const root = rootRef.current;
+    const stage = root.closest<HTMLElement>(".remote-stage");
     const update = () => {
       const rect = root.getBoundingClientRect();
+      const bounds = stage?.getBoundingClientRect();
       const zoom = effectiveZoom(root);
-      setAvailableHeight(Math.max(0, (window.innerHeight - rect.bottom - 8) / zoom - 8));
-      setAvailableWidth(Math.max(0, Math.min(430, (align === "end" ? rect.right - 16 : window.innerWidth - rect.left - 16) / zoom)));
+      const left = bounds?.left ?? 0;
+      const right = bounds?.right ?? window.innerWidth;
+      const room = align === "end" ? rect.right - left : right - rect.left;
+      setAvailableHeight(Math.max(0, ((bounds?.bottom ?? window.innerHeight) - rect.bottom - 8) / zoom - 8));
+      setAvailableWidth(Math.max(0, Math.min(430, (room - 16) / zoom)));
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(root);
+    if (stage) observer.observe(stage);
+    const toolbar = root.closest<HTMLElement>(".topbar-right");
+    if (toolbar) observer.observe(toolbar);
     window.addEventListener("resize", update);
     return () => { observer.disconnect(); window.removeEventListener("resize", update); };
-  }, [align, open, profiles]);
+  }, [align, open]);
 
   const focusReturnTarget = useCallback(() => {
     if (!hideTrigger) return triggerRef.current;
@@ -176,6 +184,7 @@ export function ProjectPromptControl({
   const profilesOverLimit = draftProfiles.length > MAX_PROJECT_PROMPT_PROFILES;
   const saveDisabled = (custom && !draft.trim()) || profilesOverLimit;
   const selectedProfile = draftProfiles.find((profile) => profile.id === profileId);
+  const nextSelectedProfileId = custom ? selectedProfile?.id : undefined;
   const name = profileName.trim();
   const nameTaken = draftProfiles.some((profile) => profile.name.toLowerCase() === name.toLowerCase());
   const canSaveProfile = custom && !saveDisabled && draft.length <= MAX_PROJECT_PROFILE_PROMPT && Boolean(name) && name.length <= MAX_PROJECT_PROMPT_PROFILE_NAME;
@@ -187,7 +196,7 @@ export function ProjectPromptControl({
     && a.every((profile, index) => profile.id === b[index]?.id && profile.name === b[index]?.name && profile.prompt === b[index]?.prompt && profile.mode === b[index]?.mode);
   const changed = custom !== hasProjectPrompt
     || (custom && (draft.trim() !== (projectPrompt ?? "").trim() || mode !== promptMode))
-    || (profiles !== undefined && !sameProfiles(draftProfiles, savedProfiles));
+    || (profiles !== undefined && (nextSelectedProfileId !== selectedProfileId || !sameProfiles(draftProfiles, savedProfiles)));
   useEffect(() => { onStateLabel?.(promptState); }, [onStateLabel, promptState]);
 
   return (
@@ -354,7 +363,7 @@ export function ProjectPromptControl({
               onClick={() => {
                 const prompt = custom ? draft.trim() : undefined;
                 const nextMode = custom ? mode : "replace";
-                if (profiles !== undefined) onSave(prompt, nextMode, { profiles: draftProfiles, selectedProfileId: custom ? selectedProfile?.id : undefined });
+                if (profiles !== undefined) onSave(prompt, nextMode, { profiles: draftProfiles, selectedProfileId: nextSelectedProfileId });
                 else onSave(prompt, nextMode);
                 setOpen(false);
                 focusReturnTarget()?.focus();

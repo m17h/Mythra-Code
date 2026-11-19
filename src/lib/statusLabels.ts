@@ -38,6 +38,7 @@ const MCP_STATUS_LABELS: Record<string, string> = {
   oAuth: "Connected · OAuth",
   bearerToken: "Connected · token",
   needsAuth: "Needs sign-in",
+  notLoggedIn: "Needs sign-in",
   failed: "Failed to start",
   error: "Failed to start",
   disconnected: "Not connected",

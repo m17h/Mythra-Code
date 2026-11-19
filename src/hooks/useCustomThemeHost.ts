@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, type MutableRefObject } from "react";
 import { THEMES, customThemeIdOf, DEFAULT_SETTINGS } from "../lib/appConfig";
 import {
-  armBootGuard,
   getCustomTheme,
   headSpec,
+  readBootGuard,
   registerThemeHost,
-  sessionThread,
   setThemeDisabled,
   setThreadThemeFocus,
   settleBootGuard,
+  themeSessionIdentity,
   undoCustomTheme,
   type CustomThemeRecord,
   type ThemeDisabledReason,
@@ -32,10 +32,12 @@ export interface CustomThemeHostOptions {
   projectForThread: (threadId: string) => Project | undefined;
   /** The project open on screen, if any. */
   activeProjectId: string | null;
-  /** The theme the window shows (outside of a Settings preview). */
-  effectiveTheme: ThemeId;
+  /** The theme actually drawn, including a Settings preview. */
+  paintedTheme: ThemeId;
   /** The custom theme drawn right now, if any. */
   appliedCustom: CustomThemeRecord | null;
+  screenshotThreadId?: string;
+  screenshotWorkspacePath: string;
   /** Settings is previewing a theme; a model's change replaces that preview. */
   setPreviewTheme: (update: (current: ThemeId | null) => ThemeId | null) => void;
   threadForSession: (sessionId: string) => string | undefined;
@@ -73,13 +75,25 @@ const SAFE_MODE_TOAST: Record<ThemeDisabledReason, (name: string) => string> = {
  */
 export function useCustomThemeHost(options: CustomThemeHostOptions): {
   resetTheme: (reason?: "shortcut" | "palette" | "tray") => void;
-  reportRenderError: () => void;
+  reportRenderError: (failedTheme?: Pick<CustomThemeRecord, "id" | "head">) => void;
 } {
   const optionsRef = useRef(options);
   optionsRef.current = options;
   const appliedAtRef = useRef(0);
-  const renderedRef = useRef<{ theme: ThemeId; custom: CustomThemeId | null; revision: number | null }>({ theme: options.effectiveTheme, custom: null, revision: null });
+  const renderedRef = useRef({ theme: options.paintedTheme, revision: options.appliedCustom?.head ?? null });
+  const screenshotView = useRef({ threadId: options.screenshotThreadId, workspace: options.screenshotWorkspacePath });
   const waitersRef = useRef(new Set<{ theme: ThemeId; revision?: number; resolve: (shell: HTMLElement | null) => void }>());
+
+  const isThemePainted = useCallback((theme: ThemeId, revision?: number) => {
+    const rendered = renderedRef.current;
+    return rendered.theme === theme && (revision === undefined || revision === rendered.revision);
+  }, []);
+
+  const resolvePaintedShell = useCallback((waiter: { theme: ThemeId; revision?: number; resolve: (shell: HTMLElement | null) => void }) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      waiter.resolve(isThemePainted(waiter.theme, waiter.revision) ? document.querySelector<HTMLElement>(".app-shell") : null);
+    }));
+  }, [isThemePainted]);
 
   const switchOff = useCallback((id: CustomThemeId, reason: ThemeDisabledReason) => {
     const record = getCustomTheme(id);
@@ -96,28 +110,26 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
   const appliedId = options.appliedCustom?.id ?? null;
   const appliedRevision = options.appliedCustom?.head ?? null;
   useLayoutEffect(() => {
-    renderedRef.current = { theme: optionsRef.current.effectiveTheme, custom: appliedId, revision: appliedRevision };
+    renderedRef.current = { theme: optionsRef.current.paintedTheme, revision: appliedRevision };
     appliedAtRef.current = Date.now();
-    if (!appliedId || appliedRevision === null) {
-      // A built-in theme is on screen: nothing armed at launch can be blamed.
+    const startupTheme = readBootGuard();
+    if (startupTheme?.state !== "applying") return;
+    if (!appliedId || startupTheme.themeId !== appliedId || startupTheme.revision !== appliedRevision) {
       settleBootGuard();
       return;
     }
-    armBootGuard(appliedId, appliedRevision);
-    const timer = window.setTimeout(() => settleBootGuard(appliedId, appliedRevision), BOOT_SETTLE_MS);
+    const timer = window.setTimeout(() => settleBootGuard(startupTheme.themeId, startupTheme.revision), BOOT_SETTLE_MS);
     return () => window.clearTimeout(timer);
-  }, [appliedId, appliedRevision]);
+  }, [appliedId, appliedRevision, options.paintedTheme]);
   useLayoutEffect(() => {
-    renderedRef.current = { ...renderedRef.current, theme: options.effectiveTheme };
+    if (screenshotView.current.threadId !== options.screenshotThreadId || screenshotView.current.workspace !== options.screenshotWorkspacePath) {
+      screenshotView.current = { threadId: options.screenshotThreadId, workspace: options.screenshotWorkspacePath };
+    }
     for (const waiter of [...waitersRef.current]) {
-      const custom = customThemeIdOf(waiter.theme);
-      const matches = custom
-        ? renderedRef.current.custom === custom && (waiter.revision === undefined || renderedRef.current.revision === waiter.revision)
-        : renderedRef.current.theme === waiter.theme;
-      if (!matches) continue;
+      if (!isThemePainted(waiter.theme, waiter.revision)) continue;
       waitersRef.current.delete(waiter);
       // The theme's <style> lands in an effect; give it two frames to paint.
-      requestAnimationFrame(() => requestAnimationFrame(() => waiter.resolve(document.querySelector<HTMLElement>(".app-shell"))));
+      resolvePaintedShell(waiter);
     }
   });
 
@@ -146,8 +158,12 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const reportRenderError = useCallback(() => {
-    const { custom } = renderedRef.current;
+  const reportRenderError = useCallback((failedTheme?: Pick<CustomThemeRecord, "id" | "head">) => {
+    if (failedTheme) {
+      if (getCustomTheme(failedTheme.id)?.head === failedTheme.head) switchOff(failedTheme.id, "render-error");
+      return;
+    }
+    const custom = customThemeIdOf(renderedRef.current.theme);
     if (!custom || Date.now() - appliedAtRef.current > RENDER_ERROR_WINDOW_MS) return;
     switchOff(custom, "render-error");
   }, [switchOff]);
@@ -187,8 +203,8 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
     const project = current.projectsRef.current.find((entry) => entry.id === current.activeProjectId);
     const projectTheme = project?.overrides?.defaults?.theme;
     const previousApp = current.settingsRef.current.theme;
-    // The default theme must be what shows, so a project's own custom theme steps aside too.
-    if (project && projectTheme && customThemeIdOf(projectTheme)) {
+    // A project override would otherwise keep the global default from showing.
+    if (project && projectTheme) {
       current.setProjects((projects) => projects.map((entry) => {
         const defaults = entry.overrides?.defaults;
         if (entry.id !== project.id || !defaults) return entry;
@@ -206,7 +222,7 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
       kind: "info",
       durationMs: 8_000,
       actions: [{ label: "Undo", run: () => {
-        if (project && projectTheme && customThemeIdOf(projectTheme)) {
+        if (project && projectTheme) {
           optionsRef.current.setProjects((projects) => projects.map((entry) => {
             const defaults = entry.overrides?.defaults;
             if (entry.id !== project.id || !defaults) return entry;
@@ -223,6 +239,17 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
     const host: ThemeHost = {
       toolsEnabled: () => optionsRef.current.settingsRef.current.customThemeTools !== false,
       screenshotsEnabled: () => optionsRef.current.settingsRef.current.customThemeScreenshots !== false,
+      beginScreenshot: (threadId) => {
+        const view = screenshotView.current;
+        if (!threadId || view.threadId !== threadId) return null;
+        const surface = document.querySelector(".local-machine-surface");
+        if (!surface) return null;
+        const stillVisible = () => {
+          return screenshotView.current === view && surface.isConnected
+            && !surface.closest("[inert]") && !surface.hasAttribute("data-covered");
+        };
+        return stillVisible() ? stillVisible : null;
+      },
       activeThemeId: (threadId) => themeInEffect(threadId),
       applyTheme: (theme, ctx) => {
         const before = themeInEffect(ctx.threadId);
@@ -233,24 +260,28 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
         return { appliedTo };
       },
       threadForSession: (sessionId) => {
-        const threadId = sessionThread(sessionId) ?? optionsRef.current.threadForSession(sessionId);
-        return threadId ? { threadId, ...optionsRef.current.threadModel(threadId) } : {};
+        const session = themeSessionIdentity(sessionId);
+        const threadId = session?.threadId ?? optionsRef.current.threadForSession(sessionId);
+        if (!threadId) return {};
+        const current = optionsRef.current.threadModel(threadId);
+        return { threadId, provider: current.provider, model: session?.model ?? current.model, supportsImageInput: session?.supportsImageInput };
       },
       waitForApplied: (theme, revision) => new Promise((resolve) => {
-        const waiter = { theme, revision, resolve: (shell: HTMLElement | null) => { window.clearTimeout(timer); resolve(shell); } };
-        const timer = window.setTimeout(() => {
+        const waiter = { theme, revision, resolve: (shell: HTMLElement | null) => {
+          window.clearTimeout(timer);
           waitersRef.current.delete(waiter);
-          resolve(document.querySelector<HTMLElement>(".app-shell"));
+          resolve(shell);
+        } };
+        const timer = window.setTimeout(() => {
+          waiter.resolve(null);
         }, 2_000);
         waitersRef.current.add(waiter);
-        // Already on screen (an apply that changed nothing): resolve on the next frames.
-        const rendered = renderedRef.current;
-        const custom = customThemeIdOf(theme);
-        if (custom ? rendered.custom === custom && (revision === undefined || rendered.revision === revision) : rendered.theme === theme) {
+        if (isThemePainted(theme, revision)) {
           waitersRef.current.delete(waiter);
-          requestAnimationFrame(() => requestAnimationFrame(() => waiter.resolve(document.querySelector<HTMLElement>(".app-shell"))));
+          resolvePaintedShell(waiter);
         }
       }),
+      isThemePainted,
       motionState: () => ({
         paused: optionsRef.current.settingsRef.current.themeMotion === "paused",
         reducedMotion: Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches),
@@ -283,7 +314,7 @@ export function useCustomThemeHost(options: CustomThemeHostOptions): {
         ],
       });
     }
-  }, [setThemeFor, themeInEffect]);
+  }, [isThemePainted, resolvePaintedShell, setThemeFor, themeInEffect]);
 
   // ---- The tray's "Use default theme" (native menus ignore any CSS) ----
   useEffect(() => {

@@ -15,11 +15,12 @@ import {
   sessionThread,
   setThreadThemeFocus,
   themeHost,
+  themeSessionIdentity,
   threadThemeFocus,
   undoCustomTheme,
 } from "./store";
 import { applyThemePatch, diffThemeSpecs, normalizeThemeInput } from "./validate";
-import { createThemeToolHandler, type CaptureOutcome, type ThemeToolContext } from "./toolHandlerCore";
+import { createThemeToolHandler, ThemeToolRefusal, type CaptureOutcome, type ThemeToolContext } from "./toolHandlerCore";
 
 /** Native picture of this window (WKWebView / WebView2 snapshot, no screen-recording permission). */
 async function captureAppWindow(): Promise<CaptureOutcome> {
@@ -66,11 +67,16 @@ const handleThemeTool = createThemeToolHandler({
  * Answer one relayed theme tool call. Resolves to the tool result; throws an
  * Error whose message is the refusal the model should read.
  */
-export function handleThemeToolRequest(request: ChildAgentRequest, context: ThemeToolContext = {}): Promise<Record<string, unknown>> {
-  return handleThemeTool({
+export async function handleThemeToolRequest(request: ChildAgentRequest, context: ThemeToolContext = {}): Promise<Record<string, unknown>> {
+  const identity = themeSessionIdentity(request.sessionId);
+  const stillAuthorized = () => Boolean(identity) && themeSessionIdentity(request.sessionId) === identity;
+  if (!stillAuthorized()) throw new ThemeToolRefusal("Theme tools are available only during a turn started on this device.");
+  const result = await handleThemeTool({
     sessionId: request.sessionId,
     tool: request.tool,
     arguments: request.arguments,
     ...(request.provider ? { provider: request.provider } : {}),
-  }, context);
+  }, { ...context, stillAuthorized });
+  if (!stillAuthorized()) throw new ThemeToolRefusal("The conversation changed while using theme tools. Send a new message from this device to use them again.");
+  return result;
 }

@@ -609,7 +609,7 @@
 .app-shell[data-theme][data-color-scheme] .work-digest-chip { flex: none; padding: 0 6px; border-radius: var(--r-chip); color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); font-size: 11px; line-height: 18px; }
 .app-shell[data-theme][data-color-scheme] .work-digest-output { margin: 0; padding: 8px 10px; overflow: auto; border-radius: var(--r-md); color: var(--lm-code-ink); background: var(--lm-code-bg); font: 11.5px/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .app-shell[data-theme][data-color-scheme] .work-digest-files { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; }
-.app-shell[data-theme][data-color-scheme] .work-digest-files button {
+.app-shell[data-theme][data-color-scheme] .work-digest-file-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -622,10 +622,10 @@
   background: transparent;
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
-.app-shell[data-theme][data-color-scheme] .work-digest-files button:hover { background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .work-digest-files button > svg { flex: none; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] button.work-digest-file-row { cursor: pointer; }
+.app-shell[data-theme][data-color-scheme] button.work-digest-file-row:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .work-digest-file-row > svg { flex: none; color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .work-digest-file-name { flex: none; max-width: 60%; overflow: hidden; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
 .app-shell[data-theme][data-color-scheme] .work-digest-file-dir { min-width: 0; overflow: hidden; color: var(--muted); font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
 /* Each row says what it opens on hover and keyboard focus. */

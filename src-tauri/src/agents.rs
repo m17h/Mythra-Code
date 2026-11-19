@@ -1104,31 +1104,44 @@ pub(super) async fn child_agent_bridge_theme_permission_allowed(
     })
 }
 
-/** Detect dual authority using the actual registered bridge, never argv text claims. */
-pub(super) async fn child_agent_bridge_config_allows_spawning(
+/// Native workers inherit the root's MCP registration, and an MCP call does
+/// not identify which worker made it. Withhold delegation and theme authority
+/// from every shared registration.
+fn native_bridge_conflict(session: &ChildAgentSession) -> Option<&'static str> {
+    if !session.targets.is_empty() {
+        return Some("Native sub-agents cannot run with a Mythra Code delegation bridge. Reconfigure this thread's sub-agent mode before starting.");
+    }
+    if session.theme_tools {
+        return Some("Theme tools are unavailable in conversations that use provider-native sub-agents.");
+    }
+    None
+}
+
+pub(super) async fn child_agent_bridge_config_native_conflict(
     state: &ChildAgentState,
     config_path: &str,
-) -> bool {
+) -> Option<&'static str> {
     let path = Path::new(config_path);
     state
         .sessions
         .lock()
         .await
         .values()
-        .any(|session| session.directory.join("mcp.json") == path && !session.targets.is_empty())
+        .find(|session| session.directory.join("mcp.json") == path)
+        .and_then(|session| native_bridge_conflict(session))
 }
 
-pub(super) async fn child_agent_bridge_launch_allows_spawning(
+pub(super) async fn child_agent_bridge_launch_native_conflict(
     state: &ChildAgentState,
     args: &[String],
-) -> bool {
-    if args.len() != 2 || args[0] != "--openkiwi-agent-bridge" {
-        return false;
+) -> Option<&'static str> {
+    if args.len() != 2 || args[0] != AGENT_BRIDGE_ARG {
+        return None;
     }
     let path = Path::new(&args[1]);
-    state.sessions.lock().await.values().any(|session| {
-        session.directory.join("session.json") == path && !session.targets.is_empty()
-    })
+    state.sessions.lock().await.values()
+        .find(|session| session.directory.join("session.json") == path)
+        .and_then(|session| native_bridge_conflict(session))
 }
 
 /**

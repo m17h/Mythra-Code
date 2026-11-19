@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { isReachableFocusable } from "../lib/focusReach";
 import { OPEN_MODEL_PICKER_EVENT } from "../lib/shortcuts";
 
 /**
@@ -37,7 +38,11 @@ import { OPEN_MODEL_PICKER_EVENT } from "../lib/shortcuts";
  */
 const ITEM_SELECTOR = '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]';
 /** The composer's model trigger(s); the first one on screen answers ⇧⌘M. */
-export const MODEL_TRIGGER_SELECTOR = '.composer-zone [aria-haspopup][aria-label*="model:"]';
+const MODEL_TRIGGER_SELECTOR = '.composer-zone [aria-haspopup][aria-label*="model:"]';
+
+export function visibleModelTrigger(): HTMLElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLElement>(MODEL_TRIGGER_SELECTOR)).find((trigger) => isReachableFocusable(trigger));
+}
 
 function menuItems(menu: HTMLElement | null): HTMLElement[] {
   if (!menu) return [];
@@ -153,7 +158,7 @@ export function useMenuKeyboard({
     const onRequest = (event: Event) => {
       const trigger = triggerRef.current;
       if (!trigger || event.defaultPrevented) return;
-      if (document.querySelector(MODEL_TRIGGER_SELECTOR) !== trigger) return;
+      if (visibleModelTrigger() !== trigger) return;
       event.preventDefault();
       trigger.focus();
       if (canOpenRef.current && !canOpenRef.current()) return;

@@ -6,6 +6,7 @@ export interface OpenRouterModel {
   description?: string;
   context_length?: number;
   supported_parameters?: string[];
+  supportsImageInput?: boolean;
   pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
 }
 
@@ -74,11 +75,13 @@ function normalizeModel(entry: unknown): OpenRouterModel | null {
   const id = typeof model.id === "string" ? model.id.trim() : "";
   if (!id) return null;
   const contextLength = typeof model.context_length === "number" ? model.context_length : undefined;
+  const inputModalities = (model.architecture as { input_modalities?: unknown } | undefined)?.input_modalities;
   return {
     id,
     name: typeof model.name === "string" && model.name.trim() ? model.name.trim() : id,
     ...(typeof model.description === "string" ? { description: model.description } : {}),
     ...(contextLength ? { context_length: contextLength } : {}),
+    ...(Array.isArray(inputModalities) ? { supportsImageInput: inputModalities.includes("image") } : {}),
     ...(Array.isArray(model.supported_parameters)
       ? { supported_parameters: model.supported_parameters.filter((value): value is string => typeof value === "string") }
       : {}),

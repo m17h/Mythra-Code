@@ -4,7 +4,7 @@ import { RowMenu, type RowMenuItem } from "./RowMenu";
 import { ScheduledCountBadge } from "./ScheduledCountBadge";
 import { TransitionInput } from "./TransitionInput";
 
-const visibleRow = (row: HTMLElement) => row.getClientRects().length > 0 && !row.closest("[hidden], [inert]");
+const visibleRow = (row: HTMLElement) => !row.closest("[hidden], [inert]") && row.getClientRects().length > 0;
 
 /**
  * Source-list keyboard model, as in Finder and Mail: the list is one Tab
@@ -13,24 +13,35 @@ const visibleRow = (row: HTMLElement) => row.getClientRects().length > 0 && !row
  * elsewhere, so tab stops are kept in the DOM rather than in props.
  */
 export function useRovingRows(rootRef: RefObject<HTMLElement | null>, rowSelector: string) {
-  useLayoutEffect(() => {
+  const syncTabStops = useCallback(() => {
     const root = rootRef.current;
     if (!root) return;
     const rows = Array.from(root.querySelectorAll<HTMLElement>(rowSelector));
+    const visible = rows.filter(visibleRow);
     // Writes are guarded: this runs on every render of a list that can hold
     // hundreds of rows, and an unchanged attribute must not touch the DOM.
     root.querySelectorAll<HTMLElement>(".row-menu-trigger").forEach((trigger) => { if (trigger.tabIndex !== -1) trigger.tabIndex = -1; });
-    const keep = rows.find((row) => row === document.activeElement)
-      ?? rows.find((row) => row.getAttribute("aria-current") === "page")
-      ?? rows.find((row) => row.tabIndex === 0 && row.dataset.roving === "kept")
-      ?? rows[0];
+    const keep = visible.find((row) => row === document.activeElement)
+      ?? visible.find((row) => row.getAttribute("aria-current") === "page")
+      ?? visible.find((row) => row.tabIndex === 0 && row.dataset.roving === "kept")
+      ?? visible[0];
     rows.forEach((row) => {
       const tabIndex = row === keep ? 0 : -1;
       if (row.tabIndex !== tabIndex) row.tabIndex = tabIndex;
       if (row === keep) { if (row.dataset.roving !== "kept") row.dataset.roving = "kept"; }
       else if (row.dataset.roving) delete row.dataset.roving;
     });
-  });
+  }, [rootRef, rowSelector]);
+
+  useLayoutEffect(syncTabStops);
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    // Group disclosures can expand their rows without re-rendering this list.
+    const observer = new MutationObserver(syncTabStops);
+    observer.observe(root, { subtree: true, childList: true, attributeFilter: ["inert", "hidden"] });
+    return () => observer.disconnect();
+  }, [rootRef, syncTabStops]);
 
   return useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
     const root = rootRef.current;

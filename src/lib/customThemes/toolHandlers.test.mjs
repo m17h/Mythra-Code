@@ -71,12 +71,14 @@ function setup({ toolsEnabled = true, provider = "claude", sessionThreads = {}, 
   const applied = [];
   const host = {
     toolsEnabled: () => toolsEnabled,
+    screenshotsEnabled: () => screenshotsEnabled !== false,
+    beginScreenshot: (threadId) => threadId ? () => true : null,
     activeThemeId: () => active,
     applyTheme: (theme, ctx) => { applied.push({ theme, ...ctx }); active = theme; return { appliedTo: "app" }; },
     threadForSession: () => ({ provider, model: "opus" }),
     waitForApplied: async () => shell,
     motionState: () => motion,
-    ...(screenshotsEnabled === undefined ? {} : { screenshotsEnabled: () => screenshotsEnabled }),
+    isThemePainted: (theme) => theme === active,
   };
   const deps = {
     normalize, applyPatch, diff,
@@ -327,7 +329,7 @@ const PNG = { ok: true, data: "iVBORw0KGgo=", mimeType: "image/png", width: 1280
 test("every applied change carries the layout report for the theme as drawn", async () => {
   const seen = [];
   const inspect = (shell, theme, motion) => { seen.push({ shell, theme, motion }); return LAYOUT; };
-  const { call } = setup({ deps: { inspect } });
+  const { call, setActive } = setup({ deps: { inspect } });
   const created = await call("create_custom_theme", { ...NEBULA, customCss: ".sidebar { border-color: var(--line); }" });
   assert.deepEqual(created.layout, LAYOUT);
   assert.equal(seen[0].theme.id, created.themeId);
@@ -340,6 +342,7 @@ test("every applied change carries the layout report for the theme as drawn", as
   const applied = await call("apply_custom_theme", { themeId: created.themeId });
   assert.deepEqual(applied.layout, LAYOUT);
   // Not applied: nothing on screen to measure.
+  setActive("mythra");
   const quiet = await call("update_custom_theme", { patch: { tokens: { accent: "#00aa88" } }, summary: "Teal", apply: false });
   assert.equal(quiet.layout, undefined);
 });
@@ -396,7 +399,7 @@ test("capture sends no picture to a runtime that drops tool images", async () =>
   assert.match(shot.note, /does not pass pictures/);
   assert.equal(providerTakesImages("claude"), true);
   assert.equal(providerTakesImages("openai"), true);
-  assert.equal(providerTakesImages("openrouter"), true);
+  assert.equal(providerTakesImages("openrouter", true), true);
   assert.equal(providerTakesImages("cursor"), false);
 });
 

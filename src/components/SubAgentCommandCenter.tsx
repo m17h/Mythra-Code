@@ -42,6 +42,7 @@ import { subscribeUsage } from "../lib/usageLedger";
 import { useRosterFlip } from "../hooks/useRosterFlip";
 import type { ChildAgentPreset, ChildAgentTarget, NativeSubagentOptions, ProjectSubagentSettings, Provider } from "../types";
 import { Switch } from "./Switch";
+import { ThreadCompactionControl } from "./ThreadCompactionControl";
 import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
 import "./SubAgentCommandCenter.css";
 
@@ -1309,6 +1310,16 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
               )}
             </div>
 
+            {!isChild && props.onAutoCompactTokensChange && (
+              <ThreadCompactionControl
+                value={props.autoCompactTokens}
+                provider={props.provider}
+                model={parentModel}
+                resolvedModel={props.provider && props.modelCatalogs?.[props.provider]?.find((entry) => entry.id === parentModel)?.resolvedModel}
+                locked={runLocked}
+                onChange={props.onAutoCompactTokensChange}
+              />
+            )}
 
             {native ? (
               <div className={`sa-native ${dimmed ? "muted" : ""}`}>

@@ -48,12 +48,29 @@
 .app-shell[data-theme][data-color-scheme] .remote-pr-compose textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: transparent; font: inherit; resize: vertical; outline: none; }
 .app-shell[data-theme][data-color-scheme] .remote-pr-compose textarea:focus-visible { border-color: var(--accent); }
 
-/* The header is tight beside an open dock. A chip gives way before it overlaps anything. */
+/* The remote header keeps its quota and Pull requests buttons available as compact controls. */
 .remote-stage .topbar-left > .handoff-chip { flex: 0 1 auto; min-width: 26px; overflow: hidden; }
 .remote-stage .topbar-left > .handoff-chip > svg { flex: 0 0 auto; }
 .remote-stage .topbar-left > .handoff-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .remote-stage .project-heading { flex: 0 1 auto; min-width: 64px; }
-@container chat-main (max-width: 720px) { .remote-stage .topbar-left > .handoff-chip > span { display: none; } }
+.app-shell[data-theme][data-color-scheme] .remote-stage .topbar[data-shed~="3"] .thread-pr-chip.empty,
+.app-shell[data-theme][data-color-scheme] .remote-stage .topbar[data-shed~="5"] .topbar-usage-chip {
+  display: inline-flex;
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+.app-shell[data-theme][data-color-scheme] .remote-stage .topbar[data-shed~="3"] .thread-pr-chip.empty > span,
+.app-shell[data-theme][data-color-scheme] .remote-stage .topbar[data-shed~="5"] .topbar-usage-chip > span,
+.app-shell[data-theme][data-color-scheme] .remote-stage .topbar[data-shed~="5"] .topbar-usage-chip > svg:not(:first-child) { display: none; }
+/* These menus open next to controls near the left edge of a compact toolbar. */
+.app-shell[data-theme][data-color-scheme] .remote-stage .topbar[data-shed~="4"] :is(.project-run-control, .remote-previews) { position: static; }
+.app-shell[data-theme][data-color-scheme] .remote-stage .topbar[data-shed~="4"] :is(.project-run-popover, .remote-previews-menu) {
+  right: 8px;
+  max-width: calc(100% - 16px);
+  max-height: calc(100vh / var(--ui-scale, 1) - var(--topbar-h) - 48px);
+  overflow-y: auto;
+}
 
 .remote-folder-clone { display: flex; gap: var(--s-2); align-items: center; }
 .remote-folder-clone input { flex: 1 1 auto; min-width: 0; }

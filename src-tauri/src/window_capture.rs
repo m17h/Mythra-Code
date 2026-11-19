@@ -20,11 +20,17 @@ pub(crate) const MAX_PNG_BYTES: usize = 1_200_000;
 /// Largest native PNG accepted before shrinking (a 6K window is ~40 MB raw).
 const MAX_NATIVE_PNG_BYTES: usize = 64 * 1024 * 1024;
 const MAX_NATIVE_PIXELS: u64 = 8192 * 8192;
+static CAPTURE_SLOT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 /// Take a picture of the calling webview and return it as a downscaled PNG:
 /// `{ mimeType: "image/png", data: <base64>, width, height }`.
 #[tauri::command]
 pub(crate) async fn capture_app_window(webview: tauri::Webview) -> Result<Value, String> {
+    // Each provider can issue parallel tool calls. The app only needs one native
+    // snapshot and PNG conversion at a time.
+    let _capture_slot = CAPTURE_SLOT
+        .try_acquire()
+        .map_err(|_| "Another window picture is being prepared.".to_string())?;
     let native = native_capture(&webview).await?;
     let (png, width, height) = tauri::async_runtime::spawn_blocking(move || shrink_png(&native, MAX_WIDTH, MAX_PNG_BYTES))
         .await
@@ -175,12 +181,20 @@ async fn native_capture(webview: &tauri::Webview) -> Result<Vec<u8>, String> {
     use block2::RcBlock;
     use objc2::rc::Retained;
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
-    use objc2_foundation::{NSDictionary, NSError};
+    use objc2_foundation::{NSDictionary, NSError, NSNumber};
     use objc2_web_kit::{WKSnapshotConfiguration, WKWebView};
 
+    // WebKit takes a width in points. Ask it to scale large views before the
+    // completion handler converts the image on the UI thread.
+    let snapshot_width = webview
+        .size()
+        .ok()
+        .filter(|size| size.width > MAX_WIDTH)
+        .and_then(|_| webview.window().scale_factor().ok())
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .map(|scale| f64::from(MAX_WIDTH) / scale);
     let (sender, receiver) = tokio::sync::oneshot::channel::<Result<Vec<u8>, String>>();
-    let sender = std::sync::Arc::new(Mutex::new(Some(sender)));
-    let reply = sender.clone();
+    let reply = std::sync::Arc::new(Mutex::new(Some(sender)));
     let scheduled = webview.with_webview(move |platform| {
         let Some(mtm) = objc2::MainThreadMarker::new() else {
             if let Some(tx) = reply.lock().ok().and_then(|mut slot| slot.take()) {
@@ -190,31 +204,39 @@ async fn native_capture(webview: &tauri::Webview) -> Result<Vec<u8>, String> {
         };
         let finish = reply.clone();
         let handler = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+            let Some(tx) = finish.lock().ok().and_then(|mut slot| slot.take()) else {
+                return;
+            };
+            if tx.is_closed() {
+                return;
+            }
             // SAFETY: WebKit passes a valid NSImage (or nil) for the duration
             // of the callback, on the main thread.
-            let result = unsafe { Retained::retain(image) }
+            let png = unsafe { Retained::retain(image) }
                 .and_then(|image| image.TIFFRepresentation())
                 .and_then(|tiff| NSBitmapImageRep::imageRepWithData(&tiff))
-                .and_then(|rep| unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) })
-                .map(|data| data.to_vec())
-                .ok_or_else(|| "The window did not return a picture.".to_string());
-            if let Some(tx) = finish.lock().ok().and_then(|mut slot| slot.take()) {
-                let _ = tx.send(result);
-            }
+                .and_then(|rep| unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) });
+            let result = match png {
+                Some(data) if data.length() <= MAX_NATIVE_PNG_BYTES => Ok(data.to_vec()),
+                Some(_) => Err("The window picture is too large.".into()),
+                None => Err("The window did not return a picture.".into()),
+            };
+            let _ = tx.send(result);
         });
         // SAFETY: Tauri supplies the live WKWebView on its owning (main) thread.
         unsafe {
             let view = &*(platform.inner() as *const WKWebView);
             let config = WKSnapshotConfiguration::new(mtm);
-            // Wait for pending paints so a just-applied theme is in the picture.
-            config.setAfterScreenUpdates(true);
+            if let Some(width) = snapshot_width {
+                config.setSnapshotWidth(Some(&NSNumber::numberWithDouble(width)));
+            }
+            // WebKit waits for pending paints by default.
             view.takeSnapshotWithConfiguration_completionHandler(Some(&config), &handler);
         }
     });
     if scheduled.is_err() {
         return Err("The window could not be captured.".into());
     }
-    let _keep = sender;
     await_capture(receiver).await
 }
 
@@ -248,8 +270,7 @@ async fn native_capture(webview: &tauri::Webview) -> Result<Vec<u8>, String> {
     }
 
     let (sender, receiver) = tokio::sync::oneshot::channel::<Result<Vec<u8>, String>>();
-    let sender = std::sync::Arc::new(Mutex::new(Some(sender)));
-    let reply = sender.clone();
+    let reply = std::sync::Arc::new(Mutex::new(Some(sender)));
     let scheduled = webview.with_webview(move |platform| {
         let fail = |message: &str| {
             if let Some(tx) = reply.lock().ok().and_then(|mut slot| slot.take()) {
@@ -264,12 +285,16 @@ async fn native_capture(webview: &tauri::Webview) -> Result<Vec<u8>, String> {
                 let target = stream.clone();
                 let finish = reply.clone();
                 let handler = CapturePreviewCompletedHandler::create(Box::new(move |result: windows::core::Result<()>| {
+                    let Some(tx) = finish.lock().ok().and_then(|mut slot| slot.take()) else {
+                        return Ok(());
+                    };
+                    if tx.is_closed() {
+                        return Ok(());
+                    }
                     let outcome = result
                         .map_err(|_| "The window did not return a picture.".to_string())
                         .and_then(|()| read_stream(&target));
-                    if let Some(tx) = finish.lock().ok().and_then(|mut slot| slot.take()) {
-                        let _ = tx.send(outcome);
-                    }
+                    let _ = tx.send(outcome);
                     Ok(())
                 }));
                 core.CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, &stream, &handler)
@@ -282,7 +307,6 @@ async fn native_capture(webview: &tauri::Webview) -> Result<Vec<u8>, String> {
     if scheduled.is_err() {
         return Err("The window could not be captured.".into());
     }
-    let _keep = sender;
     await_capture(receiver).await
 }
 

@@ -48,22 +48,33 @@ function evaluateFeature(feature: string, viewport: Viewport): Verdict {
   return null;
 }
 
-/** One query of a list: `screen and (max-width: 700px)`. */
-function evaluateQuery(query: string, viewport: Viewport): Verdict {
+/** Fold width and height while keeping features that still depend on the system. */
+function foldQuery(query: string, viewport: Viewport): boolean | string {
   const text = query.trim();
-  if (!text) return null;
-  if (/^not\b/i.test(text) || /\bor\b/i.test(text)) return null;
+  if (/^not\b|\bor\b|\(\s*\(/i.test(text)) return text;
   const parts = text.replace(/^only\s+/i, "").split(/\s+and\s+/i);
-  let unknown = false;
+  const remaining: string[] = [];
   for (const part of parts) {
     const piece = part.trim();
     if (/^(all|screen)$/i.test(piece)) continue;
     if (/^print$/i.test(piece)) return false;
     const verdict = piece.startsWith("(") ? evaluateFeature(piece, viewport) : null;
     if (verdict === false) return false;
-    if (verdict === null) unknown = true;
+    if (verdict === null) remaining.push(piece);
   }
-  return unknown ? null : true;
+  return remaining.length ? remaining.join(" and ") : true;
+}
+
+/** Preserve conditional branches after replacing the real window dimensions with replica dimensions. */
+export function foldViewportMedia(mediaText: string, viewport: Viewport = REPLICA_SIZE): boolean | string {
+  const remaining: string[] = [];
+  for (const query of mediaText.split(",")) {
+    if (!query.trim()) continue;
+    const folded = foldQuery(query, viewport);
+    if (folded === true) return true;
+    if (typeof folded === "string") remaining.push(folded);
+  }
+  return remaining.length ? remaining.join(", ") : false;
 }
 
 /**
@@ -72,14 +83,8 @@ function evaluateQuery(query: string, viewport: Viewport): Verdict {
  * as reduced motion or hover (keep it as written).
  */
 export function evaluateViewportMedia(mediaText: string, viewport: Viewport = REPLICA_SIZE): Verdict {
-  const queries = mediaText.split(",");
-  let unknown = false;
-  for (const query of queries) {
-    const verdict = evaluateQuery(query, viewport);
-    if (verdict === true) return true;
-    if (verdict === null) unknown = true;
-  }
-  return unknown ? null : false;
+  const folded = foldViewportMedia(mediaText, viewport);
+  return typeof folded === "boolean" ? folded : null;
 }
 
 /**
@@ -105,11 +110,11 @@ export function serializeReplicaRules(rules: ArrayLike<RuleLike>, viewport: View
   for (let i = 0; i < rules.length; i++) {
     const rule = rules[i];
     if (rule.media && rule.cssRules && /^@media/i.test(rule.cssText.trimStart())) {
-      const verdict = evaluateViewportMedia(rule.media.mediaText, viewport);
-      if (verdict === false) continue;
+      const query = foldViewportMedia(rule.media.mediaText, viewport);
+      if (query === false) continue;
       const inner = serializeReplicaRules(rule.cssRules, viewport);
       if (!inner) continue;
-      out.push(verdict === true ? inner : `@media ${rule.media.mediaText} {\n${inner}\n}`);
+      out.push(query === true ? inner : `@media ${query} {\n${inner}\n}`);
       continue;
     }
     out.push(rule.cssText);

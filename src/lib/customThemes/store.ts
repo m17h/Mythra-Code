@@ -86,6 +86,8 @@ export interface CustomThemeLibrary {
   threadFocus: Record<string, CustomThemeId>;
   /** threadId → designer purpose, for threads opened from Settings. Oldest first. */
   designerThreads?: Record<string, ThemeDesignerPurpose>;
+  /** Workspace draft key → designer purpose, until its first send succeeds. */
+  designerDrafts?: Record<string, ThemeDesignerPurpose>;
 }
 
 export interface CustomThemeSummary {
@@ -296,6 +298,16 @@ export function sanitizeLibrary(value: unknown): CustomThemeLibrary {
     }
     if (Object.keys(designerThreads).length) library.designerThreads = designerThreads;
   }
+  if (raw.designerDrafts && typeof raw.designerDrafts === "object") {
+    const designerDrafts: Record<string, ThemeDesignerPurpose> = {};
+    for (const [key, purpose] of Object.entries(raw.designerDrafts).slice(-STORE_LIMITS.maxDesignerThreads)) {
+      if (!key.startsWith("new-draft:") || !purpose || typeof purpose !== "object") continue;
+      const entry: ThemeDesignerPurpose = { at: Number.isFinite(purpose.at) ? purpose.at : 0 };
+      if (isCustomThemeId(purpose.targetThemeId) && ids.has(purpose.targetThemeId)) entry.targetThemeId = purpose.targetThemeId;
+      designerDrafts[key] = entry;
+    }
+    if (Object.keys(designerDrafts).length) library.designerDrafts = designerDrafts;
+  }
   return library;
 }
 
@@ -497,7 +509,10 @@ export function libraryRestoreDeleted(library: CustomThemeLibrary, deleted: Dele
   if (findRecord(library, deleted.record.id) || library.themes.length >= STORE_LIMITS.maxThemes) return { library, restored: false };
   const themes = [...library.themes];
   themes.splice(Math.min(deleted.index, themes.length), 0, deleted.record);
-  return { library: pruneLibrary({ ...library, themes, threadFocus: { ...library.threadFocus, ...deleted.focus } }), restored: true };
+  // A conversation may have focused another theme since this one was deleted.
+  const recoveredFocus = Object.entries(deleted.focus).filter(([threadId]) => !library.threadFocus[threadId]);
+  const threadFocus = Object.fromEntries([...recoveredFocus, ...Object.entries(library.threadFocus)].slice(-STORE_LIMITS.maxThreadFocus));
+  return { library: pruneLibrary({ ...library, themes, threadFocus }), restored: true };
 }
 
 export function librarySetFocus(library: CustomThemeLibrary, threadId: string, id: CustomThemeId): CustomThemeLibrary {
@@ -574,10 +589,13 @@ export function pruneLibrary(library: CustomThemeLibrary, maxBytes: number = STO
 
 let library: CustomThemeLibrary | undefined;
 const listeners = new Set<() => void>();
-/** Sessions registered before their thread existed (the first turn of a new chat). */
-const sessionThreads = new Map<string, string>();
-/** "Design a theme with AI" opened a draft that has no thread yet. */
-let pendingDesigner: ThemeDesignerPurpose | null = null;
+/** The conversation and model bound to a dispatched turn's theme bridge. */
+interface ThemeSessionIdentity {
+  threadId: string;
+  model?: string;
+  supportsImageInput?: boolean;
+}
+const sessionThreads = new Map<string, ThemeSessionIdentity>();
 let clock: () => number = () => Date.now();
 
 function read(): CustomThemeLibrary {
@@ -679,15 +697,25 @@ export function threadThemeFocus(threadId: string): CustomThemeId | undefined {
   return id && findRecord(current, id) ? id : undefined;
 }
 
-export function bindSessionToThread(sessionId: string, threadId: string): void {
+export function bindSessionToThread(sessionId: string, threadId: string, runtime: Omit<ThemeSessionIdentity, "threadId">): void {
   if (!sessionId || !threadId) return;
   sessionThreads.delete(sessionId);
-  sessionThreads.set(sessionId, threadId);
+  sessionThreads.set(sessionId, { threadId, ...runtime });
   while (sessionThreads.size > 200) sessionThreads.delete(sessionThreads.keys().next().value!);
 }
 
 export function sessionThread(sessionId: string): string | undefined {
+  return sessionThreads.get(sessionId)?.threadId;
+}
+
+export function themeSessionIdentity(sessionId: string): ThemeSessionIdentity | undefined {
   return sessionThreads.get(sessionId);
+}
+
+export function revokeThemeToolsForThread(threadId: string): void {
+  for (const [sessionId, session] of sessionThreads) {
+    if (session.threadId === threadId) sessionThreads.delete(sessionId);
+  }
 }
 
 export function setThemeDisabled(id: CustomThemeId, reason: ThemeDisabledReason | null): void {
@@ -696,29 +724,35 @@ export function setThemeDisabled(id: CustomThemeId, reason: ThemeDisabledReason 
 
 // ---- "Design a theme with AI" threads -----------------------------------------
 
-/** Marks the open draft as a theme-designer conversation until it gets a thread. */
-export function setPendingThemeDesigner(purpose: { targetThemeId?: CustomThemeId } | null): void {
-  pendingDesigner = purpose ? { ...purpose, at: clock() } : null;
+/** Marks one exact draft as a theme-designer conversation. */
+export function setPendingThemeDesigner(key: string, purpose: { targetThemeId?: CustomThemeId } | null): void {
+  const current = read();
+  if (!purpose && !current.designerDrafts?.[key]) return;
+  const designerDrafts = { ...current.designerDrafts };
+  delete designerDrafts[key];
+  if (purpose) designerDrafts[key] = { ...purpose, at: clock() };
+  const keys = Object.keys(designerDrafts);
+  for (const old of keys.slice(0, Math.max(0, keys.length - STORE_LIMITS.maxDesignerThreads))) delete designerDrafts[old];
+  publish({ ...current, designerDrafts });
 }
 
-/** Called when the draft's first message creates its thread. */
-export function claimPendingThemeDesigner(threadId: string): ThemeDesignerPurpose | null {
-  const purpose = pendingDesigner;
-  pendingDesigner = null;
-  if (!purpose || !threadId) return null;
+export function pendingThemeDesigner(key: string): ThemeDesignerPurpose | undefined {
+  return read().designerDrafts?.[key];
+}
+
+/** The first turn attaches its captured purpose before the model can call tools. */
+export function setThemeDesignerForThread(threadId: string, purpose: ThemeDesignerPurpose): void {
+  if (!threadId) return;
   let next = librarySetDesigner(read(), threadId, purpose);
   if (purpose.targetThemeId) next = librarySetFocus(next, threadId, purpose.targetThemeId);
   publish(next);
-  return purpose;
 }
 
 /**
  * Whether a conversation is a theme-designer thread (it gets the designer
- * instructions every turn). With no thread id this answers for the open
- * draft, before its first message creates the thread.
+ * instructions every turn).
  */
-export function themeDesignerPurpose(threadId?: string | null): ThemeDesignerPurpose | null {
-  if (!threadId) return pendingDesigner;
+export function themeDesignerPurpose(threadId: string): ThemeDesignerPurpose | null {
   return read().designerThreads?.[threadId] ?? null;
 }
 
@@ -800,14 +834,17 @@ export function resolveThemeSetting(theme: ThemeId, current: CustomThemeLibrary 
 export interface ThemeHost {
   /** settings.customThemeTools !== false */
   toolsEnabled(): boolean;
-  /** settings.customThemeScreenshots !== false ("Let models see the app"). Absent: allowed. */
-  screenshotsEnabled?(): boolean;
+  /** The live "Let models see the app" preference. */
+  screenshotsEnabled(): boolean;
+  /** Starts a capture for the visible conversation and returns a liveness check. */
+  beginScreenshot(threadId?: string): (() => boolean) | null;
   /** The theme in effect for that thread's project. */
   activeThemeId(threadId?: string): ThemeId;
   applyTheme(theme: ThemeId, ctx: { threadId?: string; by: ThemeAuthor; previous?: { theme: ThemeId; revision?: { id: CustomThemeId; n: number } } }): { appliedTo: "app" | "project" };
-  threadForSession(sessionId: string): { threadId?: string; provider?: Provider; model?: string };
+  threadForSession(sessionId: string): { threadId?: string; provider?: Provider; model?: string; supportsImageInput?: boolean };
   /** Resolves after the theme's <style> commits plus two frames; returns the shell. */
   waitForApplied(themeId: ThemeId, revision?: number): Promise<HTMLElement | null>;
+  isThemePainted(themeId: ThemeId, revision?: number): boolean;
   motionState(): { paused: boolean; reducedMotion: boolean };
 }
 
@@ -827,7 +864,6 @@ export function themeHost(): ThemeHost | null {
 export function resetCustomThemeStoreForTests(options: { library?: CustomThemeLibrary; now?: () => number } = {}): void {
   library = options.library ? sanitizeLibrary(options.library) : { version: 1, themes: [], threadFocus: {} };
   sessionThreads.clear();
-  pendingDesigner = null;
   host = null;
   clock = options.now ?? (() => Date.now());
   listeners.clear();

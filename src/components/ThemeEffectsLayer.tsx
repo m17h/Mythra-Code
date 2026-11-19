@@ -14,6 +14,7 @@
 // these few nodes, never on the shell.
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import { useMediaQueryMatch } from "../hooks/useMediaQueryMatch";
 import { formatColor, mixColors, parseColor, seededRandom, withAlpha, type Rgba } from "../lib/customThemes/color";
 import { PARTICLE_ANGLE, PARTICLE_DEFAULT_COUNT, PARTICLE_LIMITS, PARTICLE_SPEED_PX, blobOpacity, effectArea, effectSeconds, grainOpacity, resolveEffectParams, scanlineOpacity, starLayers, vignetteAlpha, type EffectPalette, type ResolvedParams } from "../lib/customThemes/effects";
 import { isThemeMotionTransientlyPaused, subscribeThemeMotion } from "../lib/customThemes/motion";
@@ -201,6 +202,8 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio }:
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
+    const shell = canvas.closest(".app-shell");
+    const liveShell = shell?.hasAttribute("data-ct-replica") ? null : shell;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -379,9 +382,15 @@ export function ParticlesCanvas({ params, seed, motion, scale = 1, pixelRatio }:
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(() => { window.clearTimeout(resizeTimer); resizeTimer = window.setTimeout(resize, 120); }) : null;
     observer?.observe(canvas);
     resize();
-    if (!isThemeMotionTransientlyPaused()) start();
-    const unsubscribe = subscribeThemeMotion((paused) => (paused ? stop() : start()));
-    return () => { stop(); unsubscribe(); observer?.disconnect(); window.clearTimeout(resizeTimer); };
+    const syncRunning = () => {
+      if (isThemeMotionTransientlyPaused() || liveShell?.hasAttribute("data-ct-library-open")) stop();
+      else start();
+    };
+    const modalObserver = !still && liveShell && typeof MutationObserver === "function" ? new MutationObserver(syncRunning) : null;
+    if (liveShell) modalObserver?.observe(liveShell, { attributes: true, attributeFilter: ["data-ct-library-open"] });
+    const unsubscribe = subscribeThemeMotion(syncRunning);
+    syncRunning();
+    return () => { stop(); unsubscribe(); observer?.disconnect(); modalObserver?.disconnect(); window.clearTimeout(resizeTimer); };
   }, [params, seed, motion, colors, scale, pixelRatio]);
   return <canvas ref={ref} className="ct-fx-particles" />;
 }
@@ -463,17 +472,14 @@ function byArea(nodes: Array<[EffectArea, ReactNode]>): ReactNode[] {
 
 // ---- The layer -----------------------------------------------------------------
 
-function forcedColors(): boolean {
-  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(forced-colors: active)").matches;
-}
-
 export function ThemeEffectsLayer(props: { spec: ThemeSpec | null; id?: CustomThemeId; motion: "on" | "paused"; /** Particle canvas resolution override (theme previews). */ pixelRatio?: number }): ReactElement | null {
   const { spec, id, motion, pixelRatio } = props;
+  const forcedColors = useMediaQueryMatch("(forced-colors: active)");
   const model = useMemo(() => {
     if (!spec || !id) return null;
     try { return effectLayerModel(spec, id); } catch { return null; }
   }, [spec, id]);
-  if (!model || forcedColors()) return null;
+  if (!model || forcedColors) return null;
   const p = model.params;
   const backVisible = model.translucency > 0 && Boolean(p.aurora || p.mesh || p.starfield || p.particles || p.grid || p.vignette);
   const frontVisible = Boolean(p.grain || p.scanlines);

@@ -8,6 +8,8 @@ export interface LMStudioModel {
   publisher: string;
   maxContextLength?: number;
   trainedForToolUse: boolean;
+  /** Endpoint whose model catalog explicitly advertised image input. */
+  imageInputEndpoint?: string;
   reasoningEfforts: LMStudioReasoningEffort[];
   defaultReasoningEffort?: LMStudioReasoningEffort;
 }
@@ -20,6 +22,7 @@ interface LMStudioCatalogModel {
   max_context_length?: number;
   capabilities?: {
     trained_for_tool_use?: boolean;
+    vision?: boolean;
     reasoning?: {
       allowed_options?: string[];
       default?: string;
@@ -33,6 +36,7 @@ interface LMStudioCompatibleModel {
   owned_by?: string;
   context_length?: number;
   trained_for_tool_use?: boolean;
+  vision?: boolean | null;
   reasoning?: {
     allowed_options?: string[];
     default?: string;
@@ -63,6 +67,7 @@ export async function listLMStudioModels(baseUrl: string): Promise<LMStudioModel
         publisher: model.owned_by?.trim() || "LM Studio",
         ...(typeof model.context_length === "number" && model.context_length > 0 ? { maxContextLength: model.context_length } : {}),
         trainedForToolUse: Boolean(model.trained_for_tool_use),
+        ...(model.vision === true ? { imageInputEndpoint: baseUrl.trim() } : {}),
         reasoningEfforts,
         ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
       };
@@ -83,6 +88,7 @@ export async function listLMStudioModels(baseUrl: string): Promise<LMStudioModel
           ? { maxContextLength: model.max_context_length }
           : {}),
         trainedForToolUse: Boolean(model.capabilities?.trained_for_tool_use),
+        ...(model.capabilities?.vision === true ? { imageInputEndpoint: baseUrl.trim() } : {}),
         reasoningEfforts,
         ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
       };

@@ -44,6 +44,8 @@ export interface ThemeToolRequest {
 export interface ThemeToolContext {
   /** Root thread of the session's registered policy, when already known. */
   policyThreadId?: string;
+  /** The dispatched turn still owns local theme authority. */
+  stillAuthorized?(): boolean;
 }
 
 export interface ProbeOutcome {
@@ -59,13 +61,13 @@ export type CaptureOutcome =
   | { ok: false; error: string; unavailable?: boolean };
 
 /**
- * Runtimes that hand an MCP image result to the model: Claude Code, and Codex
- * (ChatGPT, OpenRouter and LM Studio chats run on it; it strips images itself
- * for text-only models). Cursor's agent does not reliably pass tool images on,
- * so it gets the text report instead of a picture.
+ * Codex filters image content according to its model descriptor. For models
+ * from third-party endpoints the runtime's fallback descriptor assumes image
+ * support, so require the endpoint's own capability metadata first.
  */
-export function providerTakesImages(provider: Provider | undefined): boolean {
-  return provider !== "cursor";
+export function providerTakesImages(provider: Provider | undefined, supportsImageInput?: boolean): boolean {
+  return provider === "claude" || provider === "openai"
+    || ((provider === "openrouter" || provider === "lmstudio") && supportsImageInput === true);
 }
 
 export interface ThemeToolDeps {
@@ -224,6 +226,10 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
     const spec = headRevision(record).spec;
     const measure = (target: HTMLElement, measured: ThemeSpec) => measureLayout(target, { id: record.id, spec: measured }, host);
     const probe = await deps.probe(shell).catch(() => null);
+    if (!host.isThemePainted(theme, revision)) {
+      warnings.push("The window changed themes during the readability check. The saved theme was left as it was.");
+      return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false };
+    }
     if (!probe || probe.ok) return { appliedTo, warnings, revision: finalRevision, customCssDisabled: false, layout: measure(shell, spec) };
     const describe = (list: ProbeOutcome["failures"]) => list.slice(0, 6).map((failure) =>
       `${failure.selectorHint ?? failure.landmark} color resolves to ${failure.fg} on ${failure.bg} (${failure.ratio.toFixed(1)}:1)`);
@@ -425,6 +431,10 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
         });
       }
       const previousTheme = activeTheme(host, info.threadId);
+      const editedTheme: ThemeId = `custom:${record.id}`;
+      if (!shouldApply && (previousTheme === editedTheme || activeTheme(host) === editedTheme || host.isThemePainted(editedTheme))) {
+        refuse("This theme is active, so saving a revision would change the app immediately. Switch to another theme first, or allow the revision to apply.");
+      }
       const committed = deps.commit(record.id, ok.spec, {
         by: info.by,
         kind: "edit",
@@ -469,6 +479,11 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
       const toRevision = positiveInt(request.arguments.toRevision);
       const expectedRevision = positiveInt(request.arguments.expectedRevision);
       const previousTheme = activeTheme(host, info.threadId);
+      const shouldApply = bool(request.arguments.apply, true);
+      const editedTheme: ThemeId = `custom:${record.id}`;
+      if (!shouldApply && (previousTheme === editedTheme || activeTheme(host) === editedTheme || host.isThemePainted(editedTheme))) {
+        refuse("This theme is active, so restoring a revision would change the app immediately. Switch to another theme first, or allow the revision to apply.");
+      }
       const undone = deps.undo(record.id, {
         by: info.by,
         ...(toRevision !== undefined ? { toRevision } : { steps: steps ?? 1 }),
@@ -483,7 +498,6 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
       let revision = saved.revision.n;
       let appliedTo: "app" | "project" | undefined;
       let layout: Record<string, unknown> | null | undefined;
-      const shouldApply = bool(request.arguments.apply, true);
       if (shouldApply) {
         const previous = previousTheme === `custom:${record.id}`
           ? { theme: previousTheme, revision: { id: record.id, n: before } }
@@ -544,32 +558,47 @@ export function createThemeToolHandler(deps: ThemeToolDeps) {
     },
 
     async capture_app_screenshot(request, context, host) {
-      if (host.screenshotsEnabled && !host.screenshotsEnabled()) {
+      if (!host.screenshotsEnabled()) {
         refuse("The user turned off “Let models see the app” in Settings > Appearance > Custom themes, so no picture was taken. Use the `layout` report from your last theme change instead.");
       }
       const info = conversation(request, context, host);
+      const { provider: hostedProvider, supportsImageInput } = host.threadForSession(request.sessionId);
+      const provider = request.provider ?? hostedProvider;
       const active = activeTheme(host, info.threadId);
       const activeId = customId(active);
       const record = activeId ? findRecord(deps.library(), activeId) : undefined;
-      const shell = await withTimeout(host.waitForApplied(active), Math.min(applyWaitMs, 1_500));
-      const layout = shell ? measureLayout(shell, record ? { id: record.id, spec: headRevision(record).spec } : null, host) : null;
       const base = {
         theme: active,
         ...(record ? { themeId: record.id, name: headRevision(record).spec.name, revision: record.head } : {}),
-        ...(layout ? { layout } : {}),
       };
-      const provider = request.provider ?? host.threadForSession(request.sessionId).provider;
-      if (!providerTakesImages(provider)) {
-        return { ...base, captured: false, note: "This runtime does not pass pictures from tools to the model, so no picture was taken. Use the layout report above." };
+      const stillVisible = host.beginScreenshot(info.threadId);
+      const unavailableView = () => ({ ...base, captured: false, note: "The requesting conversation and its theme must stay open on this device to take a picture. Use the layout report from your last theme change." });
+      if (!stillVisible) return unavailableView();
+      const captureAllowed = () => {
+        if (!host.toolsEnabled() || !host.screenshotsEnabled()) {
+          refuse("The user turned off theme tools or app screenshots. Use the layout report from your last theme change.");
+        }
+        return context.stillAuthorized?.() !== false && stillVisible() && host.isThemePainted(active, record?.head);
+      };
+      const shell = await withTimeout(host.waitForApplied(active, record?.head), Math.min(applyWaitMs, 1_500));
+      if (!shell || !captureAllowed()) return unavailableView();
+      const layout = measureLayout(shell, record ? { id: record.id, spec: headRevision(record).spec } : null, host);
+      const details = { ...base, ...(layout ? { layout } : {}) };
+      if (!providerTakesImages(provider, supportsImageInput)) {
+        const note = provider === "cursor"
+          ? "This runtime does not pass pictures from tools to the model, so no picture was taken. Use the layout report above."
+          : "Image input is unavailable or unconfirmed for this model. Use the layout report above.";
+        return { ...details, captured: false, note };
       }
-      if (!deps.capture) return { ...base, captured: false, note: "Screenshots are not available here. Use the layout report above." };
+      if (!deps.capture) return { ...details, captured: false, note: "Screenshots are not available here. Use the layout report above." };
       const shot = await withTimeout(deps.capture(), deps.captureWaitMs ?? 10_000);
+      if (!captureAllowed()) return unavailableView();
       if (!shot || !shot.ok) {
         const why = !shot ? "The window did not answer in time." : shot.unavailable ? "Screenshots are not available on this system." : `The picture could not be taken (${shot.error}).`;
-        return { ...base, captured: false, note: `${why} Use the layout report above.` };
+        return { ...details, captured: false, note: `${why} Use the layout report above.` };
       }
       return {
-        ...base,
+        ...details,
         captured: true,
         width: shot.width,
         height: shot.height,

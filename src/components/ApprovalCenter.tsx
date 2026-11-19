@@ -5,7 +5,7 @@ import { ChevronDown, ExternalLink, MessageSquare, ShieldAlert, TriangleAlert, C
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { JsonObject } from "../lib/codex";
 import { approvalChoices, approvalFacts, riskSummary, type ApprovalChoice, type ApprovalPlan } from "../lib/approvalChoices";
-import { containTab, holdInertOutside, pushModalLayer } from "../hooks/useModalFocus";
+import { isTopModalLayer, useModalFocus } from "../hooks/useModalFocus";
 import { friendlyError } from "../lib/errors";
 import type { PendingApproval } from "../types";
 
@@ -77,6 +77,8 @@ function ApprovalRisk({ plan, id }: { plan: ApprovalPlan; id?: string }) {
  */
 function GrantScope({ choice, id }: { choice: ApprovalChoice; id: string }) {
   const hasScope = Boolean(choice.scope && choice.scope.length > 0);
+  const exactLabel = choice.id === "execpolicy" ? "Exact rule the Codex CLI saves"
+    : choice.id === "claude-suggestions" ? "Exact rule Claude saves" : "Exact access requested";
   return <div className="approval-grant-body" id={id}>
     {hasScope && <dl className="approval-scope">
       {choice.scope!.map((row, index) => <div key={`${row.label}-${index}`} className={row.excluded ? "excluded" : undefined}>
@@ -85,7 +87,7 @@ function GrantScope({ choice, id }: { choice: ApprovalChoice; id: string }) {
     </dl>}
     {choice.detail && <p className={`approval-grant-detail${hasScope ? " secondary" : ""}`}>{choice.detail}</p>}
     {choice.exact && <details className="approval-exact">
-      <summary className="lm-summary"><ChevronRight size={12} aria-hidden="true" className="lm-chevron" />{choice.id === "execpolicy" ? "Exact rule the Codex CLI saves" : choice.id === "session" ? "Exact access requested" : "Exact rule Claude saves"}</summary>
+      <summary className="lm-summary"><ChevronRight size={12} aria-hidden="true" className="lm-chevron" />{exactLabel}</summary>
       <pre>{choice.exact}</pre>
     </details>}
   </div>;
@@ -183,9 +185,10 @@ export function approvalSummary(approval: PendingApproval): { title: string; rea
   const isFile = approval.method.includes("fileChange") || approval.method.includes("applyPatch");
   const permissions = approval.method === "item/permissions/requestApproval";
   const isCommand = approval.method === "item/commandExecution/requestApproval" || approval.method === "execCommandApproval";
+  const isNetwork = approval.method === "item/commandExecution/requestApproval" && approval.params.networkApprovalContext != null;
   const commandValue = approval.params.command;
   return {
-    title: isFile ? "Allow these file changes?" : permissions ? "Grant extra access?" : isCommand ? "Run this command?"
+    title: isFile ? "Allow these file changes?" : permissions ? "Grant extra access?" : isNetwork ? "Allow this network connection?" : isCommand ? "Run this command?"
       : approval.method === "cursor/request_permission" ? "Allow this Cursor action?" : "Allow this action?",
     reason: String(approval.params.reason ?? "The agent is requesting permission to continue."),
     command: Array.isArray(commandValue) ? commandValue.join(" ") : String(commandValue ?? ""),
@@ -286,47 +289,24 @@ function McpRequest({ approval, onRespond, threadLabel, pendingCount }: { approv
 }
 
 function Modal({ title, description, threadLabel, pendingCount, questionDialog = false, describedBy = "", children }: { title: string; description: string; threadLabel?: string; pendingCount?: number; questionDialog?: boolean; describedBy?: string; children: ReactNode }) {
-  const backdropRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const id = useId();
+  useModalFocus(modalRef, true, {
+    // Keep the approval buttons out of initial focus so Enter cannot answer.
+    initialFocus: () => modalRef.current?.querySelector<HTMLElement>("input, select, textarea") ?? headingRef.current,
+  });
   useEffect(() => {
-    const backdrop = backdropRef.current;
-    const modal = modalRef.current;
-    if (!backdrop || !modal) return;
-    // Whatever had focus when the request arrived (usually the draft) gets it back.
-    const opener = document.activeElement instanceof HTMLElement && !modal.contains(document.activeElement) ? document.activeElement : null;
-    // The covered app is inert: no Tab, click or screen-reader focus reaches it.
-    // Shared with every other modal surface: reference-counted, so an
-    // approval over Settings or the palette never un-inerts what they cover.
-    const restoreInert = holdInertOutside(backdrop);
-    const removeLayer = pushModalLayer(modal);
-    // Focus the request itself (a form's first field, else the heading), never an answer.
-    if (!modal.contains(document.activeElement)) (modal.querySelector<HTMLElement>("input, select, textarea") ?? headingRef.current ?? modal).focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Tab") containTab(modal, event);
-      // Escape never answers and never reaches the app (stop run, close the
-      // Tools); the card's own handler steps back out of More choices.
-      else if (event.key === "Escape") event.preventDefault();
-    };
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown, true);
-      removeLayer();
-      restoreInert();
-      const active = document.activeElement;
-      if (active && active !== document.body && document.contains(active)) return;
-      const target = opener && document.contains(opener) && !opener.closest("[inert]") ? opener
-        : document.querySelector<HTMLElement>(".composer textarea");
-      target?.focus({ preventScroll: true });
-    };
-  }, []);
-  useEffect(() => {
-    const focusModal = () => { const modal = modalRef.current; if (modal && !modal.contains(document.activeElement)) (headingRef.current ?? modal).focus(); };
+    const focusModal = () => { const modal = modalRef.current; if (modal && isTopModalLayer(modal) && !modal.contains(document.activeElement)) (headingRef.current ?? modal).focus(); };
     window.addEventListener(FOCUS_APPROVAL_EVENT, focusModal);
     return () => window.removeEventListener(FOCUS_APPROVAL_EVENT, focusModal);
   }, []);
-  return <div ref={backdropRef} className="modal-backdrop approval-backdrop"><div ref={modalRef} className={`approval-modal${questionDialog ? " approval-question-modal" : ""}`} data-approval-modal="" role="alertdialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={[`${id}-description`, describedBy].filter(Boolean).join(" ")} tabIndex={-1}><div className="approval-heading"><div className="approval-shield"><ShieldAlert size={22} aria-hidden="true" /></div><h2 ref={headingRef} id={`${id}-title`} tabIndex={-1}>{title}</h2></div><p id={`${id}-description`}>{description}</p>{threadLabel && <div className="approval-thread-line"><MessageSquare size={12} aria-hidden="true" /> Requested by <strong>{threadLabel}</strong></div>}{children}{pendingCount != null && pendingCount > 0 && <div className="approval-queue-note">{pendingCount} more approval{pendingCount === 1 ? "" : "s"} waiting</div>}</div></div>;
+  return <div className="modal-backdrop approval-backdrop"><div ref={modalRef} className={`approval-modal${questionDialog ? " approval-question-modal" : ""}`} data-approval-modal="" role="alertdialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={[`${id}-description`, describedBy].filter(Boolean).join(" ")} tabIndex={-1} onKeyDown={(event) => {
+    // The inner card can use Escape to step back. Unhandled Escape never answers.
+    if (event.key !== "Escape" || !isTopModalLayer(event.currentTarget)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }}><div className="approval-heading"><div className="approval-shield"><ShieldAlert size={22} aria-hidden="true" /></div><h2 ref={headingRef} id={`${id}-title`} tabIndex={-1}>{title}</h2></div><p id={`${id}-description`}>{description}</p>{threadLabel && <div className="approval-thread-line"><MessageSquare size={12} aria-hidden="true" /> Requested by <strong>{threadLabel}</strong></div>}{children}{pendingCount != null && pendingCount > 0 && <div className="approval-queue-note">{pendingCount} more approval{pendingCount === 1 ? "" : "s"} waiting</div>}</div></div>;
 }
 
 export function ApprovalCenter({ approval, threadLabel, pendingCount, onRespond }: { approval: PendingApproval; threadLabel?: string; pendingCount?: number; onRespond: (value: JsonObject) => void | Promise<void> }) {

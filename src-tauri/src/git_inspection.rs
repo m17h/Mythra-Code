@@ -337,49 +337,34 @@ pub(super) fn validate_oid(oid: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn bounded_text(bytes: &[u8], limit: usize) -> (String, bool) {
-    let capped = bytes.len().min(limit);
-    (
-        String::from_utf8_lossy(&bytes[..capped]).into_owned(),
-        bytes.len() > limit,
-    )
-}
-
 fn project_diff_sync(cwd: &str) -> Result<ProjectGitDiff, String> {
     let read = GitReadOperation::new();
     let root = repository(&read, cwd)?;
-    let has_head = head(&read, &root)?.is_some();
-    let mut bytes = Vec::new();
-    let mut truncated = false;
-    let commands: Vec<Vec<&str>> = if has_head {
-        vec![vec![
+    let (baseline, baseline_label) = match head(&read, &root)? {
+        Some(oid) => (oid, "HEAD"),
+        None => {
+            // Git recognizes its empty tree without writing an object. The
+            // bounded runner gives hash-object empty stdin on both platforms.
+            let oid = read.stdout(&root, &["hash-object", "-t", "tree", "--stdin"])?;
+            validate_oid(&oid)?;
+            (oid, "the empty repository")
+        }
+    };
+    let result = checked(
+        &read,
+        &root,
+        &[
             "diff",
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
-            "HEAD",
+            &baseline,
             "--",
-        ]]
-    } else {
-        vec![
-            vec![
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-color",
-                "--cached",
-                "--",
-            ],
-            vec!["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--"],
-        ]
-    };
-    for args in commands {
-        let result = checked(&read, &root, &args, DIFF_BYTES)?;
-        truncated |= result.truncated;
-        bytes.extend_from_slice(&result.output.stdout);
-    }
-    let (mut text, text_truncated) = bounded_text(&bytes, DIFF_BYTES);
-    truncated |= text_truncated;
+        ],
+        DIFF_BYTES,
+    )?;
+    let mut text = String::from_utf8_lossy(&result.output.stdout).into_owned();
+    let truncated = result.truncated;
     if truncated {
         text.push_str(
             "\n\n[Diff preview truncated at 512 KiB. Select a file in Changes to inspect it.]\n",
@@ -396,11 +381,7 @@ fn project_diff_sync(cwd: &str) -> Result<ProjectGitDiff, String> {
     Ok(ProjectGitDiff {
         text,
         source: "repository",
-        baseline: if has_head {
-            "HEAD"
-        } else {
-            "the empty repository"
-        },
+        baseline: baseline_label,
         untracked_paths,
         untracked_truncated,
         truncated,

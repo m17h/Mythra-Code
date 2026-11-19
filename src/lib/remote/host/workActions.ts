@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
 import type { Thread } from "../../../types";
 import { flushPendingStateWrites } from "../../storage";
+import { revokeThemeToolsForThread } from "../../customThemes/store";
 import { isAssistantOutputActive, pinTaskTranscript, storedRemoteQueuedTurns, useTaskStore, type QueuedTurn } from "../../taskStore";
 import type { DeviceGrant } from "../types";
 import type { HostRequest, RemoteOperationIdentity, RemoteRowOperation, RemoteWorkResult, WireWorkCapabilities, WireWorkApproval, WireExecutionSettings } from "../wire";
@@ -442,6 +443,10 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
           : remoteQuestionResponse(approval, args.answers, args.cancel);
         await delivery.beforeDispatch({ threadId: threadId!, messageId: delivery.messageId, provider: ctx.effectiveSettings.provider });
         if (!useTaskStore.getState().tasks[threadId!]?.approvals.includes(approval)) throw stale();
+        if (request.op === "question.answer" && args.cancel !== true) {
+          delivery.assertAllowed();
+          revokeThemeToolsForThread(threadId!);
+        }
         await delivery.invokeSteer(request.op === "approval.answer" ? "approval_answer" : "question_answer", {
           threadId, requestId: approval.id, method: approval.method, result: response,
           turnId: approval.params.turnId, itemId: approval.params.itemId,

@@ -735,7 +735,7 @@ function HostTools({ section, device, name, target, context, onOpenThread, onTab
 }
 
 /** The real dock and panels, reading this machine's project through the host. */
-export function RemoteStudio({ device, open, covered, rootRef, onResizeStart, onResizeKeyDown, resizeValue, tab, gitRoute, onTab, onClose, onFork }: {
+export function RemoteStudio({ device, open, covered, rootRef, onResizeStart, onResizeKeyDown, resizeValue, resizeMax, tab, gitRoute, onTab, onClose, onFork }: {
   device: string;
   open: boolean;
   /** A modal (Settings, onboarding, voice input) covers the app. */
@@ -744,6 +744,7 @@ export function RemoteStudio({ device, open, covered, rootRef, onResizeStart, on
   onResizeStart?: (event: PointerEvent) => void;
   onResizeKeyDown?: (event: KeyboardEvent) => void;
   resizeValue?: number;
+  resizeMax?: number;
   tab: StudioTab;
   gitRoute: GitRoute | null;
   onTab: (tab: StudioTab) => void;
@@ -774,7 +775,7 @@ export function RemoteStudio({ device, open, covered, rootRef, onResizeStart, on
   const capabilities = context?.capabilities;
   const revision = context?.revision ?? "";
   const empty = <Empty icon={FolderTree} title="No project selected" text={`Choose a project on ${name}.`} />;
-  return <StudioDockFrame open={open} covered={covered} rootRef={rootRef} onResizeStart={onResizeStart} onResizeKeyDown={onResizeKeyDown} resizeValue={resizeValue} tab={tab} onTab={onTab}>
+  return <StudioDockFrame open={open} covered={covered} rootRef={rootRef} onResizeStart={onResizeStart} onResizeKeyDown={onResizeKeyDown} resizeValue={resizeValue} resizeMax={resizeMax} tab={tab} onTab={onTab}>
     {tab === "files" && <>
       <PanelHeader tab="files" subtitle={`On ${name}`} onClose={onClose} />
       {files ? <FileBrowser key={targetKey} root={`/${workspaceName ?? name}`} source={files} onAttach={(path) => { const fileId = files.fileId(path); if (fileId) machineActions()?.attachHostFile(fileId); }} /> : empty}
