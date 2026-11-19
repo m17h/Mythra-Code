@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "mythra-code"
-version = "1.32.3"
+version = "1.33.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
