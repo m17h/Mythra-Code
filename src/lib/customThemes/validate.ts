@@ -16,7 +16,7 @@ import { areaCovers, backdropExtremes, effectPaints, normalizeEffects, resolveEf
 import { cleanCustomCss } from "./sanitizeCss";
 import {
   BUILT_IN_THEMES, CHAT_FONTS, DESCRIPTION_MAX, DIFF_KEYS, DISPLAY_FONTS, ELEVATIONS, FLAT_TOKEN_KEYS, KIT_TOKENS, KIT_TOKEN_BY_KEY, MARK_KEYS, MONO_FONTS,
-  NAME_MAX, SHAPES, SPEC_KEYS, SYNTAX_KEYS, THEME_LIMITS, THEME_SCHEMA, TRANSLUCENCY_MAX, UI_FONTS, builtInScheme, cleanText, didYouMean, isBuiltInTheme,
+  NAME_MAX, SHAPES, SPEC_KEYS, SYNTAX_KEYS, THEME_LIMITS, THEME_SCHEMA, TRANSLUCENCY_MAX, UI_FONTS, builtInScheme, cleanText, closestMatch, didYouMean, isBuiltInTheme,
   seeThroughAlpha, utf8Bytes, type ContrastAdjustment, type NormalizeResult, type ThemeEffects, type ThemeSpec, type ThemeTokens, type ThemeTypography, type ValidationIssue,
 } from "./spec";
 
@@ -343,7 +343,7 @@ function normalizeTokens(raw: unknown, issues: ValidationIssue[]): ThemeTokens {
   if (raw === undefined) return out;
   if (!isPlainObject(raw)) { issues.push({ path: "tokens", message: "tokens is an object of colours by kit key, e.g. {\"bg\":\"#16131f\",\"text\":\"#ece8f6\",\"accent\":\"#b794ff\"}." }); return out; }
   const groups = { syntax: SYNTAX_KEYS, diff: DIFF_KEYS, mark: MARK_KEYS } as const;
-  const allowed = [...FLAT_TOKEN_KEYS, "syntax", "diff", "mark"];
+  const allowed = [...FLAT_TOKEN_KEYS, ...Object.keys(groups)];
   const one = (key: string, value: unknown, path: string): string | null => {
     if (value === null || value === undefined) return null;
     const token = KIT_TOKEN_BY_KEY.get(key);
@@ -353,7 +353,7 @@ function normalizeTokens(raw: unknown, issues: ValidationIssue[]): ThemeTokens {
     return formatColor(color);
   };
   for (const [key, value] of Object.entries(raw)) {
-    if (key in groups) {
+    if (Object.hasOwn(groups, key)) {
       if (value === null || value === undefined) continue;
       if (!isPlainObject(value)) { issues.push({ path: `tokens.${key}`, message: `tokens.${key} is an object, e.g. {"${groups[key as keyof typeof groups][0]}":"#c4a7f7"}.` }); continue; }
       const subKeys = groups[key as keyof typeof groups] as readonly string[];
@@ -364,6 +364,22 @@ function normalizeTokens(raw: unknown, issues: ValidationIssue[]): ThemeTokens {
         if (color) target[sub] = color;
       }
       if (Object.keys(target).length) (out as Record<string, unknown>)[key] = target;
+      continue;
+    }
+    // The kit names nested tokens with dots (mark.blueA, syntax.comment);
+    // they are written as nested objects.
+    const dot = key.indexOf(".");
+    const group = key.slice(0, dot) as keyof typeof groups;
+    if (dot > 0 && Object.hasOwn(groups, group)) {
+      const sub = key.slice(dot + 1);
+      const subKeys = groups[group] as readonly string[];
+      const known = subKeys.includes(sub) ? sub : closestMatch(sub, subKeys);
+      const exampleValue = value === null || (typeof value === "string" && value.length <= 64 && parseColor(value)) ? value : "#7aa8ff";
+      const example = JSON.stringify({ tokens: { [group]: { [known ?? subKeys[0]]: exampleValue } } });
+      issues.push({
+        path: `tokens.${key}`,
+        message: `Use a nested ${group} object, for example ${example}.${known === sub ? "" : ` Valid ${group} keys: ${subKeys.join(", ")}.`}`,
+      });
       continue;
     }
     if (!FLAT_TOKEN_KEYS.includes(key)) {
@@ -566,7 +582,7 @@ function mergeTokens(current: ThemeTokens, patch: Record<string, unknown>): Reco
         if (subValue === null) delete group[sub]; else group[sub] = subValue;
       }
       if (Object.keys(group).length) out[key] = group; else delete out[key];
-    } else if (value === null) delete out[key];
+    } else if (value === null && !key.includes(".")) delete out[key];
     else out[key] = value;
   }
   return out;

@@ -265,9 +265,13 @@ export function CustomThemesSettings({
         <div className={`set-row${settings.customThemeTools === false ? " ct-row-off" : ""}`} data-settings-row="appearance-theme-screenshots">
           <div className="set-copy">
             <strong id="ct-see-label">Let models see theme previews</strong>
-            <small>Models can check a hidden theme preview that uses sample chats and files. A picture goes to the requesting model's provider when it supports images.</small>
+            <small>Models can check a hidden copy of the app drawn with sample chats and files. A picture goes to the requesting model's provider when it supports images.</small>
           </div>
           <div className="set-control">
+            <SettingInfo label="About theme previews">
+              <p>The preview can show a sample conversation, a new thread or chat, the welcome screen, all Tools tabs, Settings &gt; Appearance, and the command palette. It can show selected buttons on hover, keyboard focus, or press while you work anywhere in the app.</p>
+              <p>It never shows your projects, threads, files or accounts. Turning this off also stops the layout-only previews a model gets when its theme isn't on your screen.</p>
+            </SettingInfo>
             <Switch
               checked={settings.customThemeScreenshots !== false}
               disabled={settings.customThemeTools === false}

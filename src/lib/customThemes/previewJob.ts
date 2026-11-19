@@ -1,18 +1,16 @@
 // The contract between the app window and the hidden theme preview
 // (src/themePreview, src-tauri/src/theme_preview.rs). A job names one exact
-// theme revision, a view and the window's measurements. It never carries
-// user content: no transcript, file, project, thread or account data.
+// theme revision, one scene from the fixed registry (previewScenes.ts), an
+// optional mirrored interaction state and the window's measurements. It
+// never carries user content: no transcript, file, project, thread or
+// account data, and no route, selector or script.
 
 import type { BuiltInChatFont, ChatFont, ClaudeLogoStyle, CursorLogoStyle, EffortSliderStyle, OpenAILogoStyle, Provider, ThemeName } from "../../types";
+import { isControlTargetId, isPreviewInteraction, isPreviewScene, PREVIEW_SCENES, type ControlTargetId, type PreviewInteraction, type PreviewSceneId } from "./previewScenes";
 import type { CustomThemeId, ThemeSpec } from "./spec";
 
-export const PREVIEW_VIEWS = ["conversation", "changes"] as const;
-export type PreviewView = (typeof PREVIEW_VIEWS)[number];
-
-export const PREVIEW_VIEW_DESCRIPTIONS: Record<PreviewView, string> = {
-  conversation: "sidebar, top bar, a sample conversation and the composer",
-  changes: "the same window with Tools open on Changes, showing a sample diff",
-};
+/** One control drawn in a mirrored interaction state (never real input). */
+export interface PreviewInteractionRequest { control: ControlTargetId; state: PreviewInteraction }
 
 /** How the app window is laid out right now (sizes and look only, no content). */
 export interface PreviewEnvironment {
@@ -31,7 +29,9 @@ export interface PreviewEnvironment {
 
 export interface PreviewJob extends PreviewEnvironment {
   version: 1;
-  view: PreviewView;
+  view: PreviewSceneId;
+  /** Absent or null: every control at rest. */
+  interaction?: PreviewInteractionRequest | null;
   /** A picture is wanted; otherwise only the layout report is measured. */
   capture: boolean;
   /** Tints the composer and picks its model control. */
@@ -88,12 +88,15 @@ export function parsePreviewResult(value: unknown): PreviewResult | null {
 export function parsePreviewHandoff(value: unknown): { nonce: string; job: PreviewJob } | null {
   if (!isObject(value) || typeof value.nonce !== "string" || !value.nonce || !isObject(value.job)) return null;
   const job = value.job;
-  if (job.version !== 1 || !PREVIEW_VIEWS.includes(job.view as PreviewView) || !isObject(job.theme)
+  if (job.version !== 1 || !isPreviewScene(job.view) || !isObject(job.theme)
     || typeof job.capture !== "boolean" || !readSize(job.viewport) || !isObject(job.panes)
     || !isObject(job.motion) || !isObject(job.logos)) return null;
   const custom = job.theme.custom;
   if (custom !== null && (!isObject(custom) || typeof custom.id !== "string"
     || typeof custom.revision !== "number" || !Number.isSafeInteger(custom.revision) || custom.revision < 1
     || !isObject(custom.spec) || custom.spec.base !== job.theme.base)) return null;
+  const interaction = job.interaction;
+  if (interaction != null && (!isObject(interaction) || !isControlTargetId(interaction.control)
+    || !PREVIEW_SCENES[job.view].controls.includes(interaction.control) || !isPreviewInteraction(interaction.state))) return null;
   return { nonce: value.nonce, job: job as unknown as PreviewJob };
 }

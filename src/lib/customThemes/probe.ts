@@ -116,14 +116,35 @@ function measure(shell: HTMLElement): { failures: ProbeFailure[]; checked: numbe
   return { failures, checked };
 }
 
-const nextFrame = () => new Promise<void>((resolve) => (typeof requestAnimationFrame === "function" ? requestAnimationFrame(() => resolve()) : setTimeout(resolve, 16)));
+function nextFrame(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let cancel: () => void;
+    const finish = () => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    const abort = () => { cancel(); finish(); };
+    if (typeof requestAnimationFrame === "function") {
+      const frame = requestAnimationFrame(finish);
+      cancel = () => cancelAnimationFrame(frame);
+    } else {
+      const timer = setTimeout(finish, 16);
+      cancel = () => clearTimeout(timer);
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
 
 /**
  * Measure landmark contrast on the shell. Resolves within a frame or two.
  * Failures caused by customCss are marked (they pass with it disabled).
  */
-export async function probeReadability(shell: HTMLElement): Promise<ProbeResult> {
-  await nextFrame();
+export async function probeReadability(shell: HTMLElement): Promise<ProbeResult>;
+export async function probeReadability(shell: HTMLElement, signal: AbortSignal, isCurrent: () => boolean): Promise<ProbeResult | null>;
+export async function probeReadability(shell: HTMLElement, signal?: AbortSignal, isCurrent?: () => boolean): Promise<ProbeResult | null> {
+  await nextFrame(signal);
+  if (signal?.aborted || isCurrent?.() === false) return null;
   // Colour transitions from the previous theme are still running for a few
   // hundred ms, and computed styles report their in-between values (a dark
   // composer on a light theme). Measure the settled look: with transitions

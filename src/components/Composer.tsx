@@ -1119,6 +1119,7 @@ export const Composer = forwardRef<ComposerHandle, {
           <button
             type="button"
             className={`send-button ${willQueue ? "queue-button" : ""}`}
+            data-ct-control="send"
             onClick={() => void send("default")}
             disabled={selectedWorkflow
               ? !canLaunchWorkflow

@@ -69,8 +69,9 @@ const MAX_SUMMARY_BYTES: usize = 360;
 const MAX_ARGUMENT_BYTES: usize = 65_536;
 const MAX_REVISION: u64 = 100_000;
 const MAX_UNDO_STEPS: u64 = 10;
-/// The hidden preview's views for `capture_app_screenshot`.
-const PREVIEW_VIEWS: [&str; 2] = ["conversation", "changes"];
+/// The hidden preview's scenes, control targets and mirrored states for
+/// `capture_app_screenshot` (one list, shared with the preview's job check).
+use crate::theme_preview::{PREVIEW_CONTROLS, PREVIEW_INTERACTIONS, PREVIEW_SCENE_IDS as PREVIEW_VIEWS};
 
 /// Largest base64 picture the bridge forwards (about 1.2 MB of PNG).
 const MAX_IMAGE_BASE64_BYTES: usize = 1_650_000;
@@ -116,7 +117,7 @@ fn theme_id() -> Value {
     json!({ "type": "string" })
 }
 
-/// Eight short tool definitions, about 3.2 KB of JSON (roughly 850 tokens):
+/// Eight short tool definitions, about 3.6 KB of JSON (roughly 950 tokens):
 /// every turn of every conversation pays for these, so the details live in
 /// `get_theme_design_kit`'s result and shapes are checked here and in the app.
 pub(super) fn theme_tool_catalog() -> Vec<Value> {
@@ -214,13 +215,15 @@ pub(super) fn theme_tool_catalog() -> Vec<Value> {
         }),
         json!({
             "name": TOOL_THEME_CAPTURE,
-            "description": "Preview a theme revision with sample content. Returns layout and a picture when supported.",
+            "description": "Draw a theme revision in a hidden copy of the app with sample data. Pick a scene with view (scene list in get_theme_design_kit) and optionally a control at rest or in hover, focus, or press. Returns layout and a picture when supported. The user can stay on their current screen.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "themeId": theme_id(),
                     "revision": revision,
                     "view": { "type": "string", "enum": PREVIEW_VIEWS },
+                    "control": { "type": "string", "enum": PREVIEW_CONTROLS },
+                    "interaction": { "type": "string", "enum": PREVIEW_INTERACTIONS },
                 },
                 "additionalProperties": false,
             },
@@ -229,7 +232,7 @@ pub(super) fn theme_tool_catalog() -> Vec<Value> {
 }
 
 /// One bridge-instruction line, present only when the theme tools are.
-pub(super) const THEME_BRIDGE_INSTRUCTIONS: &str = "Use the theme tools when the user asks to create, change, restyle, animate or undo how Mythra Code looks. Read get_theme_design_kit first. Adjust an existing theme with update_custom_theme instead of creating a duplicate. After each change read the result's layout; call capture_app_screenshot to see a preview of the theme. Only the user can delete themes.";
+pub(super) const THEME_BRIDGE_INSTRUCTIONS: &str = "Use the theme tools when the user asks to create, change, restyle, animate or undo how Mythra Code looks. Read get_theme_design_kit first. Adjust an existing theme with update_custom_theme instead of creating a duplicate. After each change read the result's layout and its source; call capture_app_screenshot to see the theme in a hidden sample-data preview of any listed scene (new thread, new chat, Tools tabs, Settings, palette, control hover/focus/press) without asking the user to navigate; it is not limited to their screen. Only the user can delete themes.";
 
 /// A valid PNG content block from a capture result's `image`, or None.
 fn png_image_block(image: &Value) -> Option<Value> {
@@ -443,14 +446,16 @@ pub(super) fn validate_theme_tool_call(tool: &str, arguments: &Value) -> Result<
     match tool {
         TOOL_THEME_KIT | TOOL_THEME_LIST => only_keys(object, &[], tool),
         TOOL_THEME_CAPTURE => {
-            only_keys(object, &["themeId", "revision", "view"], tool)?;
+            only_keys(object, &["themeId", "revision", "view", "control", "interaction"], tool)?;
             optional_theme_id(object)?;
             optional_integer(object, "revision", MAX_REVISION)?;
-            if object
-                .get("view")
-                .is_some_and(|value| !value.as_str().is_some_and(|view| PREVIEW_VIEWS.contains(&view)))
-            {
-                return Err(format!("`view` must be one of {}.", PREVIEW_VIEWS.join(", ")));
+            for (key, choices) in [("view", &PREVIEW_VIEWS[..]), ("control", &PREVIEW_CONTROLS[..]), ("interaction", &PREVIEW_INTERACTIONS[..])] {
+                if object
+                    .get(key)
+                    .is_some_and(|value| !value.as_str().is_some_and(|choice| choices.contains(&choice)))
+                {
+                    return Err(format!("`{key}` must be one of {}.", choices.join(", ")));
+                }
             }
             Ok(())
         }

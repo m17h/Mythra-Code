@@ -16,6 +16,8 @@ const SHEEN_POINTS = "-420,0 -260,0 -460,1024 -620,1024";
 
 interface AnimatedMythraLogoProps {
   className?: string;
+  /** Hidden captures draw an assembled mark without waiting for window visibility. */
+  motionSnapshot?: "idle" | "still";
 }
 
 function setTilt(host: HTMLElement, rx: string, ry: string) {
@@ -81,7 +83,7 @@ function startMotion(host: HTMLElement, assemble: boolean) {
  * runs. With full motion a layout effect scatters it before first paint and
  * lets it assemble; with reduced motion it stays assembled and still.
  */
-export function AnimatedMythraLogo({ className }: AnimatedMythraLogoProps) {
+export function AnimatedMythraLogo({ className, motionSnapshot }: AnimatedMythraLogoProps) {
   // Instance-unique and reduced to characters that are safe inside url(#…).
   const ids = `mythra-logo-${useId().replace(/[^\w-]/g, "")}`;
   const url = (name: string) => `url(#${ids}-${name})`;
@@ -94,7 +96,7 @@ export function AnimatedMythraLogo({ className }: AnimatedMythraLogoProps) {
 
   useLayoutEffect(() => {
     const host = buttonRef.current;
-    if (!host) return;
+    if (!host || motionSnapshot) return;
     const media = window.matchMedia(REDUCED_MOTION);
     let stopMotion: (() => void) | null = null;
     // Only the first run assembles; turning motion back on later just idles.
@@ -120,7 +122,7 @@ export function AnimatedMythraLogo({ className }: AnimatedMythraLogoProps) {
       window.cancelAnimationFrame(tiltFrameRef.current);
       tiltFrameRef.current = 0;
     };
-  }, []);
+  }, [motionSnapshot]);
 
   const onPointerEnter = (event: PointerEvent<HTMLButtonElement>) => {
     if (event.pointerType === "mouse") setExploded(true);
@@ -160,6 +162,7 @@ export function AnimatedMythraLogo({ className }: AnimatedMythraLogoProps) {
         ref={buttonRef}
         type="button"
         className="mythra-logo__button"
+        data-idle={motionSnapshot === "idle" ? "" : undefined}
         aria-label="Separate the Mythra Code logo pieces"
         aria-pressed={exploded}
         onPointerEnter={onPointerEnter}

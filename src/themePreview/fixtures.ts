@@ -1,15 +1,23 @@
 // Sample content for the hidden theme preview. Everything here is invented
 // and bundled with the app: no user project, thread, transcript, file,
-// terminal output or account ever reaches the preview. New scenarios only
-// need new data here; the views themselves are the app's own.
+// terminal output or account ever reaches the preview. New scenes (see
+// src/lib/customThemes/previewScenes.ts) only need new data here; the views
+// themselves are the app's own. Every value is a constant, so the same job
+// always draws the same picture.
 
 import { parseDiffSections, type ReviewDiff } from "../lib/gitDiff";
 import type { ProjectGitChanges } from "../lib/gitInspection";
 import type { GitWorkflowControls } from "../lib/gitWorkspace";
 import type { ProjectGitInspection } from "../lib/projectGit";
-import type { Activity, ChatMessage, ProjectRunCommand } from "../types";
+import type { LocalSkill } from "../lib/skills";
+import type { ThreadWorktreeRecord, WorkspaceGitInfo, WorktreeStatus } from "../lib/worktrees";
+import type { DirectoryEntry, FileBrowserSource } from "../components/FileBrowser";
+import type { McpView } from "../components/StudioDock";
+import type { TerminalOutputStore } from "../hooks/useTerminal";
+import { basename } from "../lib/paths";
+import type { Activity, ChatMessage, Project, ProjectRunCommand, Thread } from "../types";
 
-/** Not a real folder: nothing in the preview reads or lists it. */
+/** Invented paths that identify bundled sample content. */
 export const SAMPLE_PROJECT = { name: "lantern-notes", path: "/sample/lantern-notes" };
 export const SAMPLE_RUN: ProjectRunCommand = { command: "npm run dev", label: "Dev server" };
 export const SAMPLE_CHECK_COMMAND = "npm test";
@@ -26,6 +34,56 @@ export const SAMPLE_THREADS: ReadonlyArray<{ id: string; title: string; current?
   { id: "sample-thread-search", title: "Add fuzzy matching to note search", scheduled: 1 },
   { id: "sample-thread-copy", title: "Tidy the onboarding copy" },
 ];
+
+const SAMPLE_FILES = [
+  { path: "docs/sync.md", text: "# Notebook sync\n\nThe list preserves its scroll position when notes change.\n" },
+  { path: "src/notebooks/NotebookList.tsx", text: "export function NotebookList() {\n  return <ul aria-label=\"Notebooks\" />;\n}\n" },
+  { path: "README.md", text: "# Lantern Notes\n\nA notebook that works offline.\n" },
+  { path: "package.json", text: '{ "name": "lantern-notes", "private": true }\n' },
+  { path: "tsconfig.json", text: '{ "compilerOptions": { "strict": true } }\n' },
+];
+
+export const SAMPLE_FILE_SOURCE: FileBrowserSource = {
+  list: async (path) => {
+    const entries = new Map<string, DirectoryEntry>();
+    for (const file of SAMPLE_FILES) {
+      const absolute = `${SAMPLE_PROJECT.path}/${file.path}`;
+      if (!absolute.startsWith(`${path}/`)) continue;
+      const [fileName, ...children] = absolute.slice(path.length + 1).split("/");
+      const isDirectory = children.length > 0;
+      entries.set(fileName, { fileName, isDirectory, isFile: !isDirectory });
+    }
+    return { entries: [...entries.values()] };
+  },
+  search: async (query, root) => ({
+    files: root === SAMPLE_PROJECT.path ? SAMPLE_FILES
+      .filter((file) => file.path.toLowerCase().includes(query.toLowerCase()))
+      .map((file) => ({ root, path: file.path, file_name: basename(file.path), score: 1 })) : [],
+  }),
+  preview: async (root, path) => {
+    const file = root === SAMPLE_PROJECT.path && SAMPLE_FILES.find((entry) => `${root}/${entry.path}` === path);
+    if (!file) throw new Error("Sample file is unavailable");
+    return { text: file.text, truncated: false, binary: false };
+  },
+};
+
+export const SAMPLE_TERMINAL_RESULT = "38 passed";
+const SAMPLE_TERMINAL_TEXT = [
+  "$ npm test -- notebooks",
+  "",
+  "\x1b[32mPASS\x1b[0m NotebookList.test.tsx",
+  "\x1b[32mPASS\x1b[0m useNotebookSync.test.ts",
+  "",
+  `Tests: \x1b[32m${SAMPLE_TERMINAL_RESULT}\x1b[0m, 38 total`,
+  "",
+].join("\n");
+
+export const SAMPLE_TERMINAL: TerminalOutputStore = {
+  appendedLength: () => SAMPLE_TERMINAL_TEXT.length,
+  read: (cursor) => ({ text: SAMPLE_TERMINAL_TEXT.slice(cursor), cursor: SAMPLE_TERMINAL_TEXT.length }),
+  generation: () => 0,
+  subscribe: () => () => {},
+};
 
 const TURN_ONE = "sample-turn-1";
 const TURN_TWO = "sample-turn-2";
@@ -184,3 +242,59 @@ export const SAMPLE_GIT: ProjectGitInspection = {
   }),
   getHistory: async () => ({ entries: [], hasMore: false, nextOffset: 0, headOid: SAMPLE_HEAD, truncated: false }),
 };
+
+/** Chats (no project folder) in the sidebar of the new-chat scene. */
+export const SAMPLE_CHATS: ReadonlyArray<{ id: string; title: string }> = [
+  { id: "sample-chat-naming", title: "Names for a note-taking app" },
+  { id: "sample-chat-regex", title: "Explain lookbehind in regular expressions" },
+];
+
+/** The sample project's Git state on the new-thread landing (a committed repository root). */
+export const SAMPLE_WORKSPACE_GIT: WorkspaceGitInfo = { isRepo: true, isRoot: true, hasCommit: true, branch: "main", head: SAMPLE_HEAD, error: null };
+
+export const SAMPLE_WORKTREE: ThreadWorktreeRecord = {
+  threadId: SAMPLE_THREADS[0]!.id,
+  projectId: SAMPLE_PROJECTS[0]!.id,
+  projectPath: SAMPLE_PROJECT.path,
+  path: "/sample/worktrees/lantern-notes/smooth-sync",
+  branch: "mythra/smooth-sync",
+  baseCommit: SAMPLE_HEAD,
+  gitDir: `${SAMPLE_PROJECT.path}/.git/worktrees/smooth-sync`,
+  createdAt: 1_767_225_600_000,
+  status: "active",
+};
+
+export const SAMPLE_WORKTREE_STATUS: WorktreeStatus = {
+  exists: true,
+  registered: true,
+  branch: SAMPLE_WORKTREE.branch,
+  sourceBranch: "main",
+  baseCommit: SAMPLE_WORKTREE.baseCommit,
+  changedFiles: SAMPLE_CHANGES.changedFiles,
+  untrackedFiles: 0,
+  ignoredFileCount: 1,
+  ahead: 2,
+  behind: 0,
+  clean: false,
+};
+
+/** Text typed into a composer so its Send button is enabled (only when a Send state is previewed). */
+export const SAMPLE_DRAFT = "Add a keyboard shortcut for the notebook search";
+
+/** The command palette's project and thread rows. */
+export const SAMPLE_PALETTE_PROJECTS: Project[] = SAMPLE_PROJECTS.map((project) => ({
+  id: project.id, name: project.name, path: `/sample/${project.name}`, pinned: project.pinned,
+}));
+export const SAMPLE_PALETTE_THREADS: Thread[] = SAMPLE_THREADS.map((thread, index) => ({
+  id: thread.id, name: thread.title, preview: "", cwd: SAMPLE_PROJECT.path, updatedAt: 1_767_225_600_000 - index * 3_600_000, modelProvider: "openai",
+}));
+
+/** Skills & MCP in Tools. */
+export const SAMPLE_SKILLS: LocalSkill[] = [
+  { path: "/sample/skills/release-notes.md", relativePath: "release-notes.md", fileName: "release-notes.md", defaultName: "release-notes", name: "release-notes", description: "Draft release notes from merged changes", supportingMarkdownCount: 0, enabled: true },
+  { path: "/sample/skills/a11y-review.md", relativePath: "a11y-review.md", fileName: "a11y-review.md", defaultName: "a11y-review", name: "a11y-review", description: "Check new UI for keyboard and screen reader access", supportingMarkdownCount: 1, enabled: false },
+];
+export const SAMPLE_MCP_SERVERS: McpView[] = [
+  { name: "docs-search", status: "ready", tools: 3 },
+  { name: "issue-tracker", status: "notLoggedIn", tools: 0 },
+];
