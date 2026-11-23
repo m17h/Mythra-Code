@@ -604,10 +604,9 @@
 }
 
 /* ---- New-thread landing, round 2 (D34) ----
-   One quiet stack: a small mark, the question, one line of context, a
+   One quiet stack: the mark, the question, one line of context, a
    segmented Shared / Isolated choice and three ghost shortcuts. The claims
    checklist is gone; descriptions live in tooltips and one caption. */
-.app-shell[data-theme][data-color-scheme] .thread-empty-state .mythra-logo { --mythra-logo-size: 64px; --mythra-logo-gap: 6px; }
 .app-shell[data-theme][data-color-scheme] .thread-empty-state h1 { margin: 10px 0 6px; font-size: 26px; }
 .app-shell[data-theme][data-color-scheme] .thread-empty-state p { margin-bottom: 18px; color: var(--muted); font-size: 13.5px; }
 .app-shell[data-theme][data-color-scheme] .thread-empty-project { color: var(--ink-2); font-weight: 550; }
